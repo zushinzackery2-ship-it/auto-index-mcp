@@ -82,6 +82,7 @@ auto-index-mcp/
 |-- tests/
 |   `-- test_auto_index_service.py
 |-- fastmcp.json
+|-- install_windows.bat
 |-- pyproject.toml
 `-- README.md
 ```
@@ -89,6 +90,16 @@ auto-index-mcp/
 ---
 
 ## Install
+
+### Windows One-Click
+
+```bat
+install_windows.bat
+```
+
+The Windows installer creates `.venv`, installs the package into that virtual environment, verifies the MCP entrypoint, and writes `mcp-client-config.windows.json` with the local Python path. It does not modify MCP client settings and does not start a backend service.
+
+### Manual
 
 ```bash
 python -m pip install -e .
@@ -109,6 +120,8 @@ auto-index-mcp --project-path /path/to/project
 ---
 
 ## MCP Configuration
+
+MCP clients start this server as a stdio process from the configured command. No separate backend service needs to be started manually.
 
 ```json
 {

@@ -6,6 +6,9 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .venv/
+mcp-client-config.windows.json
+install_result.txt
+install_windows.log
 build/
 dist/
 *.egg-info/
