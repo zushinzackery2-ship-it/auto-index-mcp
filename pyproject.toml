@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auto-index-mcp"
+version = "0.1.0"
+description = "Persistent auto-index MCP server for low-context codebase navigation."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "mcp>=1.13.0",
+]
+
+[project.scripts]
+auto-index-mcp = "auto_index_mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

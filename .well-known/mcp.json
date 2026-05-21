@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "auto-index": {
+      "command": "python",
+      "args": [
+        "-m",
+        "auto_index_mcp.server"
+      ]
+    }
+  }
+}

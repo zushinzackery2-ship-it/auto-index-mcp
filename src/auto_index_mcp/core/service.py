@@ -1,0 +1,285 @@
+from __future__ import annotations
+
+import hashlib
+import time
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Any
+
+from .config import default_index_root
+from ..indexing.analysis import resolve_project_callers
+from ..indexing.scanner import SourceScanner
+from ..search.backend import search_text
+from ..indexing.store import IndexStore
+from ..indexing.watcher import PollingWatcher
+
+
+class AutoIndexService:
+    def __init__(self, index_root: Path | None = None) -> None:
+        self.index_root = index_root or default_index_root()
+        self.root_path: Path | None = None
+        self.enabled = False
+        self.last_errors: list[str] = []
+        self.store: IndexStore | None = None
+        self.watcher: PollingWatcher | None = None
+
+    def enable(self, root_path: str, rebuild: bool = True) -> dict[str, Any]:
+        root = Path(root_path).resolve()
+        if not root.exists() or not root.is_dir():
+            raise ValueError(f"root_path is not a directory: {root_path}")
+        self.root_path = root
+        self.enabled = True
+        self.store = IndexStore(self._db_path(root))
+        self.store.initialize()
+        if rebuild:
+            return self.rebuild()
+        return self.status()
+
+    def disable(self) -> dict[str, Any]:
+        self.stop_watcher()
+        self.enabled = False
+        return self.status()
+
+    def rebuild(self) -> dict[str, Any]:
+        self._require_ready()
+        start = time.time()
+        existing = {item["path"]: item for item in self.store.all_files()}
+        scan = SourceScanner(str(self.root_path), existing_records=existing).scan()
+        records = resolve_project_callers(scan.records)
+        self.store.replace_all(scan.root, records)
+        self.last_errors = scan.errors[:50]
+        return {
+            "status": "indexed",
+            "root": scan.root,
+            "file_count": len(records),
+            "skipped": scan.skipped,
+            "reused": scan.reused,
+            "error_count": len(scan.errors),
+            "elapsed_seconds": round(time.time() - start, 3),
+            "index_path": str(self.store.db_path),
+        }
+
+    def status(self) -> dict[str, Any]:
+        meta = self.store.get_metadata_map() if self.store else {}
+        return {
+            "enabled": self.enabled,
+            "root": str(self.root_path) if self.root_path else None,
+            "index_path": str(self.store.db_path) if self.store else None,
+            "file_count": meta.get("file_count", 0),
+            "updated_at": meta.get("updated_at"),
+            "last_error_count": len(self.last_errors),
+            "last_errors": self.last_errors[:10],
+        }
+
+    def clear(self, delete_file: bool = False) -> dict[str, Any]:
+        self._require_store()
+        if delete_file:
+            self.stop_watcher()
+            self.store.delete_file()
+            self.store = None
+            self.enabled = False
+        else:
+            self.store.clear()
+        return self.status()
+
+    def flush(self) -> dict[str, Any]:
+        self._require_store()
+        return {"status": "flushed", "index_path": str(self.store.db_path)}
+
+    def start_watcher(self, interval_seconds: float = 2.0) -> dict[str, Any]:
+        self._require_ready()
+        if interval_seconds < 0.25:
+            raise ValueError("interval_seconds must be >= 0.25")
+        if self.watcher:
+            self.watcher.stop()
+        self.watcher = PollingWatcher(self.root_path, self.rebuild, interval_seconds)
+        self.watcher.start()
+        return self.watcher_status()
+
+    def stop_watcher(self) -> dict[str, Any]:
+        if self.watcher:
+            self.watcher.stop()
+            self.watcher = None
+        return self.watcher_status()
+
+    def watcher_status(self) -> dict[str, Any]:
+        if not self.watcher:
+            return {"running": False}
+        return self.watcher.status()
+
+    def overview(self, limit: int = 30) -> dict[str, Any]:
+        self._require_store()
+        files = self.store.all_files()
+        languages = Counter(item["language"] for item in files)
+        top_dirs = Counter((item["parent"].split("/")[0] if item["parent"] else ".") for item in files)
+        return {
+            "format": "auto_index_overview_indexed",
+            "file_count": len(files),
+            "languages": dict(languages.most_common(limit)),
+            "top_directories": dict(top_dirs.most_common(limit)),
+            "samples": [self._compact(item) for item in files[:limit]],
+        }
+
+    def tree_get(self, root_path: str = "", depth: int = 2, limit: int = 120) -> dict[str, Any]:
+        self._require_store()
+        files = self.store.all_files()
+        folders: dict[str, dict[str, Any]] = defaultdict(lambda: {"file_count": 0, "languages": Counter(), "samples": []})
+        for item in files:
+            if root_path and not item["path"].startswith(root_path.rstrip("/") + "/"):
+                continue
+            parts = item["parent"].split("/") if item["parent"] else ["."]
+            key = "/".join(parts[: max(1, depth)])
+            folder = folders[key]
+            folder["file_count"] += 1
+            folder["languages"][item["language"]] += 1
+            if len(folder["samples"]) < 5:
+                folder["samples"].append(item["name"])
+        rows = []
+        for folder, data in sorted(folders.items())[:limit]:
+            rows.append({"folder": folder, "file_count": data["file_count"], "languages": dict(data["languages"]), "samples": data["samples"]})
+        return {"format": "auto_index_tree_indexed", "root": root_path, "folders": rows}
+
+    def query(self, text: str = "", languages: list[str] | None = None, parent: str = "", limit: int = 80, cursor: str | None = None) -> dict[str, Any]:
+        self._require_store()
+        offset = int(cursor or "0")
+        rows = self.store.query(text, languages or [], parent, limit, offset)
+        next_cursor = str(offset + limit) if len(rows) == limit else None
+        return {"format": "auto_index_query_indexed", "items": [self._compact(row) for row in rows], "cursor": next_cursor}
+
+    def text_search(
+        self,
+        pattern: str,
+        case_sensitive: bool = True,
+        regex: bool = False,
+        limit: int = 80,
+        file_pattern: str | None = None,
+        context_lines: int = 0,
+    ) -> dict[str, Any]:
+        self._require_ready()
+        if not pattern:
+            raise ValueError("pattern is required")
+        backend, matches = search_text(
+            self.root_path,
+            self.store.all_files(),
+            pattern,
+            case_sensitive,
+            regex,
+            limit,
+            file_pattern,
+        )
+        if context_lines > 0:
+            matches = [self._with_context(match, context_lines) for match in matches]
+        return {"format": "auto_index_text_search_indexed", "backend": backend, "items": matches}
+
+    def symbol_search(self, text: str = "", kind: str = "", limit: int = 80, cursor: str | None = None) -> dict[str, Any]:
+        self._require_store()
+        offset = int(cursor or "0")
+        rows = self.store.query_symbols(text, kind, limit, offset)
+        next_cursor = str(offset + limit) if len(rows) == limit else None
+        return {"format": "auto_index_symbol_search_indexed", "items": rows, "cursor": next_cursor}
+
+    def symbol_body(self, path: str, symbol_name: str) -> dict[str, Any]:
+        self._require_ready()
+        if not path or not symbol_name:
+            raise ValueError("path and symbol_name are required")
+        item = self.store.get_file(path)
+        if item is None:
+            raise KeyError(f"indexed file not found: {path}")
+        matches = [symbol for symbol in item["symbols"] if symbol["name"] == symbol_name]
+        if not matches:
+            raise KeyError(f"symbol not found: {symbol_name}")
+        if len(matches) > 1:
+            return {"format": "auto_index_symbol_body_ambiguous", "candidates": matches}
+        symbol = matches[0]
+        lines = (self.root_path / path).read_text(encoding="utf-8").splitlines()
+        start = max(1, symbol["line"])
+        end = min(len(lines), symbol["end_line"])
+        code = "\n".join(lines[start - 1:end])
+        return {"format": "auto_index_symbol_body_full", "symbol": symbol, "path": path, "code": code}
+
+    def file_summary(self, path: str) -> dict[str, Any]:
+        self._require_store()
+        item = self.store.get_file(path)
+        if item is None:
+            raise KeyError(f"indexed file not found: {path}")
+        symbols = item["symbols"]
+        return {
+            "format": "auto_index_file_summary_full",
+            "path": item["path"],
+            "language": item["language"],
+            "line_count": item["line_count"],
+            "imports": item["imports"],
+            "symbol_count": len(symbols),
+            "symbols": symbols,
+            "total_complexity": sum(symbol.get("complexity", 1) for symbol in symbols),
+            "max_complexity": max((symbol.get("complexity", 1) for symbol in symbols), default=0),
+        }
+
+    def get(self, path: str) -> dict[str, Any]:
+        self._require_store()
+        item = self.store.get_file(path)
+        if item is None:
+            raise KeyError(f"indexed file not found: {path}")
+        return {"format": "auto_index_get_full", "item": item}
+
+    def file_content(self, path: str) -> str:
+        self._require_ready()
+        target = (self.root_path / path).resolve()
+        if not str(target).startswith(str(self.root_path)):
+            raise ValueError(f"path escapes project root: {path}")
+        return target.read_text(encoding="utf-8")
+
+    def resolve_path(self, path: str, limit: int = 20) -> dict[str, Any]:
+        self._require_store()
+        needle = path.lower().replace("\\", "/")
+        matches = []
+        for item in self.store.all_files():
+            candidate = item["path"].lower()
+            if candidate == needle or item["name"].lower() == needle or needle in candidate:
+                matches.append(self._compact(item))
+            if len(matches) >= limit:
+                break
+        return {"format": "auto_index_resolve_indexed", "items": matches}
+
+    def diff_filesystem(self) -> dict[str, Any]:
+        self._require_ready()
+        scan = SourceScanner(str(self.root_path)).scan()
+        indexed = {item["path"]: item for item in self.store.all_files()}
+        current = {item.path: item for item in scan.records}
+        added = sorted(set(current) - set(indexed))
+        deleted = sorted(set(indexed) - set(current))
+        changed = sorted(path for path in set(current) & set(indexed) if current[path].sha1 != indexed[path]["sha1"])
+        return {"format": "auto_index_diff_indexed", "added": added[:100], "deleted": deleted[:100], "changed": changed[:100], "added_count": len(added), "deleted_count": len(deleted), "changed_count": len(changed)}
+
+    def _compact(self, item: dict[str, Any]) -> dict[str, Any]:
+        symbols = item["symbols"][:12]
+        names = [symbol["name"] if isinstance(symbol, dict) else str(symbol) for symbol in symbols]
+        return {"path": item["path"], "language": item["language"], "lines": item["line_count"], "symbols": names}
+
+    def _with_context(self, match: dict[str, Any], context_lines: int) -> dict[str, Any]:
+        enriched = dict(match)
+        try:
+            lines = (self.root_path / match["path"]).read_text(encoding="utf-8").splitlines()
+            line_index = match["line"] - 1
+            start = max(0, line_index - context_lines)
+            end = min(len(lines), line_index + context_lines + 1)
+            enriched["context"] = [
+                {"line": index + 1, "text": lines[index]}
+                for index in range(start, end)
+            ]
+        except UnicodeDecodeError:
+            enriched["context"] = []
+        return enriched
+
+    def _db_path(self, root: Path) -> Path:
+        digest = hashlib.sha1(str(root).encode("utf-8")).hexdigest()[:16]
+        return self.index_root / f"{digest}.db"
+
+    def _require_ready(self) -> None:
+        self._require_store()
+        if self.root_path is None:
+            raise RuntimeError("auto-index root is not configured")
+
+    def _require_store(self) -> None:
+        if self.store is None:
+            raise RuntimeError("auto-index is not enabled")

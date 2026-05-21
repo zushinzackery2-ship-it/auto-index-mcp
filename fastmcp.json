@@ -1,0 +1,10 @@
+{
+  "source": {
+    "type": "python",
+    "path": "src/auto_index_mcp/server.py"
+  },
+  "env": {},
+  "dependencies": [
+    "mcp>=1.13.0"
+  ]
+}
