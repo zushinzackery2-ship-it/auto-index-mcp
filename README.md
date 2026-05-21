@@ -2,7 +2,7 @@
 
 # auto-index-mcp
 
-**Persistent MCP codebase indexer with code-index-mcp compatibility**
+**Persistent MCP codebase indexer for low-context agent navigation**
 
 *SQLite-backed auto-indexing, low-context navigation tools, and symbol-aware search for coding agents*
 
@@ -29,7 +29,7 @@
 | **Symbol Indexing** | Extracts Python AST symbols and lightweight JavaScript/TypeScript/generic symbols. |
 | **Code Search** | Uses ripgrep when available, with a Python fallback search backend. |
 | **Watcher** | Provides standard-library polling refresh for active projects. |
-| **Compatibility Layer** | Implements common `code-index-mcp` tool names and response shapes. |
+| **Compatibility Layer** | Provides familiar file, symbol, search, watcher, and settings tool aliases. |
 | **MCP Resource** | Exposes `files://{file_path}` content access for indexed projects. |
 
 ---
@@ -53,7 +53,7 @@
 | **Drift Check** | `auto_index_diff_filesystem()` | Compare the persisted index with current filesystem state. |
 | **Watcher** | `auto_index_watcher_start()` | Start polling auto-refresh for the active project. |
 | **Watcher** | `auto_index_watcher_status()` | Report watcher runtime state. |
-| **Compatibility** | `set_project_path()` | Initialize indexing using the `code-index-mcp` style tool name. |
+| **Compatibility** | `set_project_path()` | Initialize indexing using a familiar project setup tool name. |
 | **Compatibility** | `find_files()` | Find indexed files by glob or filename. |
 | **Compatibility** | `get_file_summary()` | Return imports, symbols, and complexity metrics for one file. |
 | **Compatibility** | `get_symbol_body()` | Return one symbol body using the compatible tool contract. |
