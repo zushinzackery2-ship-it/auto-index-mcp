@@ -49,6 +49,18 @@ def test_rebuild_query_and_get(tmp_path: Path) -> None:
     assert run_method["kind"] == "method"
 
 
+def test_default_index_lives_inside_project_root(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('local index')\n", encoding="utf-8")
+
+    service = AutoIndexService()
+    result = service.enable(str(project), rebuild=True)
+
+    assert result["index_path"] == str(project / ".auto-index-mcp" / "index.db")
+    assert (project / ".auto-index-mcp" / "index.db").exists()
+
+
 def test_diff_filesystem_reports_changes(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

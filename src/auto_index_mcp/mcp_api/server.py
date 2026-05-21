@@ -242,6 +242,8 @@ def clear_settings() -> str:
 @mcp.tool()
 def create_temp_directory() -> dict[str, Any]:
     """Compatibility tool: ensure the index directory exists."""
+    if _service.index_root is None:
+        return {"status": "not_configured", "path": None}
     _service.index_root.mkdir(parents=True, exist_ok=True)
     return {"status": "success", "path": str(_service.index_root)}
 
@@ -249,6 +251,8 @@ def create_temp_directory() -> dict[str, Any]:
 @mcp.tool()
 def check_temp_directory() -> dict[str, Any]:
     """Compatibility tool: report index directory status."""
+    if _service.index_root is None:
+        return {"exists": False, "path": None}
     return {"exists": _service.index_root.exists(), "path": str(_service.index_root)}
 
 

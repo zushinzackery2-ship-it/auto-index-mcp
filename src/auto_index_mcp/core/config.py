@@ -11,6 +11,7 @@ DEFAULT_EXCLUDE_DIRS = {
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
+    ".auto-index-mcp",
     ".tox",
     ".venv",
     "__pycache__",
@@ -66,5 +67,5 @@ LANGUAGE_BY_EXTENSION = {
 TEXT_EXTENSIONS = set(LANGUAGE_BY_EXTENSION)
 
 
-def default_index_root() -> Path:
-    return Path.home() / ".auto-index-mcp"
+def project_index_root(root: Path) -> Path:
+    return root / ".auto-index-mcp"

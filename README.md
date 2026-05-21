@@ -61,6 +61,18 @@
 
 ---
 
+## Index Storage
+
+Each project stores its SQLite index inside the configured project root:
+
+```text
+<project>/.auto-index-mcp/index.db
+```
+
+The `.auto-index-mcp` directory is excluded from scanning and ignored by git.
+
+---
+
 ## Directory Structure
 
 ```

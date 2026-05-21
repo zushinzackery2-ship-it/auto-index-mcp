@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .smoke-index/
 .code_indexer/
+.auto-index-mcp/
 .ruff_cache/
 .mypy_cache/
 .venv/

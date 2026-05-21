@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from .config import default_index_root
+from .config import project_index_root
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.scanner import SourceScanner
 from ..search.backend import search_text
@@ -16,7 +15,8 @@ from ..indexing.watcher import PollingWatcher
 
 class AutoIndexService:
     def __init__(self, index_root: Path | None = None) -> None:
-        self.index_root = index_root or default_index_root()
+        self.index_root_override = index_root
+        self.index_root: Path | None = index_root
         self.root_path: Path | None = None
         self.enabled = False
         self.last_errors: list[str] = []
@@ -29,6 +29,7 @@ class AutoIndexService:
             raise ValueError(f"root_path is not a directory: {root_path}")
         self.root_path = root
         self.enabled = True
+        self.index_root = self.index_root_override or project_index_root(root)
         self.store = IndexStore(self._db_path(root))
         self.store.initialize()
         if rebuild:
@@ -272,8 +273,8 @@ class AutoIndexService:
         return enriched
 
     def _db_path(self, root: Path) -> Path:
-        digest = hashlib.sha1(str(root).encode("utf-8")).hexdigest()[:16]
-        return self.index_root / f"{digest}.db"
+        index_root = self.index_root_override or project_index_root(root)
+        return index_root / "index.db"
 
     def _require_ready(self) -> None:
         self._require_store()
