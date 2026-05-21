@@ -103,6 +103,32 @@ class IndexStore:
             self.set_metadata(conn, "file_count", len(records))
             self.set_metadata(conn, "child_index_count", len(child_indexes or []))
 
+    def replace_files(self, records: list[FileRecord]) -> None:
+        if not records:
+            return
+        with self.connect() as conn:
+            for record in records:
+                self._delete_file(conn, record.path)
+            self._insert_many(conn, records)
+            self._refresh_file_count(conn)
+            self.set_metadata(conn, "updated_at", time.time())
+
+    def delete_files(self, paths: list[str]) -> None:
+        if not paths:
+            return
+        with self.connect() as conn:
+            for path in paths:
+                self._delete_file(conn, path)
+            self._refresh_file_count(conn)
+            self.set_metadata(conn, "updated_at", time.time())
+
+    def replace_child_indexes(self, children: list[dict[str, Any]]) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM child_indexes")
+            self._insert_child_indexes(conn, children)
+            self.set_metadata(conn, "child_index_count", len(children))
+            self.set_metadata(conn, "updated_at", time.time())
+
     def clear(self) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM files")
@@ -234,6 +260,15 @@ class IndexStore:
                     child["version"],
                 ),
             )
+
+    def _delete_file(self, conn: sqlite3.Connection, path: str) -> None:
+        conn.execute("DELETE FROM files WHERE path=?", (path,))
+        conn.execute("DELETE FROM symbols WHERE file_path=?", (path,))
+        conn.execute("DELETE FROM file_fts WHERE path=?", (path,))
+
+    def _refresh_file_count(self, conn: sqlite3.Connection) -> None:
+        count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+        self.set_metadata(conn, "file_count", count)
 
     def set_metadata(self, conn: sqlite3.Connection, key: str, value: Any) -> None:
         conn.execute(

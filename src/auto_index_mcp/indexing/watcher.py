@@ -2,29 +2,33 @@ from __future__ import annotations
 
 import threading
 import time
-from pathlib import Path
-from typing import Callable
+from typing import Callable, Any
 
-from .scanner import SourceScanner
-from .workspace import INDEX_DB_NAME, INDEX_DIR_NAME
+from .snapshot import WatchSnapshot
 
 
 class PollingWatcher:
-    def __init__(self, root: Path, rebuild: Callable[[], dict], interval_seconds: float = 2.0) -> None:
-        self.root = root
-        self.rebuild = rebuild
+    def __init__(
+        self,
+        take_snapshot: Callable[[], WatchSnapshot],
+        apply_changes: Callable[[WatchSnapshot, WatchSnapshot], dict[str, Any]],
+        interval_seconds: float = 2.0,
+    ) -> None:
+        self.take_snapshot = take_snapshot
+        self.apply_changes = apply_changes
         self.interval_seconds = interval_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        self._snapshot: dict[str, tuple[int, int]] = {}
-        self.last_rebuild_at: float | None = None
+        self._snapshot: WatchSnapshot | None = None
+        self.last_update_at: float | None = None
+        self.last_result: dict[str, Any] | None = None
         self.last_error: str | None = None
         self.change_count = 0
 
     def start(self) -> None:
         if self.is_running():
             return
-        self._snapshot = self._take_snapshot()
+        self._snapshot = self.take_snapshot()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="auto-index-watcher", daemon=True)
         self._thread.start()
@@ -43,39 +47,23 @@ class PollingWatcher:
             "running": self.is_running(),
             "interval_seconds": self.interval_seconds,
             "change_count": self.change_count,
-            "last_rebuild_at": self.last_rebuild_at,
+            "last_update_at": self.last_update_at,
+            "last_result": self.last_result,
             "last_error": self.last_error,
         }
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval_seconds):
-            current = self._take_snapshot()
+            current = self.take_snapshot()
             if current == self._snapshot:
                 continue
-            self._snapshot = current
+            previous = self._snapshot
             self.change_count += 1
             try:
-                self.rebuild()
-                self.last_rebuild_at = time.time()
+                if previous is not None:
+                    self.last_result = self.apply_changes(previous, current)
+                self._snapshot = self.take_snapshot()
+                self.last_update_at = time.time()
                 self.last_error = None
             except Exception as exc:
                 self.last_error = str(exc)
-
-    def _take_snapshot(self) -> dict[str, tuple[int, int]]:
-        scan = SourceScanner(str(self.root)).scan()
-        snapshot: dict[str, tuple[int, int]] = {}
-        for record in scan.records:
-            snapshot[record.path] = (record.size, record.mtime_ns)
-        snapshot.update(self._child_index_snapshot())
-        return snapshot
-
-    def _child_index_snapshot(self) -> dict[str, tuple[int, int]]:
-        snapshot: dict[str, tuple[int, int]] = {}
-        for db_path in self.root.rglob(f"{INDEX_DIR_NAME}/{INDEX_DB_NAME}"):
-            try:
-                rel = db_path.resolve().relative_to(self.root).as_posix()
-                stat = db_path.stat()
-            except (OSError, ValueError):
-                continue
-            snapshot[f"child-index:{rel}"] = (stat.st_size, stat.st_mtime_ns)
-        return snapshot

@@ -20,9 +20,12 @@ def get_file_content(file_path: str) -> str:
 
 
 @mcp.tool()
-def auto_index_enable(root_path: str, rebuild: bool = True) -> dict[str, Any]:
+def auto_index_enable(root_path: str, rebuild: bool = True, auto_watch: bool = True) -> dict[str, Any]:
     """Enable persistent code auto-indexing and optionally rebuild immediately."""
-    return _service.enable(root_path, rebuild)
+    result = _service.enable(root_path, rebuild)
+    if auto_watch:
+        result["watcher"] = _service.start_watcher()
+    return result
 
 
 @mcp.tool()
@@ -153,7 +156,9 @@ def auto_index_diff_filesystem() -> dict[str, Any]:
 @mcp.tool()
 def set_project_path(path: str) -> str:
     """Compatibility tool: initialize indexing for a project directory."""
-    return _compat.set_project_path(path)
+    result = _compat.set_project_path(path)
+    _service.start_watcher()
+    return f"{result} Auto-refresh is running."
 
 
 @mcp.tool()
@@ -266,6 +271,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Auto Index MCP server")
     parser.add_argument("--project-path", default=None)
     parser.add_argument("--no-rebuild", action="store_true")
+    parser.add_argument("--no-watch", action="store_true")
     parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
     parser.add_argument("--port", type=int, default=8000)
     return parser.parse_args()
@@ -275,6 +281,8 @@ def main() -> None:
     args = _parse_args()
     if args.project_path:
         _service.enable(args.project_path, rebuild=not args.no_rebuild)
+        if not args.no_watch:
+            _service.start_watcher()
     if args.transport != "stdio":
         mcp.settings.port = args.port
     mcp.run(transport=args.transport)

@@ -24,12 +24,12 @@
 | Feature | Description |
 |:-----|:-----|
 | **Persistent Index** | Stores file, symbol, import, and metadata records in SQLite. |
-| **Incremental Rebuild** | Reuses unchanged file records during rebuilds to reduce indexing cost. |
+| **Incremental Updates** | Applies ordinary file add, modify, and delete changes without full rebuilds. |
 | **Nested Workspaces** | Detects child project indexes and links them instead of duplicating child records. |
 | **Low-Context Navigation** | Exposes overview, tree, query, get, resolve, and filesystem diff tools. |
 | **Symbol Indexing** | Extracts Python AST symbols and lightweight JavaScript/TypeScript/generic symbols. |
 | **Code Search** | Uses ripgrep when available plus indexed-file fallback for nested databases. |
-| **Watcher** | Provides standard-library polling refresh for active projects. |
+| **Watcher** | Uses lightweight stat snapshots, precise file rewrites, and structural rebuild only when child workspace boundaries change. |
 | **Compatibility Layer** | Provides familiar file, symbol, search, watcher, and settings tool aliases. |
 | **MCP Resource** | Exposes `files://{file_path}` content access for indexed projects. |
 
@@ -52,7 +52,7 @@
 | **Search** | `auto_index_symbol_search()` | Search indexed symbols by name, signature, or kind. |
 | **Search** | `auto_index_symbol_body()` | Return the source body of one indexed symbol. |
 | **Drift Check** | `auto_index_diff_filesystem()` | Compare the persisted index with current filesystem state. |
-| **Watcher** | `auto_index_watcher_start()` | Start polling auto-refresh for the active project. |
+| **Watcher** | `auto_index_watcher_start()` | Start lightweight polling auto-refresh for the active project. |
 | **Watcher** | `auto_index_watcher_status()` | Report watcher runtime state. |
 | **Compatibility** | `set_project_path()` | Initialize indexing using a familiar project setup tool name. |
 | **Compatibility** | `find_files()` | Find indexed files by glob or filename. |
@@ -81,6 +81,17 @@ to deeper databases without duplicating records.
 
 ---
 
+## Auto Refresh Design
+
+| Change Type | Behavior |
+|:-----|:-----|
+| **File add/modify/delete** | Watcher compares lightweight path, size, and mtime snapshots, then rewrites only affected file records and dependent `called_by` metadata. |
+| **Child index added/deleted** | Parent performs one structural rebuild so the new child boundary is linked or removed and duplicated subtree records are slimmed out. |
+| **Child index modified** | Parent refreshes child-link metadata and keeps source records untouched. |
+| **SQLite WAL changes** | Child database fingerprints include `index.db`, `index.db-wal`, and `index.db-shm` so parent refresh does not miss committed child updates. |
+
+---
+
 ## Directory Structure
 
 ```
@@ -100,7 +111,8 @@ auto-index-mcp/
 |       |-- __main__.py
 |       `-- server.py
 |-- tests/
-|   `-- test_auto_index_service.py
+|   |-- test_auto_index_service.py
+|   `-- test_watcher_updates.py
 |-- fastmcp.json
 |-- install_windows.bat
 |-- pyproject.toml
@@ -136,6 +148,9 @@ python -m auto_index_mcp.server --project-path /path/to/project
 ```bash
 auto-index-mcp --project-path /path/to/project
 ```
+
+`--project-path` starts auto-refresh by default. Use `--no-watch` for scripts
+or one-shot validation runs that should not keep a watcher thread active.
 
 ---
 

@@ -9,8 +9,10 @@ from .config import project_index_root
 from .workspace_view import WorkspaceView
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.scanner import SourceScanner
+from ..indexing.snapshot import take_watch_snapshot
 from ..search.backend import search_text
 from ..indexing.store import IndexStore
+from ..indexing.updater import IndexUpdater
 from ..indexing.watcher import PollingWatcher
 from ..indexing.workspace import child_indexes_to_dicts, discover_child_indexes
 
@@ -111,7 +113,9 @@ class AutoIndexService:
             raise ValueError("interval_seconds must be >= 0.25")
         if self.watcher:
             self.watcher.stop()
-        self.watcher = PollingWatcher(self.root_path, self.rebuild, interval_seconds)
+        children = lambda: [Path(child["root"]) for child in self.store.child_indexes()]
+        snapshot = lambda: take_watch_snapshot(self.root_path, children(), self.store.db_path)
+        self.watcher = PollingWatcher(snapshot, IndexUpdater(self.root_path, self.store, self.rebuild).apply, interval_seconds)
         self.watcher.start()
         return self.watcher_status()
 

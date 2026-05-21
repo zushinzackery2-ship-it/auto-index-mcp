@@ -89,6 +89,12 @@ class SourceScanner:
             return True
         return any(part in DEFAULT_EXCLUDE_DIRS for part in resolved.parts)
 
+    def read_path(self, path: Path) -> FileRecord:
+        path = path.resolve()
+        if self._should_skip(path):
+            raise ValueError(f"path is not indexable: {self._relative(path)}")
+        return self._read_record(path)
+
     def _read_record(self, path: Path) -> FileRecord:
         data = path.read_bytes()
         text = data.decode("utf-8")
