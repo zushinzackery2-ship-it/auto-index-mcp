@@ -254,6 +254,40 @@ def test_watcher_refreshes_index(tmp_path: Path) -> None:
         service.stop_watcher()
 
 
+def test_watcher_slims_parent_when_child_index_appears(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    child = project / "child"
+    child.mkdir(parents=True)
+    (project / "root.py").write_text("def root_only():\n    return True\n", encoding="utf-8")
+    (child / "child.py").write_text("def child_only():\n    return True\n", encoding="utf-8")
+
+    parent_service = AutoIndexService()
+    parent_service.enable(str(project), rebuild=True)
+
+    assert parent_service.status()["file_count"] == 2
+    assert [item["path"] for item in parent_service.store.all_files()] == ["child/child.py", "root.py"]
+
+    parent_service.start_watcher(interval_seconds=0.25)
+    try:
+        child_service = AutoIndexService()
+        child_service.enable(str(child), rebuild=True)
+
+        deadline = time.time() + 5
+        slimmed = False
+        while time.time() < deadline:
+            status = parent_service.status()
+            if status["file_count"] == 1 and status["child_index_count"] == 1:
+                slimmed = True
+                break
+            time.sleep(0.1)
+
+        assert slimmed
+        assert [item["path"] for item in parent_service.store.all_files()] == ["root.py"]
+        assert parent_service.resolve_path("child.py")["items"][0]["path"] == "child/child.py"
+    finally:
+        parent_service.stop_watcher()
+
+
 def test_invalid_root_rejected(tmp_path: Path) -> None:
     service = AutoIndexService(index_root=tmp_path / "index")
 

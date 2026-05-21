@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from .scanner import SourceScanner
+from .workspace import INDEX_DB_NAME, INDEX_DIR_NAME
 
 
 class PollingWatcher:
@@ -65,4 +66,16 @@ class PollingWatcher:
         snapshot: dict[str, tuple[int, int]] = {}
         for record in scan.records:
             snapshot[record.path] = (record.size, record.mtime_ns)
+        snapshot.update(self._child_index_snapshot())
+        return snapshot
+
+    def _child_index_snapshot(self) -> dict[str, tuple[int, int]]:
+        snapshot: dict[str, tuple[int, int]] = {}
+        for db_path in self.root.rglob(f"{INDEX_DIR_NAME}/{INDEX_DB_NAME}"):
+            try:
+                rel = db_path.resolve().relative_to(self.root).as_posix()
+                stat = db_path.stat()
+            except (OSError, ValueError):
+                continue
+            snapshot[f"child-index:{rel}"] = (stat.st_size, stat.st_mtime_ns)
         return snapshot
