@@ -28,7 +28,7 @@
 | **Nested Workspaces** | Detects child project indexes and links them instead of duplicating child records. |
 | **Low-Context Navigation** | Exposes overview, tree, query, get, resolve, and filesystem diff tools. |
 | **Symbol Indexing** | Extracts Python AST symbols and lightweight JavaScript/TypeScript/generic symbols. |
-| **Code Search** | Uses ripgrep when available, with a Python fallback search backend. |
+| **Code Search** | Uses ripgrep when available plus indexed-file fallback for nested databases. |
 | **Watcher** | Provides standard-library polling refresh for active projects. |
 | **Compatibility Layer** | Provides familiar file, symbol, search, watcher, and settings tool aliases. |
 | **MCP Resource** | Exposes `files://{file_path}` content access for indexed projects. |
@@ -75,7 +75,9 @@ The `.auto-index-mcp` directory is excluded from scanning and ignored by git.
 If a parent project contains a child directory that already has its own
 `.auto-index-mcp/index.db`, the parent index stores a child-link record and
 skips duplicating that subtree. Navigation and search tools aggregate parent
-records with linked child indexes.
+records with linked child indexes. Nested child indexes are resolved
+recursively, so a parent can link to a child database and that child can link
+to deeper databases without duplicating records.
 
 ---
 

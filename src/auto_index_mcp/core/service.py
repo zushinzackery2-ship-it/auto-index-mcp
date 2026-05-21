@@ -210,9 +210,7 @@ class AutoIndexService:
         if len(matches) > 1:
             return {"format": "auto_index_symbol_body_ambiguous", "candidates": matches}
         symbol = matches[0]
-        source_root = Path(lookup.child["root"]) if lookup.child else self.root_path
-        source_path = lookup.child_path if lookup.child else path
-        lines = (source_root / source_path).read_text(encoding="utf-8").splitlines()
+        lines = self.view.read_indexed_text(self.root_path, lookup.item).splitlines()
         start = max(1, symbol["line"])
         end = min(len(lines), symbol["end_line"])
         code = "\n".join(lines[start - 1:end])

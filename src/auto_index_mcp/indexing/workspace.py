@@ -74,10 +74,22 @@ def _read_child_index(root: Path, child_root: Path, db_path: Path) -> ChildIndex
         path=rel,
         root=str(child_root),
         db_path=str(db_path),
-        file_count=int(metadata.get("file_count") or 0),
+        file_count=_read_total_file_count(db_path, set()),
         updated_at=metadata.get("updated_at"),
         version=int(version),
     )
+
+
+def _read_total_file_count(db_path: Path, visited: set[Path]) -> int:
+    db_path = db_path.resolve()
+    if db_path in visited:
+        return 0
+    visited.add(db_path)
+    metadata = _read_metadata(db_path)
+    total = int(metadata.get("file_count") or 0)
+    for child in _read_child_rows(db_path):
+        total += _read_total_file_count(Path(child["db_path"]), visited)
+    return total
 
 
 def _read_metadata(db_path: Path) -> dict[str, Any]:
@@ -90,6 +102,16 @@ def _read_metadata(db_path: Path) -> dict[str, Any]:
         return {key: json.loads(value) for key, value in rows}
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
+
+
+def _read_child_rows(db_path: Path) -> list[dict[str, Any]]:
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT db_path FROM child_indexes ORDER BY path").fetchall()
+    except (OSError, sqlite3.DatabaseError):
+        return []
+    return [dict(row) for row in rows]
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

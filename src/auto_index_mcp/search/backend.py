@@ -16,12 +16,14 @@ def search_text(
     limit: int,
     file_pattern: str | None = None,
 ) -> tuple[str, list[dict]]:
+    if any("source_root" in item for item in files):
+        return "indexed-files", _python_search(root, files, pattern, case_sensitive, regex, limit, file_pattern)
     allowed = {item["path"] for item in files}
     if shutil.which("rg"):
         result = _ripgrep(root, pattern, case_sensitive, regex, limit, file_pattern, allowed)
         if result is not None:
             return "ripgrep", result
-    return "python", _python_search(root, files, pattern, case_sensitive, regex, limit, file_pattern)
+    return "indexed-files", _python_search(root, files, pattern, case_sensitive, regex, limit, file_pattern)
 
 
 def _ripgrep(
@@ -73,8 +75,8 @@ def _python_search(
         if file_pattern and not (fnmatch.fnmatch(item["path"], file_pattern) or fnmatch.fnmatch(Path(item["path"]).name, file_pattern)):
             continue
         try:
-            lines = (root / item["path"]).read_text(encoding="utf-8").splitlines()
-        except UnicodeDecodeError:
+            lines = _source_path(root, item).read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
             continue
         for line_number, line in enumerate(lines, start=1):
             if compiled.search(line):
@@ -82,6 +84,11 @@ def _python_search(
                 if len(matches) >= limit:
                     return matches
     return matches
+
+
+def _source_path(root: Path, item: dict) -> Path:
+    source_root = Path(item.get("source_root") or root)
+    return source_root / item.get("source_path", item["path"])
 
 
 def _parse_rg_line(root: Path, line: str) -> dict | None:
