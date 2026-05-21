@@ -74,27 +74,44 @@ class IndexStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path)")
             conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS child_indexes (
+                    path TEXT PRIMARY KEY,
+                    root TEXT NOT NULL,
+                    db_path TEXT NOT NULL,
+                    file_count INTEGER NOT NULL,
+                    updated_at REAL,
+                    version INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(path UNINDEXED, name, parent, language, symbols, imports, snippet)"
             )
             self.set_metadata(conn, "version", INDEX_VERSION)
 
-    def replace_all(self, root: str, records: list[FileRecord]) -> None:
+    def replace_all(self, root: str, records: list[FileRecord], child_indexes: list[dict[str, Any]] | None = None) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM files")
             conn.execute("DELETE FROM symbols")
             conn.execute("DELETE FROM file_fts")
+            conn.execute("DELETE FROM child_indexes")
             self._insert_many(conn, records)
+            self._insert_child_indexes(conn, child_indexes or [])
             self.set_metadata(conn, "root", root)
             self.set_metadata(conn, "updated_at", time.time())
             self.set_metadata(conn, "file_count", len(records))
+            self.set_metadata(conn, "child_index_count", len(child_indexes or []))
 
     def clear(self) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM files")
             conn.execute("DELETE FROM symbols")
             conn.execute("DELETE FROM file_fts")
+            conn.execute("DELETE FROM child_indexes")
             self.set_metadata(conn, "updated_at", None)
             self.set_metadata(conn, "file_count", 0)
+            self.set_metadata(conn, "child_index_count", 0)
 
     def delete_file(self) -> None:
         if self.db_path.exists():
@@ -114,6 +131,11 @@ class IndexStore:
         with self.connect() as conn:
             rows = conn.execute("SELECT * FROM files ORDER BY path").fetchall()
         return [self._row_to_dict(row) for row in rows]
+
+    def child_indexes(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM child_indexes ORDER BY path").fetchall()
+        return [dict(row) for row in rows]
 
     def query_symbols(self, text: str, kind: str, limit: int, offset: int) -> list[dict[str, Any]]:
         where: list[str] = []
@@ -197,6 +219,20 @@ class IndexStore:
             conn.execute(
                 "INSERT INTO file_fts VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (record.path, record.name, record.parent, record.language, " ".join(symbol.name for symbol in record.symbols), " ".join(record.imports), record.snippet),
+            )
+
+    def _insert_child_indexes(self, conn: sqlite3.Connection, children: list[dict[str, Any]]) -> None:
+        for child in children:
+            conn.execute(
+                "INSERT INTO child_indexes VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    child["path"],
+                    child["root"],
+                    child["db_path"],
+                    child["file_count"],
+                    child["updated_at"],
+                    child["version"],
+                ),
             )
 
     def set_metadata(self, conn: sqlite3.Connection, key: str, value: Any) -> None:

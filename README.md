@@ -25,6 +25,7 @@
 |:-----|:-----|
 | **Persistent Index** | Stores file, symbol, import, and metadata records in SQLite. |
 | **Incremental Rebuild** | Reuses unchanged file records during rebuilds to reduce indexing cost. |
+| **Nested Workspaces** | Detects child project indexes and links them instead of duplicating child records. |
 | **Low-Context Navigation** | Exposes overview, tree, query, get, resolve, and filesystem diff tools. |
 | **Symbol Indexing** | Extracts Python AST symbols and lightweight JavaScript/TypeScript/generic symbols. |
 | **Code Search** | Uses ripgrep when available, with a Python fallback search backend. |
@@ -70,6 +71,11 @@ Each project stores its SQLite index inside the configured project root:
 ```
 
 The `.auto-index-mcp` directory is excluded from scanning and ignored by git.
+
+If a parent project contains a child directory that already has its own
+`.auto-index-mcp/index.db`, the parent index stores a child-link record and
+skips duplicating that subtree. Navigation and search tools aggregate parent
+records with linked child indexes.
 
 ---
 

@@ -26,7 +26,7 @@ class CompatService:
     def find_files(self, pattern: str) -> list[str]:
         self.service._require_store()
         matches = []
-        for item in self.service.store.all_files():
+        for item in self.service.all_files():
             path = item["path"]
             if Path(path).match(pattern) or Path(path).name == pattern:
                 matches.append(path)

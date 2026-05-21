@@ -151,6 +151,35 @@ def test_cross_file_called_by(tmp_path: Path) -> None:
     assert "a.py::run" in helper["called_by"]
 
 
+def test_parent_workspace_reuses_child_index(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    child = project / "child"
+    child.mkdir(parents=True)
+    (project / "root.py").write_text("def root_only():\n    return True\n", encoding="utf-8")
+    (child / "child.py").write_text("def child_only():\n    return True\n", encoding="utf-8")
+
+    child_service = AutoIndexService()
+    child_result = child_service.enable(str(child), rebuild=True)
+
+    parent_service = AutoIndexService()
+    parent_result = parent_service.enable(str(project), rebuild=True)
+
+    assert child_result["index_path"] == str(child / ".auto-index-mcp" / "index.db")
+    assert parent_result["file_count"] == 1
+    assert parent_result["total_file_count"] == 2
+    assert parent_result["child_index_count"] == 1
+    assert parent_service.store.all_files()[0]["path"] == "root.py"
+
+    files = [item["path"] for item in parent_service.all_files()]
+    assert files == ["child/child.py", "root.py"]
+    assert parent_service.resolve_path("child.py")["items"][0]["path"] == "child/child.py"
+    assert parent_service.file_summary("child/child.py")["symbols"][0]["name"] == "child_only"
+    assert parent_service.symbol_body("child/child.py", "child_only")["code"].startswith("def child_only")
+    assert parent_service.file_content("child/child.py").startswith("def child_only")
+    assert parent_service.text_search("child_only")["items"][0]["path"] == "child/child.py"
+    assert parent_service.diff_filesystem()["deleted"] == []
+
+
 def test_text_search_supports_literal_and_regex(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

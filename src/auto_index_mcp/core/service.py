@@ -6,11 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from .config import project_index_root
+from .workspace_view import WorkspaceView
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.scanner import SourceScanner
 from ..search.backend import search_text
 from ..indexing.store import IndexStore
 from ..indexing.watcher import PollingWatcher
+from ..indexing.workspace import child_indexes_to_dicts, discover_child_indexes
 
 
 class AutoIndexService:
@@ -22,6 +24,16 @@ class AutoIndexService:
         self.last_errors: list[str] = []
         self.store: IndexStore | None = None
         self.watcher: PollingWatcher | None = None
+
+    @property
+    def file_count(self) -> int:
+        self._require_store()
+        return len(self.view.all_files())
+
+    @property
+    def view(self) -> WorkspaceView:
+        self._require_store()
+        return WorkspaceView(self.store)
 
     def enable(self, root_path: str, rebuild: bool = True) -> dict[str, Any]:
         root = Path(root_path).resolve()
@@ -45,14 +57,18 @@ class AutoIndexService:
         self._require_ready()
         start = time.time()
         existing = {item["path"]: item for item in self.store.all_files()}
-        scan = SourceScanner(str(self.root_path), existing_records=existing).scan()
+        children = discover_child_indexes(self.root_path, self.store.db_path)
+        boundary_roots = [Path(child.root) for child in children]
+        scan = SourceScanner(str(self.root_path), existing_records=existing, boundary_roots=boundary_roots).scan()
         records = resolve_project_callers(scan.records)
-        self.store.replace_all(scan.root, records)
+        self.store.replace_all(scan.root, records, child_indexes_to_dicts(children))
         self.last_errors = scan.errors[:50]
         return {
             "status": "indexed",
             "root": scan.root,
             "file_count": len(records),
+            "total_file_count": len(records) + sum(child.file_count for child in children),
+            "child_index_count": len(children),
             "skipped": scan.skipped,
             "reused": scan.reused,
             "error_count": len(scan.errors),
@@ -67,6 +83,8 @@ class AutoIndexService:
             "root": str(self.root_path) if self.root_path else None,
             "index_path": str(self.store.db_path) if self.store else None,
             "file_count": meta.get("file_count", 0),
+            "total_file_count": (meta.get("file_count", 0) + sum(child["file_count"] for child in self.store.child_indexes())) if self.store else 0,
+            "child_index_count": meta.get("child_index_count", 0),
             "updated_at": meta.get("updated_at"),
             "last_error_count": len(self.last_errors),
             "last_errors": self.last_errors[:10],
@@ -110,7 +128,7 @@ class AutoIndexService:
 
     def overview(self, limit: int = 30) -> dict[str, Any]:
         self._require_store()
-        files = self.store.all_files()
+        files = self.view.all_files()
         languages = Counter(item["language"] for item in files)
         top_dirs = Counter((item["parent"].split("/")[0] if item["parent"] else ".") for item in files)
         return {
@@ -123,7 +141,7 @@ class AutoIndexService:
 
     def tree_get(self, root_path: str = "", depth: int = 2, limit: int = 120) -> dict[str, Any]:
         self._require_store()
-        files = self.store.all_files()
+        files = self.view.all_files()
         folders: dict[str, dict[str, Any]] = defaultdict(lambda: {"file_count": 0, "languages": Counter(), "samples": []})
         for item in files:
             if root_path and not item["path"].startswith(root_path.rstrip("/") + "/"):
@@ -143,7 +161,7 @@ class AutoIndexService:
     def query(self, text: str = "", languages: list[str] | None = None, parent: str = "", limit: int = 80, cursor: str | None = None) -> dict[str, Any]:
         self._require_store()
         offset = int(cursor or "0")
-        rows = self.store.query(text, languages or [], parent, limit, offset)
+        rows = self.view.query(text, languages or [], parent, limit, offset)
         next_cursor = str(offset + limit) if len(rows) == limit else None
         return {"format": "auto_index_query_indexed", "items": [self._compact(row) for row in rows], "cursor": next_cursor}
 
@@ -161,7 +179,7 @@ class AutoIndexService:
             raise ValueError("pattern is required")
         backend, matches = search_text(
             self.root_path,
-            self.store.all_files(),
+            self.view.all_files(),
             pattern,
             case_sensitive,
             regex,
@@ -175,7 +193,7 @@ class AutoIndexService:
     def symbol_search(self, text: str = "", kind: str = "", limit: int = 80, cursor: str | None = None) -> dict[str, Any]:
         self._require_store()
         offset = int(cursor or "0")
-        rows = self.store.query_symbols(text, kind, limit, offset)
+        rows = self.view.query_symbols(text, kind, limit, offset)
         next_cursor = str(offset + limit) if len(rows) == limit else None
         return {"format": "auto_index_symbol_search_indexed", "items": rows, "cursor": next_cursor}
 
@@ -183,16 +201,18 @@ class AutoIndexService:
         self._require_ready()
         if not path or not symbol_name:
             raise ValueError("path and symbol_name are required")
-        item = self.store.get_file(path)
-        if item is None:
+        lookup = self.view.get_file(path)
+        if lookup.item is None:
             raise KeyError(f"indexed file not found: {path}")
-        matches = [symbol for symbol in item["symbols"] if symbol["name"] == symbol_name]
+        matches = [symbol for symbol in lookup.item["symbols"] if symbol["name"] == symbol_name]
         if not matches:
             raise KeyError(f"symbol not found: {symbol_name}")
         if len(matches) > 1:
             return {"format": "auto_index_symbol_body_ambiguous", "candidates": matches}
         symbol = matches[0]
-        lines = (self.root_path / path).read_text(encoding="utf-8").splitlines()
+        source_root = Path(lookup.child["root"]) if lookup.child else self.root_path
+        source_path = lookup.child_path if lookup.child else path
+        lines = (source_root / source_path).read_text(encoding="utf-8").splitlines()
         start = max(1, symbol["line"])
         end = min(len(lines), symbol["end_line"])
         code = "\n".join(lines[start - 1:end])
@@ -200,16 +220,16 @@ class AutoIndexService:
 
     def file_summary(self, path: str) -> dict[str, Any]:
         self._require_store()
-        item = self.store.get_file(path)
-        if item is None:
+        lookup = self.view.get_file(path)
+        if lookup.item is None:
             raise KeyError(f"indexed file not found: {path}")
-        symbols = item["symbols"]
+        symbols = lookup.item["symbols"]
         return {
             "format": "auto_index_file_summary_full",
-            "path": item["path"],
-            "language": item["language"],
-            "line_count": item["line_count"],
-            "imports": item["imports"],
+            "path": lookup.item["path"],
+            "language": lookup.item["language"],
+            "line_count": lookup.item["line_count"],
+            "imports": lookup.item["imports"],
             "symbol_count": len(symbols),
             "symbols": symbols,
             "total_complexity": sum(symbol.get("complexity", 1) for symbol in symbols),
@@ -218,23 +238,20 @@ class AutoIndexService:
 
     def get(self, path: str) -> dict[str, Any]:
         self._require_store()
-        item = self.store.get_file(path)
-        if item is None:
+        lookup = self.view.get_file(path)
+        if lookup.item is None:
             raise KeyError(f"indexed file not found: {path}")
-        return {"format": "auto_index_get_full", "item": item}
+        return {"format": "auto_index_get_full", "item": lookup.item}
 
     def file_content(self, path: str) -> str:
         self._require_ready()
-        target = (self.root_path / path).resolve()
-        if not str(target).startswith(str(self.root_path)):
-            raise ValueError(f"path escapes project root: {path}")
-        return target.read_text(encoding="utf-8")
+        return self.view.read_text(self.root_path, path)
 
     def resolve_path(self, path: str, limit: int = 20) -> dict[str, Any]:
         self._require_store()
         needle = path.lower().replace("\\", "/")
         matches = []
-        for item in self.store.all_files():
+        for item in self.view.all_files():
             candidate = item["path"].lower()
             if candidate == needle or item["name"].lower() == needle or needle in candidate:
                 matches.append(self._compact(item))
@@ -244,13 +261,15 @@ class AutoIndexService:
 
     def diff_filesystem(self) -> dict[str, Any]:
         self._require_ready()
-        scan = SourceScanner(str(self.root_path)).scan()
-        indexed = {item["path"]: item for item in self.store.all_files()}
-        current = {item.path: item for item in scan.records}
-        added = sorted(set(current) - set(indexed))
-        deleted = sorted(set(indexed) - set(current))
-        changed = sorted(path for path in set(current) & set(indexed) if current[path].sha1 != indexed[path]["sha1"])
+        diff = self.view.diff_filesystem(self.root_path)
+        added = diff["added"]
+        deleted = diff["deleted"]
+        changed = diff["changed"]
         return {"format": "auto_index_diff_indexed", "added": added[:100], "deleted": deleted[:100], "changed": changed[:100], "added_count": len(added), "deleted_count": len(deleted), "changed_count": len(changed)}
+
+    def all_files(self) -> list[dict[str, Any]]:
+        self._require_store()
+        return self.view.all_files()
 
     def _compact(self, item: dict[str, Any]) -> dict[str, Any]:
         symbols = item["symbols"][:12]
@@ -260,14 +279,7 @@ class AutoIndexService:
     def _with_context(self, match: dict[str, Any], context_lines: int) -> dict[str, Any]:
         enriched = dict(match)
         try:
-            lines = (self.root_path / match["path"]).read_text(encoding="utf-8").splitlines()
-            line_index = match["line"] - 1
-            start = max(0, line_index - context_lines)
-            end = min(len(lines), line_index + context_lines + 1)
-            enriched["context"] = [
-                {"line": index + 1, "text": lines[index]}
-                for index in range(start, end)
-            ]
+            enriched["context"] = self.view.context_for_match(self.root_path, match, context_lines)
         except UnicodeDecodeError:
             enriched["context"] = []
         return enriched

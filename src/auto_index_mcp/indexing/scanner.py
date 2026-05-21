@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import os
 import re
 from pathlib import Path
 
@@ -25,11 +26,13 @@ class SourceScanner:
         extra_excludes: list[str] | None = None,
         max_bytes: int = 2_000_000,
         existing_records: dict[str, dict] | None = None,
+        boundary_roots: list[Path] | None = None,
     ) -> None:
         self.root = Path(root).resolve()
         self.extra_excludes = extra_excludes or []
         self.max_bytes = max_bytes
         self.existing_records = existing_records or {}
+        self.boundary_roots = [path.resolve() for path in boundary_roots or []]
 
     def scan(self) -> ScanResult:
         records: list[FileRecord] = []
@@ -37,9 +40,7 @@ class SourceScanner:
         skipped = 0
         reused = 0
 
-        for path in self.root.rglob("*"):
-            if not path.is_file():
-                continue
+        for path in self._iter_files():
             if self._should_skip(path):
                 skipped += 1
                 continue
@@ -57,6 +58,9 @@ class SourceScanner:
         return ScanResult(str(self.root), records, skipped, reused, errors)
 
     def _should_skip(self, path: Path) -> bool:
+        resolved = path.resolve()
+        if any(self._is_relative_to(resolved, root) for root in self.boundary_roots):
+            return True
         if any(part in DEFAULT_EXCLUDE_DIRS for part in path.parts):
             return True
         rel = self._relative(path)
@@ -66,6 +70,24 @@ class SourceScanner:
             return True
         patterns = list(DEFAULT_EXCLUDE_FILE_PATTERNS) + self.extra_excludes
         return any(fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(rel, pattern) for pattern in patterns)
+
+    def _iter_files(self) -> list[Path]:
+        files: list[Path] = []
+        for dir_path, dir_names, file_names in os.walk(self.root):
+            current = Path(dir_path)
+            dir_names[:] = [
+                name
+                for name in dir_names
+                if not self._should_skip_dir(current / name)
+            ]
+            files.extend(current / name for name in file_names)
+        return files
+
+    def _should_skip_dir(self, path: Path) -> bool:
+        resolved = path.resolve()
+        if any(self._is_relative_to(resolved, root) for root in self.boundary_roots):
+            return True
+        return any(part in DEFAULT_EXCLUDE_DIRS for part in resolved.parts)
 
     def _read_record(self, path: Path) -> FileRecord:
         data = path.read_bytes()
@@ -133,3 +155,10 @@ class SourceScanner:
 
     def _relative(self, path: Path) -> str:
         return str(path.resolve().relative_to(self.root)).replace("\\", "/")
+
+    def _is_relative_to(self, path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False

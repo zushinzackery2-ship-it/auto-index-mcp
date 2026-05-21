@@ -16,8 +16,9 @@ def search_text(
     limit: int,
     file_pattern: str | None = None,
 ) -> tuple[str, list[dict]]:
+    allowed = {item["path"] for item in files}
     if shutil.which("rg"):
-        result = _ripgrep(root, pattern, case_sensitive, regex, limit, file_pattern)
+        result = _ripgrep(root, pattern, case_sensitive, regex, limit, file_pattern, allowed)
         if result is not None:
             return "ripgrep", result
     return "python", _python_search(root, files, pattern, case_sensitive, regex, limit, file_pattern)
@@ -30,6 +31,7 @@ def _ripgrep(
     regex: bool,
     limit: int,
     file_pattern: str | None,
+    allowed: set[str],
 ) -> list[dict] | None:
     command = ["rg", "--line-number", "--with-filename", "--no-heading", "--color", "never"]
     if not regex:
@@ -48,7 +50,7 @@ def _ripgrep(
     matches = []
     for line in completed.stdout.splitlines():
         parsed = _parse_rg_line(root, line)
-        if parsed:
+        if parsed and parsed["path"] in allowed:
             matches.append(parsed)
         if len(matches) >= limit:
             break
