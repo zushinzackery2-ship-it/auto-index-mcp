@@ -214,6 +214,44 @@ def test_nested_child_indexes_recurse_from_each_child_database(tmp_path: Path) -
     assert parent_service.diff_filesystem()["changed"] == ["child/grandchild/deep.py"]
 
 
+def test_file_content_rejects_same_prefix_path_escape(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    sibling = tmp_path / "project-other"
+    project.mkdir()
+    sibling.mkdir()
+    (project / "main.py").write_text("print('inside')\n", encoding="utf-8")
+    (sibling / "secret.py").write_text("print('outside')\n", encoding="utf-8")
+
+    service = AutoIndexService()
+    service.enable(str(project), rebuild=True)
+
+    with pytest.raises(ValueError):
+        service.file_content("../project-other/secret.py")
+
+
+def test_missing_child_database_is_not_recreated_by_parent_view(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    child = project / "child"
+    child.mkdir(parents=True)
+    (project / "root.py").write_text("def root_only():\n    return True\n", encoding="utf-8")
+    (child / "child.py").write_text("def child_only():\n    return True\n", encoding="utf-8")
+
+    child_service = AutoIndexService()
+    child_result = child_service.enable(str(child), rebuild=True)
+    parent_service = AutoIndexService()
+    parent_service.enable(str(project), rebuild=True)
+
+    missing_db_path = Path(child_result["index_path"]).with_name("missing-index.db")
+    child_rows = parent_service.store.child_indexes()
+    child_rows[0]["db_path"] = str(missing_db_path)
+    parent_service.store.replace_child_indexes(child_rows)
+
+    files = [item["path"] for item in parent_service.all_files()]
+
+    assert files == ["root.py"]
+    assert not missing_db_path.exists()
+
+
 def test_text_search_supports_literal_and_regex(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

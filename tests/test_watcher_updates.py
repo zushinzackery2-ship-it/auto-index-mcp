@@ -18,6 +18,7 @@ def test_watcher_incrementally_updates_changed_file_without_rebuild(tmp_path: Pa
     try:
         status = service.watcher_status()
         assert status["mode"] == "filesystem-events"
+        assert status["ready"] is True
         assert status["debounce_seconds"] == 0.1
 
         source.write_text("def new_name():\n    return False\n", encoding="utf-8")

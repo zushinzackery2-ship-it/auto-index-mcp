@@ -8,7 +8,7 @@ from typing import Callable, Any
 from .analysis import resolve_project_callers
 from .scanner import SourceScanner
 from .snapshot import WatchSnapshot
-from .workspace import child_indexes_to_dicts, discover_child_indexes
+from ..workspace.discovery import child_indexes_to_dicts, discover_child_indexes
 from .store import IndexStore
 from ..core.models import FileRecord, SymbolRecord
 

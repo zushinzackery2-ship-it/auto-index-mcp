@@ -34,21 +34,30 @@ class FileEventWatcher:
         self.last_result: dict[str, Any] | None = None
         self.last_error: str | None = None
         self.change_count = 0
+        self.ready = False
 
     def start(self) -> None:
         if self.is_running():
             return
-        self._snapshot = self.take_snapshot()
-        self._stop.clear()
-        self._changed.clear()
-        self._ready.clear()
-        self._observer = Observer()
-        self._observer.schedule(_ChangeHandler(self._changed), str(self.root), recursive=True)
-        self._observer.start()
-        self._worker = threading.Thread(target=self._run, name="auto-index-watcher", daemon=True)
-        self._worker.start()
-        self._changed.set()
-        self._ready.wait(timeout=5.0)
+        try:
+            self.ready = False
+            self.last_error = None
+            self._snapshot = self.take_snapshot()
+            self._stop.clear()
+            self._changed.clear()
+            self._ready.clear()
+            self._observer = Observer()
+            self._observer.schedule(_ChangeHandler(self._changed), str(self.root), recursive=True)
+            self._observer.start()
+            self._worker = threading.Thread(target=self._run, name="auto-index-watcher", daemon=True)
+            self._worker.start()
+            self._changed.set()
+            if not self._ready.wait(timeout=5.0):
+                self.last_error = "watcher did not become ready within 5 seconds"
+                raise TimeoutError(self.last_error)
+        except Exception:
+            self.stop()
+            raise
 
     def stop(self) -> None:
         self._stop.set()
@@ -60,6 +69,7 @@ class FileEventWatcher:
             self._worker.join(timeout=5.0)
         self._observer = None
         self._worker = None
+        self.ready = False
 
     def is_running(self) -> bool:
         return self._worker is not None and self._worker.is_alive()
@@ -67,6 +77,7 @@ class FileEventWatcher:
     def status(self) -> dict[str, Any]:
         return {
             "running": self.is_running(),
+            "ready": self.ready,
             "mode": "filesystem-events",
             "debounce_seconds": self.debounce_seconds,
             "change_count": self.change_count,
@@ -89,6 +100,7 @@ class FileEventWatcher:
             try:
                 current = self._settled_snapshot()
                 if current == self._snapshot:
+                    self.ready = True
                     return
                 previous = self._snapshot
                 self.change_count += 1
@@ -97,6 +109,7 @@ class FileEventWatcher:
                 self._snapshot = self.take_snapshot()
                 self.last_update_at = time.time()
                 self.last_error = None
+                self.ready = True
             except Exception as exc:
                 self.last_error = str(exc)
             finally:

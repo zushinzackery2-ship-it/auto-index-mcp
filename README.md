@@ -62,6 +62,20 @@
 
 ---
 
+## 设计边界
+
+| 模块 | 职责 |
+|:-----|:-----|
+| `core/` | 对外服务编排、状态管理、生命周期入口。 |
+| `indexing/` | 扫描、SQLite 存储、增量更新、watcher、轻量快照。 |
+| `workspace/` | 嵌套工作区发现、父子索引聚合、路径安全检查。 |
+| `languages/` | Python、JavaScript/TypeScript 和通用文本符号提取。 |
+| `search/` | ripgrep/Python fallback 搜索后端。 |
+| `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、兼容入口拆分。 |
+| `compatibility/` | 常见兼容工具名和返回格式适配。 |
+
+---
+
 ## 索引存储
 
 每个项目的 SQLite 索引默认放在项目根目录内：
@@ -105,6 +119,7 @@ auto-index-mcp/
 |       |-- languages/
 |       |-- mcp_api/
 |       |-- search/
+|       |-- workspace/
 |       |-- __main__.py
 |       `-- server.py
 |-- tests/
@@ -180,6 +195,10 @@ python -m pytest -q
 
 ```bash
 python scripts/smoke_auto_index.py
+```
+
+```bash
+python scripts/verify_mcp_stdio.py
 ```
 
 ---

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import DEFAULT_WATCH_DEBOUNCE_SECONDS, project_index_root
-from .workspace_view import WorkspaceView
+from ..workspace.view import WorkspaceView
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.scanner import SourceScanner
 from ..indexing.snapshot import take_watch_snapshot
@@ -14,7 +14,7 @@ from ..search.backend import search_text
 from ..indexing.store import IndexStore
 from ..indexing.updater import IndexUpdater
 from ..indexing.watcher import FileEventWatcher
-from ..indexing.workspace import child_indexes_to_dicts, discover_child_indexes
+from ..workspace.discovery import child_indexes_to_dicts, discover_child_indexes
 
 
 class AutoIndexService:

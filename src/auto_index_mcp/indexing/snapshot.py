@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..core.config import DEFAULT_EXCLUDE_DIRS, TEXT_EXTENSIONS
-from .workspace import INDEX_DB_NAME, INDEX_DIR_NAME
+from ..workspace.discovery import INDEX_DB_NAME, INDEX_DIR_NAME
 
 
 @dataclass(frozen=True)
