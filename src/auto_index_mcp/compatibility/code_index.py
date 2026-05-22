@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..core.config import DEFAULT_WATCH_DEBOUNCE_SECONDS
 from ..core.service import AutoIndexService
 
 
@@ -132,7 +133,7 @@ class CompatService:
             self.service.stop_watcher()
             return "File watcher disabled."
         if enabled is True:
-            self.service.start_watcher(debounce_seconds or 2.0)
+            self.service.start_watcher(debounce_seconds or DEFAULT_WATCH_DEBOUNCE_SECONDS)
             return "File watcher enabled."
         return "File watcher configuration unchanged."
 

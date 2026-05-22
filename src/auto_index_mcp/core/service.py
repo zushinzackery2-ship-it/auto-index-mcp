@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from .config import project_index_root
+from .config import DEFAULT_WATCH_DEBOUNCE_SECONDS, project_index_root
 from .workspace_view import WorkspaceView
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.scanner import SourceScanner
@@ -13,7 +13,7 @@ from ..indexing.snapshot import take_watch_snapshot
 from ..search.backend import search_text
 from ..indexing.store import IndexStore
 from ..indexing.updater import IndexUpdater
-from ..indexing.watcher import PollingWatcher
+from ..indexing.watcher import FileEventWatcher
 from ..indexing.workspace import child_indexes_to_dicts, discover_child_indexes
 
 
@@ -25,7 +25,7 @@ class AutoIndexService:
         self.enabled = False
         self.last_errors: list[str] = []
         self.store: IndexStore | None = None
-        self.watcher: PollingWatcher | None = None
+        self.watcher: FileEventWatcher | None = None
 
     @property
     def file_count(self) -> int:
@@ -107,15 +107,15 @@ class AutoIndexService:
         self._require_store()
         return {"status": "flushed", "index_path": str(self.store.db_path)}
 
-    def start_watcher(self, interval_seconds: float = 2.0) -> dict[str, Any]:
+    def start_watcher(self, debounce_seconds: float = DEFAULT_WATCH_DEBOUNCE_SECONDS) -> dict[str, Any]:
         self._require_ready()
-        if interval_seconds < 0.25:
-            raise ValueError("interval_seconds must be >= 0.25")
+        if debounce_seconds < 0.05:
+            raise ValueError("debounce_seconds must be >= 0.05")
         if self.watcher:
             self.watcher.stop()
         children = lambda: [Path(child["root"]) for child in self.store.child_indexes()]
         snapshot = lambda: take_watch_snapshot(self.root_path, children(), self.store.db_path)
-        self.watcher = PollingWatcher(snapshot, IndexUpdater(self.root_path, self.store, self.rebuild).apply, interval_seconds)
+        self.watcher = FileEventWatcher(self.root_path, snapshot, IndexUpdater(self.root_path, self.store, self.rebuild).apply, debounce_seconds)
         self.watcher.start()
         return self.watcher_status()
 

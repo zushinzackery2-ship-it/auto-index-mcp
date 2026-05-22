@@ -2,9 +2,9 @@
 
 # auto-index-mcp
 
-**Persistent MCP codebase indexer for low-context agent navigation**
+**面向编码 Agent 的持久化 MCP 代码索引器**
 
-*SQLite-backed auto-indexing, low-context navigation tools, and symbol-aware search for coding agents*
+*SQLite 持久索引、低上下文代码导航、符号级搜索、事件驱动自动更新*
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square)
 ![MCP](https://img.shields.io/badge/MCP-Compatible-green?style=flat-square)
@@ -16,83 +16,80 @@
 ---
 
 > [!NOTE]
-> **Repository Boundary**  
-> This repository contains the standalone `auto-index-mcp` server only. It does not depend on sibling workspaces or local-only project files.
+> **仓库边界**
+> 本仓库只包含独立的 `auto-index-mcp` 服务端，不依赖同级工作区或本机私有项目文件。
 
-## Feature Overview
+## 功能概览
 
-| Feature | Description |
+| 功能 | 说明 |
 |:-----|:-----|
-| **Persistent Index** | Stores file, symbol, import, and metadata records in SQLite. |
-| **Incremental Updates** | Applies ordinary file add, modify, and delete changes without full rebuilds. |
-| **Nested Workspaces** | Detects child project indexes and links them instead of duplicating child records. |
-| **Low-Context Navigation** | Exposes overview, tree, query, get, resolve, and filesystem diff tools. |
-| **Symbol Indexing** | Extracts Python AST symbols and lightweight JavaScript/TypeScript/generic symbols. |
-| **Code Search** | Uses ripgrep when available plus indexed-file fallback for nested databases. |
-| **Watcher** | Uses lightweight stat snapshots, precise file rewrites, and structural rebuild only when child workspace boundaries change. |
-| **Compatibility Layer** | Provides familiar file, symbol, search, watcher, and settings tool aliases. |
-| **MCP Resource** | Exposes `files://{file_path}` content access for indexed projects. |
+| **持久索引** | 将文件、符号、import、元数据写入 SQLite，MCP 进程重启后仍可复用。 |
+| **精确增量更新** | 普通文件新增、修改、删除只更新受影响记录，不做整库重建。 |
+| **嵌套工作区** | 父目录发现子目录已有索引库时只挂链接，不重复维护子目录数据。 |
+| **低上下文导航** | 提供 overview、tree、query、get、resolve、diff 等轻量工具。 |
+| **符号索引** | 支持 Python AST 符号，JavaScript/TypeScript/通用文本轻量符号提取。 |
+| **代码搜索** | 优先使用 ripgrep；遇到嵌套数据库时使用索引文件集合回退搜索。 |
+| **自动刷新** | 使用系统文件变更事件触发，短 debounce 合并连续变更，再做轻量快照比对。 |
+| **兼容工具名** | 保留常用文件查找、摘要、符号体、代码搜索、watcher/settings 等兼容入口。 |
+| **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
 
 ---
 
-## Core API
+## 核心 API
 
-| Category | API | Description |
+| 分类 | API | 说明 |
 |:-----|:----|:-----|
-| **Lifecycle** | `auto_index_enable()` | Configure a project root and optionally rebuild the index. |
-| **Lifecycle** | `auto_index_status()` | Return root, index path, counts, update time, and recent errors. |
-| **Lifecycle** | `auto_index_rebuild()` | Force a full scan and persistent index rewrite. |
-| **Lifecycle** | `auto_index_clear()` | Clear index data and optionally remove the SQLite file. |
-| **Navigation** | `auto_index_overview()` | Return compact language, directory, and sample-file overview. |
-| **Navigation** | `auto_index_tree_get()` | Return compact folder summaries with language mix and samples. |
-| **Navigation** | `auto_index_query()` | Query indexed files by text, language, parent path, and cursor. |
-| **Navigation** | `auto_index_get()` | Return one indexed file record. |
-| **Navigation** | `auto_index_resolve_path()` | Resolve fuzzy filenames or paths into indexed candidates. |
-| **Search** | `auto_index_text_search()` | Search source text with literal or regex matching. |
-| **Search** | `auto_index_symbol_search()` | Search indexed symbols by name, signature, or kind. |
-| **Search** | `auto_index_symbol_body()` | Return the source body of one indexed symbol. |
-| **Drift Check** | `auto_index_diff_filesystem()` | Compare the persisted index with current filesystem state. |
-| **Watcher** | `auto_index_watcher_start()` | Start lightweight polling auto-refresh for the active project. |
-| **Watcher** | `auto_index_watcher_status()` | Report watcher runtime state. |
-| **Compatibility** | `set_project_path()` | Initialize indexing using a familiar project setup tool name. |
-| **Compatibility** | `find_files()` | Find indexed files by glob or filename. |
-| **Compatibility** | `get_file_summary()` | Return imports, symbols, and complexity metrics for one file. |
-| **Compatibility** | `get_symbol_body()` | Return one symbol body using the compatible tool contract. |
-| **Compatibility** | `search_code_advanced()` | Search code with file patterns, regex, context, pagination, and fuzzy mode. |
+| **生命周期** | `auto_index_enable()` | 设置项目根目录，可选择立即重建索引。 |
+| **生命周期** | `auto_index_status()` | 返回根目录、索引库路径、文件数量、更新时间、最近错误。 |
+| **生命周期** | `auto_index_rebuild()` | 强制全量扫描并重写持久索引。 |
+| **生命周期** | `auto_index_clear()` | 清空索引数据，可选择删除 SQLite 文件。 |
+| **导航** | `auto_index_overview()` | 返回语言分布、目录分布、样例文件等紧凑概览。 |
+| **导航** | `auto_index_tree_get()` | 返回目录级摘要、语言构成和样例文件。 |
+| **导航** | `auto_index_query()` | 按文本、语言、父目录和游标查询索引文件。 |
+| **导航** | `auto_index_get()` | 返回单个索引文件记录。 |
+| **导航** | `auto_index_resolve_path()` | 按文件名或路径片段解析候选文件。 |
+| **搜索** | `auto_index_text_search()` | 对源码进行 literal 或 regex 搜索。 |
+| **搜索** | `auto_index_symbol_search()` | 按名称、签名、类型搜索符号。 |
+| **搜索** | `auto_index_symbol_body()` | 返回指定符号的源码片段。 |
+| **漂移检查** | `auto_index_diff_filesystem()` | 对比索引与当前文件系统的新增、删除、变化。 |
+| **自动刷新** | `auto_index_watcher_start()` | 启动文件系统事件驱动的自动刷新。 |
+| **自动刷新** | `auto_index_watcher_status()` | 查看 watcher 运行状态、触发次数、最近结果。 |
+| **兼容入口** | `set_project_path()` | 用常见项目设置工具名初始化索引。 |
+| **兼容入口** | `find_files()` | 按 glob 或文件名查找索引文件。 |
+| **兼容入口** | `get_file_summary()` | 返回单文件 import、符号和复杂度摘要。 |
+| **兼容入口** | `get_symbol_body()` | 按兼容格式返回符号源码体。 |
+| **兼容入口** | `search_code_advanced()` | 支持文件过滤、regex、上下文、分页和 fuzzy 搜索。 |
 
 ---
 
-## Index Storage
+## 索引存储
 
-Each project stores its SQLite index inside the configured project root:
+每个项目的 SQLite 索引默认放在项目根目录内：
 
 ```text
 <project>/.auto-index-mcp/index.db
 ```
 
-The `.auto-index-mcp` directory is excluded from scanning and ignored by git.
+`.auto-index-mcp` 会被扫描器排除，也已经写入 `.gitignore`。
 
-If a parent project contains a child directory that already has its own
-`.auto-index-mcp/index.db`, the parent index stores a child-link record and
-skips duplicating that subtree. Navigation and search tools aggregate parent
-records with linked child indexes. Nested child indexes are resolved
-recursively, so a parent can link to a child database and that child can link
-to deeper databases without duplicating records.
+如果父项目包含一个已经有 `.auto-index-mcp/index.db` 的子目录，父索引只保存子库链接，并跳过对子目录源码的重复索引。导航、搜索、摘要、符号体读取会聚合父库和子库。多层嵌套按每层数据库递归展开，并通过 visited db path 避免循环引用。
 
 ---
 
-## Auto Refresh Design
+## 自动刷新设计
 
-| Change Type | Behavior |
+| 变更类型 | 行为 |
 |:-----|:-----|
-| **File add/modify/delete** | Watcher compares lightweight path, size, and mtime snapshots, then rewrites only affected file records and dependent `called_by` metadata. |
-| **Child index added/deleted** | Parent performs one structural rebuild so the new child boundary is linked or removed and duplicated subtree records are slimmed out. |
-| **Child index modified** | Parent refreshes child-link metadata and keeps source records untouched. |
-| **SQLite WAL changes** | Child database fingerprints include `index.db`, `index.db-wal`, and `index.db-shm` so parent refresh does not miss committed child updates. |
+| **普通文件新增/修改/删除** | 文件系统事件唤醒 watcher，debounce 合并连续变更，再用轻量快照定位变化路径，只重写受影响文件和相关 `called_by` 元数据。 |
+| **子索引新增/删除** | 父库执行一次结构重建，挂接或移除子库边界，并自动瘦身重复的子目录记录。 |
+| **子索引内容变化** | 父库只刷新 child link metadata，不重写父库源码记录。 |
+| **SQLite WAL 更新** | 子库指纹同时覆盖 `index.db`、`index.db-wal`、`index.db-shm`，避免漏掉 WAL 模式下的子库提交。 |
+
+当前 watcher 不是固定每隔几秒扫一次目录，而是由系统文件变更事件触发。默认 debounce 为 0.25 秒，只用于合并连续保存、批量生成、SQLite WAL 写入等事件风暴。更新工作串行执行，一次快照/更新未结束时不会并发启动下一次。
 
 ---
 
-## Directory Structure
+## 目录结构
 
 ```
 auto-index-mcp/
@@ -121,17 +118,17 @@ auto-index-mcp/
 
 ---
 
-## Install
+## 安装
 
-### Windows One-Click
+### Windows 一键安装
 
 ```bat
 install_windows.bat
 ```
 
-The Windows installer creates `.venv`, installs the package into that virtual environment, verifies the MCP entrypoint, and writes `mcp-client-config.windows.json` with the local Python path. It does not modify MCP client settings and does not start a backend service.
+脚本会创建 `.venv`，把当前包安装到虚拟环境，验证 MCP 入口，并生成 `mcp-client-config.windows.json` 配置示例。脚本不会自动修改 MCP 客户端配置，也不需要手动启动后端服务。
 
-### Manual
+### 手动安装
 
 ```bash
 python -m pip install -e .
@@ -139,7 +136,7 @@ python -m pip install -e .
 
 ---
 
-## Run
+## 运行
 
 ```bash
 python -m auto_index_mcp.server --project-path /path/to/project
@@ -149,14 +146,13 @@ python -m auto_index_mcp.server --project-path /path/to/project
 auto-index-mcp --project-path /path/to/project
 ```
 
-`--project-path` starts auto-refresh by default. Use `--no-watch` for scripts
-or one-shot validation runs that should not keep a watcher thread active.
+传入 `--project-path` 时默认启动自动刷新。脚本或一次性校验场景可以加 `--no-watch` 禁用 watcher。
 
 ---
 
-## MCP Configuration
+## MCP 配置
 
-MCP clients start this server as a stdio process from the configured command. No separate backend service needs to be started manually.
+MCP 客户端会按配置通过 stdio 拉起本服务，不需要单独手动启动后端。
 
 ```json
 {
@@ -172,9 +168,11 @@ MCP clients start this server as a stdio process from the configured command. No
 }
 ```
 
+Windows 一键安装后，可以参考安装脚本生成的 `mcp-client-config.windows.json`，其中会使用本项目 `.venv` 里的 Python 绝对路径。
+
 ---
 
-## Test
+## 测试
 
 ```bash
 python -m pytest -q

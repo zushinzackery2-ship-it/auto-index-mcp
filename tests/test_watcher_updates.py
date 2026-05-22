@@ -13,9 +13,13 @@ def test_watcher_incrementally_updates_changed_file_without_rebuild(tmp_path: Pa
 
     service = AutoIndexService(index_root=tmp_path / "index")
     service.enable(str(project), rebuild=True)
-    service.start_watcher(interval_seconds=0.25)
+    service.start_watcher(debounce_seconds=0.1)
 
     try:
+        status = service.watcher_status()
+        assert status["mode"] == "filesystem-events"
+        assert status["debounce_seconds"] == 0.1
+
         source.write_text("def new_name():\n    return False\n", encoding="utf-8")
 
         assert _wait_until(
@@ -37,7 +41,7 @@ def test_watcher_incrementally_adds_new_file_without_rebuild(tmp_path: Path) -> 
 
     service = AutoIndexService(index_root=tmp_path / "index")
     service.enable(str(project), rebuild=True)
-    service.start_watcher(interval_seconds=0.25)
+    service.start_watcher(debounce_seconds=0.1)
 
     try:
         (project / "new_file.py").write_text("def created():\n    return True\n", encoding="utf-8")
@@ -60,7 +64,7 @@ def test_watcher_incrementally_deletes_file_without_rebuild(tmp_path: Path) -> N
 
     service = AutoIndexService(index_root=tmp_path / "index")
     service.enable(str(project), rebuild=True)
-    service.start_watcher(interval_seconds=0.25)
+    service.start_watcher(debounce_seconds=0.1)
 
     try:
         doomed.unlink()
@@ -82,7 +86,7 @@ def test_watcher_removes_record_when_file_becomes_unindexable(tmp_path: Path) ->
 
     service = AutoIndexService(index_root=tmp_path / "index")
     service.enable(str(project), rebuild=True)
-    service.start_watcher(interval_seconds=0.25)
+    service.start_watcher(debounce_seconds=0.1)
 
     try:
         source.write_text("x = '" + ("a" * 2_000_001) + "'\n", encoding="utf-8")
@@ -109,7 +113,7 @@ def test_watcher_slims_parent_when_child_index_appears(tmp_path: Path) -> None:
     assert parent_service.status()["file_count"] == 2
     assert [item["path"] for item in parent_service.store.all_files()] == ["child/child.py", "root.py"]
 
-    parent_service.start_watcher(interval_seconds=0.25)
+    parent_service.start_watcher(debounce_seconds=0.1)
     try:
         child_service = AutoIndexService()
         child_service.enable(str(child), rebuild=True)
@@ -137,7 +141,7 @@ def test_watcher_refreshes_child_link_metadata_without_parent_rebuild(tmp_path: 
     child_service.enable(str(child), rebuild=True)
     parent_service = AutoIndexService()
     parent_service.enable(str(project), rebuild=True)
-    parent_service.start_watcher(interval_seconds=0.25)
+    parent_service.start_watcher(debounce_seconds=0.1)
 
     try:
         (child / "extra.py").write_text("def extra_only():\n    return True\n", encoding="utf-8")

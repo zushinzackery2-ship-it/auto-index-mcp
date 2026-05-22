@@ -5,6 +5,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from ..core.config import DEFAULT_WATCH_DEBOUNCE_SECONDS
 from ..core.service import AutoIndexService
 from ..compatibility.code_index import CompatService
 
@@ -59,20 +60,20 @@ def auto_index_clear(delete_file: bool = False) -> dict[str, Any]:
 
 
 @mcp.tool()
-def auto_index_watcher_start(interval_seconds: float = 2.0) -> dict[str, Any]:
-    """Start polling auto-refresh for the active root."""
-    return _service.start_watcher(interval_seconds)
+def auto_index_watcher_start(debounce_seconds: float = DEFAULT_WATCH_DEBOUNCE_SECONDS) -> dict[str, Any]:
+    """Start filesystem-event auto-refresh for the active root."""
+    return _service.start_watcher(debounce_seconds)
 
 
 @mcp.tool()
 def auto_index_watcher_stop() -> dict[str, Any]:
-    """Stop polling auto-refresh."""
+    """Stop filesystem-event auto-refresh."""
     return _service.stop_watcher()
 
 
 @mcp.tool()
 def auto_index_watcher_status() -> dict[str, Any]:
-    """Return polling auto-refresh status."""
+    """Return filesystem-event auto-refresh status."""
     return _service.watcher_status()
 
 
@@ -234,7 +235,7 @@ def configure_file_watcher(
     additional_exclude_patterns: list | None = None,
     observer_type: str | None = None,
 ) -> str:
-    """Compatibility tool: configure polling watcher."""
+    """Compatibility tool: configure filesystem-event watcher."""
     return _compat.configure_file_watcher(enabled, debounce_seconds, additional_exclude_patterns, observer_type)
 
 

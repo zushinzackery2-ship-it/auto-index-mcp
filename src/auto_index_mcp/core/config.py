@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 INDEX_VERSION = 1
+DEFAULT_WATCH_DEBOUNCE_SECONDS = 0.25
 
 DEFAULT_EXCLUDE_DIRS = {
     ".git",
