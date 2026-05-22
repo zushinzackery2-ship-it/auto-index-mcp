@@ -8,7 +8,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square)
 ![MCP](https://img.shields.io/badge/MCP-Compatible-green?style=flat-square)
-![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey?style=flat-square)
+![Platform](https://img.shields.io/badge/Platform-Windows%20x64-lightgrey?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
 
 </div>
@@ -185,7 +185,7 @@ MCP 客户端会按配置通过 stdio 拉起本服务，不需要单独手动启
 
 Windows 一键安装后，可以参考安装脚本生成的 `mcp-client-config.windows.json`，其中会使用本项目 `.venv` 里的 Python 绝对路径。
 
-当前发布包按 Windows 环境验证；其他平台未作为正式发布目标验证。
+当前发布包按 Windows x64 环境验证；其他平台未作为正式发布目标验证。
 
 ---
 
@@ -207,6 +207,6 @@ python scripts/verify_mcp_stdio.py
 
 <div align="center">
 
-**Runtime:** Python 3.11+ | **Platform:** Windows | **Protocol:** MCP | **License:** MIT
+**Runtime:** Python 3.11+ | **Platform:** Windows x64 | **Protocol:** MCP | **License:** MIT
 
 </div>
