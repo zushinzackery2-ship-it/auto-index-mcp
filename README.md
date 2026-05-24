@@ -76,6 +76,20 @@
 
 ---
 
+## 搜索一致性
+
+`auto_index_query()`、`auto_index_symbol_search()`、`auto_index_file_summary()` 等结构化导航工具读取 SQLite 中的持久索引数据。
+
+`auto_index_text_search()` 和兼容入口 `search_code_advanced()` 的正文匹配遵循“索引范围 + 实时文件内容”模型：
+
+- 文件集合来自当前索引，新增、删除、重命名文件需要 watcher 或重建索引后才进入搜索范围。
+- 正文内容优先通过 ripgrep 读取工作区实时文件；没有 ripgrep 或涉及嵌套子索引时回退为 Python 读取索引文件集合。
+- 因此，已索引文件的内容刚被修改后，正文搜索通常能立即命中新内容；结构摘要和符号关系仍以索引刷新后的数据为准。
+
+这个分工让低上下文导航保持稳定范围，同时让代码正文搜索尽量贴近磁盘上的最新内容。
+
+---
+
 ## 索引存储
 
 每个项目的 SQLite 索引默认放在项目根目录内：
@@ -100,6 +114,8 @@
 | **SQLite WAL 更新** | 子库指纹同时覆盖 `index.db`、`index.db-wal`、`index.db-shm`，避免漏掉 WAL 模式下的子库提交。 |
 
 当前 watcher 不是固定每隔几秒扫一次目录，而是由系统文件变更事件触发。默认 debounce 为 0.25 秒，只用于合并连续保存、批量生成、SQLite WAL 写入等事件风暴。更新工作串行执行，一次快照/更新未结束时不会并发启动下一次。
+
+服务进程退出时会执行优雅熄火：`mcp.run()` 返回、异常退出、Python 正常退出、SIGINT、SIGTERM 都会调用 watcher 停止逻辑。默认 stdio 模式下 MCP 进程随客户端生命周期结束；HTTP/SSE 长驻模式下也可以通过 `auto_index_watcher_stop()` 或 `auto_index_disable()` 主动停止监听。
 
 ---
 

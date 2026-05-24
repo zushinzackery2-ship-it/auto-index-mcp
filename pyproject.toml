@@ -19,3 +19,6 @@ auto-index-mcp = "auto_index_mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
