@@ -30,6 +30,7 @@
 | **符号索引** | 支持 Python AST 符号，JavaScript/TypeScript/通用文本轻量符号提取。 |
 | **代码搜索** | 优先使用 ripgrep；遇到嵌套数据库时使用索引文件集合回退搜索。 |
 | **自动刷新** | 使用系统文件变更事件触发，短 debounce 合并连续变更，再做轻量快照比对。 |
+| **LSP 生命周期** | 基于当前索引项目自动探测语言族，按需启动和关闭可用 LSP server。 |
 | **兼容工具名** | 保留常用文件查找、摘要、符号体、代码搜索、watcher/settings 等兼容入口。 |
 | **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
 
@@ -54,6 +55,8 @@
 | **漂移检查** | `auto_index_diff_filesystem()` | 对比索引与当前文件系统的新增、删除、变化。 |
 | **自动刷新** | `auto_index_watcher_start()` | 启动文件系统事件驱动的自动刷新。 |
 | **自动刷新** | `auto_index_watcher_status()` | 查看 watcher 运行状态、触发次数、最近结果。 |
+| **LSP** | `auto_index_lsp_start()` | 为当前索引项目自动启动可用 LSP server，返回压缩状态文本。 |
+| **LSP** | `auto_index_lsp_shutdown()` | 关闭当前项目下所有 LSP server。 |
 | **兼容入口** | `set_project_path()` | 用常见项目设置工具名初始化索引。 |
 | **兼容入口** | `find_files()` | 按 glob 或文件名查找索引文件。 |
 | **兼容入口** | `get_file_summary()` | 返回单文件 import、符号和复杂度摘要。 |
@@ -72,6 +75,7 @@
 | `languages/` | Python、JavaScript/TypeScript 和通用文本符号提取。 |
 | `search/` | ripgrep/Python fallback 搜索后端。 |
 | `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、兼容入口拆分。 |
+| `core/lsp.py` | LSP server 自动探测、进程生命周期、JSON-RPC initialize/shutdown、压缩状态输出。 |
 | `compatibility/` | 常见兼容工具名和返回格式适配。 |
 
 ---
@@ -87,6 +91,45 @@
 - 因此，已索引文件的内容刚被修改后，正文搜索通常能立即命中新内容；结构摘要和符号关系仍以索引刷新后的数据为准。
 
 这个分工让低上下文导航保持稳定范围，同时让代码正文搜索尽量贴近磁盘上的最新内容。
+
+## LSP 生命周期
+
+LSP 是索引层之上的按需语义增强。Agent 不需要传项目根目录或语言；`auto_index_lsp_start()` 直接复用 `auto_index_enable()` / `set_project_path()` 已经设置的当前项目，并从索引文件集合里自动统计语言族。
+
+当前启动工具只负责生命周期和能力状态，不暴露原始 `textDocument/*` 协议入口：
+
+```text
+auto_index_lsp_start(timeout_seconds=10.0)
+auto_index_lsp_shutdown(timeout_seconds=5.0)
+```
+
+`clangd` 按 C family 建模，覆盖 C/C++/Objective-C/CUDA 相关扩展名；多语言项目会按索引结果尝试启动多个 server，例如 `clangd`、`pyright-langserver`、`typescript-language-server`、`rust-analyzer`、`gopls`。找不到可执行文件不会让整个启动失败，而是在压缩状态里标记 `missing`。
+
+返回值使用面向 Agent 的高密度文本，减少重复 JSON 字段名：
+
+```text
+LSP|partial|D:/Project
+S:clangd/c-family/ready/files=342/ccdb+/.clangd+
+S:pyright/python/missing/files=28
+```
+
+状态头含义：
+
+| 状态 | 含义 |
+|:-----|:-----|
+| `ready` | 目标语言族的 server 都已可用。 |
+| `partial` | 部分 server 可用，部分缺失或启动失败。 |
+| `unavailable` | 项目有可识别语言族，但没有任何 server 可用。 |
+| `no_targets` | 当前索引里没有需要 LSP 的语言族。 |
+| `not_configured` | 尚未设置 auto-index 项目根目录。 |
+
+`shutdown` 会关闭当前项目下所有 LSP server：
+
+```text
+LSP|stopped|D:/Project
+S:clangd/stopped
+S:pyright/stopped
+```
 
 ---
 

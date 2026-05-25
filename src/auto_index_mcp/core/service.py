@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import time
-from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
 from .config import DEFAULT_WATCH_DEBOUNCE_SECONDS, project_index_root
+from .lsp import LspManager
+from .navigation_format import compact_file, overview_result, tree_result
 from ..workspace.view import WorkspaceView
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.scanner import SourceScanner
@@ -26,6 +27,7 @@ class AutoIndexService:
         self.last_errors: list[str] = []
         self.store: IndexStore | None = None
         self.watcher: FileEventWatcher | None = None
+        self.lsp = LspManager()
 
     @property
     def file_count(self) -> int:
@@ -41,6 +43,8 @@ class AutoIndexService:
         root = Path(root_path).resolve()
         if not root.exists() or not root.is_dir():
             raise ValueError(f"root_path is not a directory: {root_path}")
+        if self.root_path and self.root_path != root:
+            self.stop_lsp()
         self.root_path = root
         self.enabled = True
         self.index_root = self.index_root_override or project_index_root(root)
@@ -51,6 +55,7 @@ class AutoIndexService:
         return self.status()
 
     def disable(self) -> dict[str, Any]:
+        self.stop_lsp()
         self.stop_watcher()
         self.enabled = False
         return self.status()
@@ -95,6 +100,7 @@ class AutoIndexService:
     def clear(self, delete_file: bool = False) -> dict[str, Any]:
         self._require_store()
         if delete_file:
+            self.stop_lsp()
             self.stop_watcher()
             self.store.delete_file()
             self.store = None
@@ -125,6 +131,13 @@ class AutoIndexService:
             self.watcher = None
         return self.watcher_status()
 
+    def start_lsp(self, timeout_seconds: float = 10.0) -> str:
+        files = self.view.all_files() if self.store else []
+        return self.lsp.start(self.root_path, files, timeout_seconds)
+
+    def stop_lsp(self, timeout_seconds: float = 5.0) -> str:
+        return self.lsp.shutdown(self.root_path, timeout_seconds)
+
     def watcher_status(self) -> dict[str, Any]:
         if not self.watcher:
             return {"running": False}
@@ -133,41 +146,19 @@ class AutoIndexService:
     def overview(self, limit: int = 30) -> dict[str, Any]:
         self._require_store()
         files = self.view.all_files()
-        languages = Counter(item["language"] for item in files)
-        top_dirs = Counter((item["parent"].split("/")[0] if item["parent"] else ".") for item in files)
-        return {
-            "format": "auto_index_overview_indexed",
-            "file_count": len(files),
-            "languages": dict(languages.most_common(limit)),
-            "top_directories": dict(top_dirs.most_common(limit)),
-            "samples": [self._compact(item) for item in files[:limit]],
-        }
+        return overview_result(files, limit)
 
     def tree_get(self, root_path: str = "", depth: int = 2, limit: int = 120) -> dict[str, Any]:
         self._require_store()
         files = self.view.all_files()
-        folders: dict[str, dict[str, Any]] = defaultdict(lambda: {"file_count": 0, "languages": Counter(), "samples": []})
-        for item in files:
-            if root_path and not item["path"].startswith(root_path.rstrip("/") + "/"):
-                continue
-            parts = item["parent"].split("/") if item["parent"] else ["."]
-            key = "/".join(parts[: max(1, depth)])
-            folder = folders[key]
-            folder["file_count"] += 1
-            folder["languages"][item["language"]] += 1
-            if len(folder["samples"]) < 5:
-                folder["samples"].append(item["name"])
-        rows = []
-        for folder, data in sorted(folders.items())[:limit]:
-            rows.append({"folder": folder, "file_count": data["file_count"], "languages": dict(data["languages"]), "samples": data["samples"]})
-        return {"format": "auto_index_tree_indexed", "root": root_path, "folders": rows}
+        return tree_result(files, root_path, depth, limit)
 
     def query(self, text: str = "", languages: list[str] | None = None, parent: str = "", limit: int = 80, cursor: str | None = None) -> dict[str, Any]:
         self._require_store()
         offset = int(cursor or "0")
         rows = self.view.query(text, languages or [], parent, limit, offset)
         next_cursor = str(offset + limit) if len(rows) == limit else None
-        return {"format": "auto_index_query_indexed", "items": [self._compact(row) for row in rows], "cursor": next_cursor}
+        return {"format": "auto_index_query_indexed", "items": [compact_file(row) for row in rows], "cursor": next_cursor}
 
     def text_search(
         self,
@@ -256,7 +247,7 @@ class AutoIndexService:
         for item in self.view.all_files():
             candidate = item["path"].lower()
             if candidate == needle or item["name"].lower() == needle or needle in candidate:
-                matches.append(self._compact(item))
+                matches.append(compact_file(item))
             if len(matches) >= limit:
                 break
         return {"format": "auto_index_resolve_indexed", "items": matches}
@@ -272,11 +263,6 @@ class AutoIndexService:
     def all_files(self) -> list[dict[str, Any]]:
         self._require_store()
         return self.view.all_files()
-
-    def _compact(self, item: dict[str, Any]) -> dict[str, Any]:
-        symbols = item["symbols"][:12]
-        names = [symbol["name"] if isinstance(symbol, dict) else str(symbol) for symbol in symbols]
-        return {"path": item["path"], "language": item["language"], "lines": item["line_count"], "symbols": names}
 
     def _with_context(self, match: dict[str, Any], context_lines: int) -> dict[str, Any]:
         enriched = dict(match)

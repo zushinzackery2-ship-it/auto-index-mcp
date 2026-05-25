@@ -10,6 +10,7 @@ class DummyService:
         self.enabled = []
         self.started = 0
         self.stopped = 0
+        self.lsp_stopped = 0
 
     def enable(self, root_path: str, rebuild: bool = True) -> dict:
         self.enabled.append((root_path, rebuild))
@@ -22,6 +23,10 @@ class DummyService:
     def stop_watcher(self) -> dict:
         self.stopped += 1
         return {"running": False}
+
+    def stop_lsp(self) -> str:
+        self.lsp_stopped += 1
+        return "LSP|stopped|project"
 
 
 class DummyMcp:
@@ -59,6 +64,7 @@ def test_main_stops_watcher_when_run_returns(monkeypatch: pytest.MonkeyPatch) ->
     assert service.enabled == [("project", True)]
     assert service.started == 1
     assert service.stopped == 1
+    assert service.lsp_stopped == 1
     assert mcp.runs == ["stdio"]
 
 
@@ -86,6 +92,7 @@ def test_main_stops_watcher_when_run_raises(monkeypatch: pytest.MonkeyPatch) -> 
     assert service.enabled == [("project", False)]
     assert service.started == 1
     assert service.stopped == 1
+    assert service.lsp_stopped == 1
     assert mcp.settings.port == 9000
     assert mcp.runs == ["streamable-http"]
 
@@ -98,4 +105,5 @@ def test_shutdown_signal_stops_watcher_before_exit(monkeypatch: pytest.MonkeyPat
         server._handle_shutdown_signal(15, None)
 
     assert service.stopped == 1
+    assert service.lsp_stopped == 1
     assert exc_info.value.code == 143
