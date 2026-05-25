@@ -135,6 +135,10 @@ class AutoIndexService:
         files = self.view.all_files() if self.store else []
         return self.lsp.start(self.root_path, files, timeout_seconds)
 
+    def check_lsp(self, path: str | None = None, limit: int = 80, timeout_seconds: float = 5.0) -> str:
+        files = self.view.all_files() if self.store else []
+        return self.lsp.check(self.root_path, files, self._lsp_document, path, limit, timeout_seconds)
+
     def stop_lsp(self, timeout_seconds: float = 5.0) -> str:
         return self.lsp.shutdown(self.root_path, timeout_seconds)
 
@@ -263,6 +267,13 @@ class AutoIndexService:
     def all_files(self) -> list[dict[str, Any]]:
         self._require_store()
         return self.view.all_files()
+
+    def _lsp_document(self, item: dict[str, Any]) -> tuple[str, str]:
+        self._require_ready()
+        text = self.view.read_indexed_text(self.root_path, item)
+        source_root = Path(item.get("source_root") or self.root_path).resolve()
+        source_path = item.get("source_path", item["path"])
+        return text, (source_root / source_path).resolve().as_uri()
 
     def _with_context(self, match: dict[str, Any], context_lines: int) -> dict[str, Any]:
         enriched = dict(match)

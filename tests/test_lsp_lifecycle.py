@@ -10,11 +10,11 @@ from auto_index_mcp.core.service import AutoIndexService
 
 
 class FakeProcess:
-    def __init__(self, command: list[str], cwd: str) -> None:
+    def __init__(self, command: list[str], cwd: str, stdout: bytes | None = None) -> None:
         self.command = command
         self.cwd = cwd
         self.stdin = io.BytesIO()
-        self.stdout = io.BytesIO(_message({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}))
+        self.stdout = io.BytesIO(stdout or _message({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}))
         self.stderr = io.BytesIO()
         self.returncode: int | None = None
         self.killed = False
@@ -33,11 +33,12 @@ class FakeProcess:
 
 
 class FakeProcessFactory:
-    def __init__(self) -> None:
+    def __init__(self, stdout: bytes | None = None) -> None:
+        self.stdout = stdout
         self.processes: list[FakeProcess] = []
 
     def __call__(self, command: list[str], **kwargs: Any) -> FakeProcess:
-        process = FakeProcess(command, kwargs["cwd"])
+        process = FakeProcess(command, kwargs["cwd"], self.stdout)
         self.processes.append(process)
         return process
 
@@ -89,6 +90,72 @@ def test_lsp_shutdown_stops_all_sessions(tmp_path: Path) -> None:
 
     assert result == f"LSP|stopped|{project.as_posix()}\nS:clangd/stopped"
     assert not service.lsp.sessions
+
+
+def test_lsp_check_reports_not_started(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.cpp").write_text("int main()\n{\n    return 0;\n}\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+
+    assert service.check_lsp(timeout_seconds=0.1) == "CHK|not_started"
+
+
+def test_lsp_check_returns_compact_diagnostics_for_one_file(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "main.cpp"
+    source.write_text("int main()\n{\n    Missing value;\n    return 0;\n}\n", encoding="utf-8")
+    stdout = _message({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}) + _message(
+        {
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": source.as_uri(),
+                "diagnostics": [
+                    {
+                        "severity": 1,
+                        "range": {"start": {"line": 2, "character": 4}},
+                        "message": "unknown type name 'Missing'",
+                    }
+                ],
+            },
+        }
+    )
+    factory = FakeProcessFactory(stdout)
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
+    service.enable(str(project), rebuild=True)
+    service.start_lsp(timeout_seconds=0.2)
+
+    result = service.check_lsp("main.cpp", timeout_seconds=0.2)
+
+    assert result == "CHK|issues|count=1|files=1|limit=80\nE|main.cpp|3:5|unknown type name 'Missing'"
+
+
+def test_lsp_check_returns_clean_for_empty_diagnostics(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "main.cpp"
+    source.write_text("int main()\n{\n    return 0;\n}\n", encoding="utf-8")
+    stdout = _message({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}) + _message(
+        {
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {"uri": source.as_uri(), "diagnostics": []},
+        }
+    )
+    factory = FakeProcessFactory(stdout)
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
+    service.enable(str(project), rebuild=True)
+    service.start_lsp(timeout_seconds=0.2)
+
+    result = service.check_lsp("main.cpp", timeout_seconds=0.2)
+
+    assert result == "CHK|clean|files=1"
 
 
 def _message(payload: dict[str, Any]) -> bytes:

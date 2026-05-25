@@ -30,7 +30,7 @@
 | **符号索引** | 支持 Python AST 符号，JavaScript/TypeScript/通用文本轻量符号提取。 |
 | **代码搜索** | 优先使用 ripgrep；遇到嵌套数据库时使用索引文件集合回退搜索。 |
 | **自动刷新** | 使用系统文件变更事件触发，短 debounce 合并连续变更，再做轻量快照比对。 |
-| **LSP 生命周期** | 基于当前索引项目自动探测语言族，按需启动和关闭可用 LSP server。 |
+| **LSP 语义检查** | 基于当前索引项目自动探测语言族，按需启动 LSP server 并主动拉取 diagnostics。 |
 | **兼容工具名** | 保留常用文件查找、摘要、符号体、代码搜索、watcher/settings 等兼容入口。 |
 | **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
 
@@ -56,6 +56,7 @@
 | **自动刷新** | `auto_index_watcher_start()` | 启动文件系统事件驱动的自动刷新。 |
 | **自动刷新** | `auto_index_watcher_status()` | 查看 watcher 运行状态、触发次数、最近结果。 |
 | **LSP** | `auto_index_lsp_start()` | 为当前索引项目自动启动可用 LSP server，返回压缩状态文本。 |
+| **LSP** | `auto_index_lsp_check()` | 主动拉取当前项目或指定文件的 LSP diagnostics，返回高密度文本摘要。 |
 | **LSP** | `auto_index_lsp_shutdown()` | 关闭当前项目下所有 LSP server。 |
 | **兼容入口** | `set_project_path()` | 用常见项目设置工具名初始化索引。 |
 | **兼容入口** | `find_files()` | 按 glob 或文件名查找索引文件。 |
@@ -96,10 +97,11 @@
 
 LSP 是索引层之上的按需语义增强。Agent 不需要传项目根目录或语言；`auto_index_lsp_start()` 直接复用 `auto_index_enable()` / `set_project_path()` 已经设置的当前项目，并从索引文件集合里自动统计语言族。
 
-当前启动工具只负责生命周期和能力状态，不暴露原始 `textDocument/*` 协议入口：
+LSP 工具只暴露面向 Agent 的高层入口，不暴露原始 `textDocument/*` 协议：
 
 ```text
 auto_index_lsp_start(timeout_seconds=10.0)
+auto_index_lsp_check(path?, limit=80, timeout_seconds=5.0)
 auto_index_lsp_shutdown(timeout_seconds=5.0)
 ```
 
@@ -129,6 +131,26 @@ S:pyright/python/missing/files=28
 LSP|stopped|D:/Project
 S:clangd/stopped
 S:pyright/stopped
+```
+
+`check` 是主动拉取 diagnostics 的入口。MCP 不会把后台 LSP 结果主动注入 Agent 上下文；Agent 需要调用 `auto_index_lsp_check()` 才会得到语义检查结果。
+
+```text
+CHK|issues|count=2|files=1|limit=80
+E|src/main.cpp|12:5|unknown type name 'Foo'
+W|src/app.py|8:1|unused import os
+```
+
+无诊断时返回：
+
+```text
+CHK|clean|files=42
+```
+
+LSP 尚未启动时返回：
+
+```text
+CHK|not_started
 ```
 
 ---

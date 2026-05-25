@@ -1,18 +1,16 @@
 from __future__ import annotations
 
-import json
-import queue
 import shutil
 import subprocess
-import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, BinaryIO
+from typing import Any, Callable
+
+from .lsp_session import DiagnosticLine, LspSession, ProcessFactory
 
 
-ProcessFactory = Callable[..., subprocess.Popen]
 ExecutableResolver = Callable[[str], str | None]
+DocumentReader = Callable[[dict[str, Any]], tuple[str, str]]
 
 
 @dataclass(frozen=True)
@@ -26,46 +24,11 @@ class LspServerSpec:
 
 
 SERVER_SPECS = (
-    LspServerSpec(
-        key="clangd",
-        family="c-family",
-        executable="clangd",
-        args=(),
-        languages=frozenset({"c", "cpp"}),
-        extensions=frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".m", ".mm", ".cu"}),
-    ),
-    LspServerSpec(
-        key="pyright",
-        family="python",
-        executable="pyright-langserver",
-        args=("--stdio",),
-        languages=frozenset({"python"}),
-        extensions=frozenset({".py"}),
-    ),
-    LspServerSpec(
-        key="tsserver",
-        family="js-ts",
-        executable="typescript-language-server",
-        args=("--stdio",),
-        languages=frozenset({"javascript", "typescript"}),
-        extensions=frozenset({".js", ".jsx", ".ts", ".tsx"}),
-    ),
-    LspServerSpec(
-        key="rust-analyzer",
-        family="rust",
-        executable="rust-analyzer",
-        args=(),
-        languages=frozenset({"rust"}),
-        extensions=frozenset({".rs"}),
-    ),
-    LspServerSpec(
-        key="gopls",
-        family="go",
-        executable="gopls",
-        args=(),
-        languages=frozenset({"go"}),
-        extensions=frozenset({".go"}),
-    ),
+    LspServerSpec("clangd", "c-family", "clangd", (), frozenset({"c", "cpp"}), frozenset({".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".m", ".mm", ".cu"})),
+    LspServerSpec("pyright", "python", "pyright-langserver", ("--stdio",), frozenset({"python"}), frozenset({".py"})),
+    LspServerSpec("tsserver", "js-ts", "typescript-language-server", ("--stdio",), frozenset({"javascript", "typescript"}), frozenset({".js", ".jsx", ".ts", ".tsx"})),
+    LspServerSpec("rust-analyzer", "rust", "rust-analyzer", (), frozenset({"rust"}), frozenset({".rs"})),
+    LspServerSpec("gopls", "go", "gopls", (), frozenset({"go"}), frozenset({".go"})),
 )
 
 
@@ -118,6 +81,29 @@ class LspManager:
             status = "partial"
         return "\n".join([f"LSP|{status}|{root.as_posix()}"] + lines)
 
+    def check(
+        self,
+        root: Path | None,
+        files: list[dict[str, Any]],
+        read_document: DocumentReader,
+        path: str | None = None,
+        limit: int = 80,
+        timeout_seconds: float = 5.0,
+    ) -> str:
+        if root is None:
+            return "CHK|not_configured"
+        running = {key: session for key, session in self.sessions.items() if session.is_running()}
+        if not running:
+            return "CHK|not_started"
+
+        targets = self._check_targets(files, path)
+        if path and not targets:
+            return f"CHK|not_found|{path}"
+        opened, unchecked = self._open_targets(targets, running, read_document)
+        self._wait_for_opened_diagnostics(opened, timeout_seconds)
+        diagnostics = self._collect_diagnostics(opened, limit)
+        return _format_check_result(diagnostics, len(opened), unchecked, limit)
+
     def shutdown(self, root: Path | None, timeout_seconds: float = 5.0) -> str:
         if root is None:
             return "LSP|not_configured"
@@ -139,13 +125,9 @@ class LspManager:
         self.sessions.clear()
 
     def _target_specs(self, files: list[dict[str, Any]]) -> list[tuple[LspServerSpec, int]]:
-        languages = [item.get("language", "") for item in files]
-        extensions = [item.get("extension", "") for item in files]
         targets = []
         for spec in SERVER_SPECS:
-            count = sum(1 for language in languages if language in spec.languages)
-            if count == 0:
-                count = sum(1 for extension in extensions if extension in spec.extensions)
+            count = sum(1 for item in files if _is_file_supported(spec, item))
             if count > 0:
                 targets.append((spec, count))
         return targets
@@ -158,141 +140,101 @@ class LspManager:
         suffix = "/" + "/".join(flags) if flags else ""
         return f"S:{spec.key}/{spec.family}/{state}/files={count}{suffix}"
 
+    def _check_targets(self, files: list[dict[str, Any]], path: str | None) -> list[dict[str, Any]]:
+        if not path:
+            return files
+        needle = path.replace("\\", "/").strip("/").lower()
+        return [item for item in files if item["path"].lower() == needle]
 
-class LspSession:
-    def __init__(self, spec: LspServerSpec, executable: str, process_factory: ProcessFactory) -> None:
-        self.spec = spec
-        self.executable = executable
-        self.process_factory = process_factory
-        self.process: subprocess.Popen | None = None
-        self.responses: queue.Queue[dict[str, Any]] = queue.Queue()
-        self.stderr_lines: queue.Queue[str] = queue.Queue(maxsize=20)
-        self.next_id = 1
-
-    def start(self, root: Path, timeout_seconds: float) -> str:
-        try:
-            self.process = self.process_factory(
-                [self.executable, *self.spec.args],
-                cwd=str(root),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            if self.process.stdout:
-                threading.Thread(target=self._read_stdout, args=(self.process.stdout,), daemon=True).start()
-            if self.process.stderr:
-                threading.Thread(target=self._read_stderr, args=(self.process.stderr,), daemon=True).start()
-            request_id = self._send_request(
-                "initialize",
-                {
-                    "processId": None,
-                    "rootUri": root.as_uri(),
-                    "capabilities": {},
-                    "workspaceFolders": [{"uri": root.as_uri(), "name": root.name}],
-                },
-            )
-            response = self._wait_for_response(request_id, timeout_seconds)
-            if not response or "error" in response:
-                self.shutdown(0.2)
-                return "error"
-            self._send_notification("initialized", {})
-            return "ready"
-        except (OSError, ValueError):
-            self.shutdown(0.2)
-            return "error"
-
-    def is_running(self) -> bool:
-        return self.process is not None and self.process.poll() is None
-
-    def shutdown(self, timeout_seconds: float) -> str:
-        if not self.process:
-            return "stopped"
-        if self.process.poll() is not None:
-            return "stopped"
-        try:
-            request_id = self._send_request("shutdown", None)
-            self._wait_for_response(request_id, timeout_seconds)
-            self._send_notification("exit", None)
-            self.process.wait(timeout=timeout_seconds)
-            return "stopped"
-        except (OSError, subprocess.TimeoutExpired):
-            self.process.kill()
+    def _open_targets(
+        self,
+        files: list[dict[str, Any]],
+        running: dict[str, LspSession],
+        read_document: DocumentReader,
+    ) -> tuple[list[tuple[LspSession, str, str]], int]:
+        opened = []
+        unchecked = 0
+        for item in files:
+            session = self._session_for_item(item, running)
+            if session is None:
+                unchecked += 1
+                continue
             try:
-                self.process.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                return "killed"
-            return "killed"
+                text, uri = read_document(item)
+                session.open_document(uri, _language_id(item), int(item.get("mtime_ns", 1)), text)
+                opened.append((session, uri, item["path"]))
+            except (OSError, UnicodeDecodeError, ValueError):
+                unchecked += 1
+        return opened, unchecked
 
-    def _send_request(self, method: str, params: Any) -> int:
-        request_id = self.next_id
-        self.next_id += 1
-        self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
-        return request_id
-
-    def _send_notification(self, method: str, params: Any) -> None:
-        self._send({"jsonrpc": "2.0", "method": method, "params": params})
-
-    def _send(self, payload: dict[str, Any]) -> None:
-        if not self.process or not self.process.stdin:
-            raise OSError("LSP process stdin is not available")
-        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-        self.process.stdin.write(header + body)
-        self.process.stdin.flush()
-
-    def _wait_for_response(self, request_id: int, timeout_seconds: float) -> dict[str, Any] | None:
-        deadline = time.time() + timeout_seconds
-        while time.time() < deadline:
-            try:
-                message = self.responses.get(timeout=max(0.01, deadline - time.time()))
-            except queue.Empty:
-                return None
-            if message.get("id") == request_id:
-                return message
+    def _session_for_item(self, item: dict[str, Any], running: dict[str, LspSession]) -> LspSession | None:
+        for spec in SERVER_SPECS:
+            if spec.key in running and _is_file_supported(spec, item):
+                return running[spec.key]
         return None
 
-    def _read_stdout(self, stream: BinaryIO) -> None:
-        while True:
-            try:
-                headers = _read_headers(stream)
-                if not headers:
-                    return
-                length = int(headers.get("content-length", "0"))
-                if length <= 0:
-                    continue
-                body = stream.read(length)
-                if not body:
-                    return
-                self.responses.put(json.loads(body.decode("utf-8")))
-            except (OSError, ValueError, json.JSONDecodeError):
-                return
+    def _wait_for_opened_diagnostics(self, opened: list[tuple[LspSession, str, str]], timeout_seconds: float) -> None:
+        by_session: dict[LspSession, set[str]] = {}
+        for session, uri, _ in opened:
+            by_session.setdefault(session, set()).add(uri)
+        per_session_timeout = max(0.1, timeout_seconds) / max(1, len(by_session))
+        for session, uris in by_session.items():
+            session.wait_for_diagnostics(uris, per_session_timeout)
 
-    def _read_stderr(self, stream: BinaryIO) -> None:
-        while True:
-            try:
-                line = stream.readline()
-                if not line:
-                    return
-                text = line.decode("utf-8", errors="replace").strip()
-                if text:
-                    if self.stderr_lines.full():
-                        self.stderr_lines.get_nowait()
-                    self.stderr_lines.put_nowait(text)
-            except OSError:
-                return
+    def _collect_diagnostics(self, opened: list[tuple[LspSession, str, str]], limit: int) -> list[DiagnosticLine]:
+        rows = []
+        for session, uri, path in opened:
+            for diagnostic in session.diagnostics.get(uri, []):
+                rows.append(_diagnostic_line(path, diagnostic))
+                if len(rows) >= max(1, limit):
+                    return rows
+        return rows
 
 
-def _read_headers(stream: BinaryIO) -> dict[str, str]:
-    headers = {}
-    while True:
-        line = stream.readline()
-        if not line:
-            return {}
-        if line in (b"\r\n", b"\n"):
-            return headers
-        name, _, value = line.decode("ascii", errors="ignore").partition(":")
-        if name:
-            headers[name.strip().lower()] = value.strip()
+def _is_file_supported(spec: LspServerSpec, item: dict[str, Any]) -> bool:
+    return item.get("language", "") in spec.languages or item.get("extension", "") in spec.extensions
+
+
+def _language_id(item: dict[str, Any]) -> str:
+    extension = item.get("extension", "")
+    language = item.get("language", "text")
+    if extension == ".c":
+        return "c"
+    if language == "cpp":
+        return "cpp"
+    if language == "javascript":
+        return "javascript"
+    if language == "typescript":
+        return "typescript"
+    return language
+
+
+def _diagnostic_line(path: str, diagnostic: dict[str, Any]) -> DiagnosticLine:
+    start = diagnostic.get("range", {}).get("start", {})
+    return DiagnosticLine(
+        severity=_severity(diagnostic.get("severity")),
+        path=path,
+        line=int(start.get("line", 0)) + 1,
+        character=int(start.get("character", 0)) + 1,
+        message=" ".join(str(diagnostic.get("message", "")).split()),
+    )
+
+
+def _format_check_result(diagnostics: list[DiagnosticLine], checked: int, unchecked: int, limit: int) -> str:
+    if not diagnostics:
+        status = "clean" if unchecked == 0 else "partial"
+        suffix = f"|unchecked={unchecked}" if unchecked else ""
+        return f"CHK|{status}|files={checked}{suffix}"
+    status = "issues" if unchecked == 0 else "partial"
+    lines = [f"CHK|{status}|count={len(diagnostics)}|files={checked}|limit={limit}"]
+    if unchecked:
+        lines[0] += f"|unchecked={unchecked}"
+    lines.extend(f"{row.severity}|{row.path}|{row.line}:{row.character}|{row.message}" for row in diagnostics)
+    return "\n".join(lines)
+
+
+def _severity(value: Any) -> str:
+    return {1: "E", 2: "W", 3: "I", 4: "H"}.get(value, "D")
 
 
 def _presence(path: Path) -> str:
