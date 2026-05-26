@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .clangd_bootstrap import ClangdBootstrap, prepare_clangd
 from .lsp_session import DiagnosticLine, LspSession, ProcessFactory
 
 
@@ -54,6 +55,7 @@ class LspManager:
         ready_count = 0
         missing_count = 0
         error_count = 0
+        bootstrap = prepare_clangd(root, files)
         for spec, count in targets:
             session = self.sessions.get(spec.key)
             if session and session.is_running():
@@ -65,14 +67,14 @@ class LspManager:
                     state = "missing"
                     missing_count += 1
                 else:
-                    session = LspSession(spec, executable, self.process_factory)
+                    session = LspSession(_effective_spec(spec, bootstrap), executable, self.process_factory)
                     self.sessions[spec.key] = session
                     state = session.start(root, timeout_seconds)
                     if state == "ready":
                         ready_count += 1
                     else:
                         error_count += 1
-            lines.append(self._server_line(spec, state, count, root))
+            lines.append(self._server_line(spec, state, count, root, bootstrap))
 
         status = "ready"
         if ready_count == 0 and (missing_count or error_count):
@@ -132,11 +134,10 @@ class LspManager:
                 targets.append((spec, count))
         return targets
 
-    def _server_line(self, spec: LspServerSpec, state: str, count: int, root: Path) -> str:
+    def _server_line(self, spec: LspServerSpec, state: str, count: int, root: Path, bootstrap: ClangdBootstrap) -> str:
         flags = []
         if spec.key == "clangd":
-            flags.append(f"ccdb{_presence(root / 'compile_commands.json')}")
-            flags.append(f".clangd{_presence(root / '.clangd')}")
+            flags.extend(bootstrap.flags or (f"ccdb{_presence(root / 'compile_commands.json')}", f".clangd{_presence(root / '.clangd')}", "cfg=none"))
         suffix = "/" + "/".join(flags) if flags else ""
         return f"S:{spec.key}/{spec.family}/{state}/files={count}{suffix}"
 
@@ -193,6 +194,12 @@ class LspManager:
 
 def _is_file_supported(spec: LspServerSpec, item: dict[str, Any]) -> bool:
     return item.get("language", "") in spec.languages or item.get("extension", "") in spec.extensions
+
+
+def _effective_spec(spec: LspServerSpec, bootstrap: ClangdBootstrap) -> LspServerSpec:
+    if spec.key != "clangd" or not bootstrap.args:
+        return spec
+    return LspServerSpec(spec.key, spec.family, spec.executable, tuple(dict.fromkeys((*spec.args, *bootstrap.args))), spec.languages, spec.extensions)
 
 
 def _language_id(item: dict[str, Any]) -> str:

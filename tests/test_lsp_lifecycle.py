@@ -68,11 +68,87 @@ def test_lsp_start_detects_language_families_and_starts_available_servers(tmp_pa
     second_result = service.start_lsp(timeout_seconds=0.2)
 
     assert result.splitlines()[0] == f"LSP|partial|{project.as_posix()}"
-    assert "S:clangd/c-family/ready/files=1/ccdb+/.clangd+" in result
+    assert "S:clangd/c-family/ready/files=1/ccdb=project:./.clangd+/cfg=project" in result
     assert "S:pyright/python/missing/files=1" in result
-    assert "S:clangd/c-family/ready/files=1/ccdb+/.clangd+" in second_result
+    assert "S:clangd/c-family/ready/files=1/ccdb=project:./.clangd+/cfg=project" in second_result
     assert len(factory.processes) == 1
-    assert factory.processes[0].command == ["/bin/clangd"]
+    assert factory.processes[0].command[0] == "/bin/clangd"
+    assert any(arg.startswith("--compile-commands-dir=") for arg in factory.processes[0].command)
+    query_driver = next(arg for arg in factory.processes[0].command if arg.startswith("--query-driver="))
+    assert ";" not in query_driver
+
+
+def test_lsp_start_generates_managed_clangd_database_without_project_config(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "main.cpp"
+    source.write_text("int main()\n{\n    return 0;\n}\n", encoding="utf-8")
+
+    factory = FakeProcessFactory()
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
+    service.enable(str(project), rebuild=True)
+
+    result = service.start_lsp(timeout_seconds=0.2)
+    managed_db = project / ".auto-index-mcp" / "lsp" / "clangd" / "compile_commands.json"
+
+    assert "S:clangd/c-family/ready/files=1/ccdb=managed/.clangd-/cfg=basic-msvc/std=c++20" in result
+    assert managed_db.exists()
+    assert "main.cpp" in managed_db.read_text(encoding="utf-8")
+    assert factory.processes[0].command[0] == "/bin/clangd"
+    assert any(arg.startswith("--compile-commands-dir=") for arg in factory.processes[0].command)
+
+
+def test_lsp_start_uses_project_compile_commands_before_managed_database(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "compile_commands.json").write_text("[]\n", encoding="utf-8")
+    (project / "main.cpp").write_text("int main()\n{\n    return 0;\n}\n", encoding="utf-8")
+
+    factory = FakeProcessFactory()
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
+    service.enable(str(project), rebuild=True)
+
+    result = service.start_lsp(timeout_seconds=0.2)
+
+    assert "S:clangd/c-family/ready/files=1/ccdb=project:./.clangd-/cfg=project" in result
+    assert not (project / ".auto-index-mcp" / "lsp" / "clangd" / "compile_commands.json").exists()
+
+
+def test_lsp_start_bootstraps_managed_database_from_vcxproj(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source_dir = project / "UniversalSigBypasser"
+    source_dir.mkdir(parents=True)
+    (source_dir / "dllmain.cpp").write_text("int main()\n{\n    return 0;\n}\n", encoding="utf-8")
+    (source_dir / "UniversalSigBypasser.vcxproj").write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;NDEBUG;UNIVERSALSIGBYPASSER_EXPORTS;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>include;$(ProjectDir)generated;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>
+""",
+        encoding="utf-8",
+    )
+
+    factory = FakeProcessFactory()
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
+    service.enable(str(project), rebuild=True)
+
+    result = service.start_lsp(timeout_seconds=0.2)
+    managed_db = project / ".auto-index-mcp" / "lsp" / "clangd" / "compile_commands.json"
+    payload = managed_db.read_text(encoding="utf-8")
+
+    assert "S:clangd/c-family/ready/files=1/ccdb=managed/.clangd-/cfg=vcxproj/std=c++20" in result
+    assert "/DUNIVERSALSIGBYPASSER_EXPORTS" in payload
+    assert "/std:c++20" in payload
+    assert '"arguments"' in payload
 
 
 def test_lsp_shutdown_stops_all_sessions(tmp_path: Path) -> None:

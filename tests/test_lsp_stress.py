@@ -62,7 +62,7 @@ def test_lsp_auto_detection_survives_large_mixed_language_project(tmp_path: Path
 
     assert index_result["file_count"] == 1201
     assert first.splitlines()[0] == f"LSP|ready|{project.as_posix()}"
-    assert "S:clangd/c-family/ready/files=200/ccdb+/.clangd+" in first
+    assert "S:clangd/c-family/ready/files=200/ccdb=project:./.clangd+/cfg=project" in first
     assert "S:pyright/python/ready/files=200" in first
     assert "S:tsserver/js-ts/ready/files=400" in first
     assert "S:rust-analyzer/rust/ready/files=200" in first

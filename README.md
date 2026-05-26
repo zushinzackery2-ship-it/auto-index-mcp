@@ -77,6 +77,7 @@
 | `search/` | ripgrep/Python fallback 搜索后端。 |
 | `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、兼容入口拆分。 |
 | `core/lsp.py` | LSP server 自动探测、进程生命周期、JSON-RPC initialize/shutdown、压缩状态输出。 |
+| `core/clangd_bootstrap.py` | `clangd` 编译数据库自动发现、`.vcxproj` 解析和托管配置生成。 |
 | `compatibility/` | 常见兼容工具名和返回格式适配。 |
 
 ---
@@ -107,12 +108,27 @@ auto_index_lsp_shutdown(timeout_seconds=5.0)
 
 `clangd` 按 C family 建模，覆盖 C/C++/Objective-C/CUDA 相关扩展名；多语言项目会按索引结果尝试启动多个 server，例如 `clangd`、`pyright-langserver`、`typescript-language-server`、`rust-analyzer`、`gopls`。找不到可执行文件不会让整个启动失败，而是在压缩状态里标记 `missing`。
 
+`clangd` 启动前会自动准备编译配置：
+
+- 优先复用项目已有 `compile_commands.json`，包括根目录、`build/**`、`out/**` 下的常见位置。
+- 项目没有编译数据库时，自动生成托管数据库到 `.auto-index-mcp/lsp/clangd/compile_commands.json`。
+- Windows C++ 项目会优先读取 `.vcxproj` 的 `Release|x64` 配置，提取宏、include 目录和 C++ 标准。
+- 项目已有 `.clangd` 时只检测并标记，不覆盖用户文件。
+- 生成的 `.auto-index-mcp` 属于本地状态，已被扫描器和 `.gitignore` 排除。
+
 返回值使用面向 Agent 的高密度文本，减少重复 JSON 字段名：
 
 ```text
 LSP|partial|D:/Project
-S:clangd/c-family/ready/files=342/ccdb+/.clangd+
+S:clangd/c-family/ready/files=342/ccdb=project:build/.clangd+/cfg=project
 S:pyright/python/missing/files=28
+```
+
+没有项目编译数据库时，`clangd` 行会标记托管配置来源：
+
+```text
+LSP|unavailable|D:/Project
+S:clangd/c-family/missing/files=4/ccdb=managed/.clangd-/cfg=vcxproj/std=c++20
 ```
 
 状态头含义：
