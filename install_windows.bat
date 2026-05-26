@@ -9,6 +9,7 @@ set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 set "CONFIG_FILE=%PROJECT_ROOT%\mcp-client-config.windows.json"
 set "RESULT_FILE=%PROJECT_ROOT%\install_result.txt"
 set "LOG_FILE=%PROJECT_ROOT%\install_windows.log"
+set "CLANGD_CHECK_FILE=%PROJECT_ROOT%\.clangd-check.tmp"
 set "PYTHON_CMD="
 
 if exist "%RESULT_FILE%" del /q "%RESULT_FILE%" >nul 2>nul
@@ -69,12 +70,27 @@ if errorlevel 1 (
     goto fail
 )
 
+if exist "%CLANGD_CHECK_FILE%" del /q "%CLANGD_CHECK_FILE%" >nul 2>nul
+"%VENV_PY%" -c "from auto_index_mcp.core.lsp_resolver import resolve_lsp_executable; print(resolve_lsp_executable('clangd') or '')" > "%CLANGD_CHECK_FILE%" 2>> "%LOG_FILE%"
+if errorlevel 1 (
+    set "FAIL_REASON=Bundled clangd resolver verification failed."
+    goto fail
+)
+set /p CLANGD_EXE=<"%CLANGD_CHECK_FILE%"
+del /q "%CLANGD_CHECK_FILE%" >nul 2>nul
+if not defined CLANGD_EXE (
+    set "FAIL_REASON=Bundled clangd resolver verification failed."
+    goto fail
+)
+call :log "Bundled clangd: %CLANGD_EXE%"
+
 call :write_config
 
 (
     echo status=success
     echo project_root=%PROJECT_ROOT%
     echo python=%VENV_PY%
+    echo clangd=%CLANGD_EXE%
     echo config_example=%CONFIG_FILE%
     echo log=%LOG_FILE%
     echo.

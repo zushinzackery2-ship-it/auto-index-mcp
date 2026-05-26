@@ -30,7 +30,7 @@
 | **符号索引** | 支持 Python AST 符号，JavaScript/TypeScript/通用文本轻量符号提取。 |
 | **代码搜索** | 优先使用 ripgrep；遇到嵌套数据库时使用索引文件集合回退搜索。 |
 | **自动刷新** | 使用系统文件变更事件触发，短 debounce 合并连续变更，再做轻量快照比对。 |
-| **LSP 语义检查** | 基于当前索引项目自动探测语言族，按需启动 LSP server 并主动拉取 diagnostics。 |
+| **LSP 语义检查** | 基于当前索引项目自动探测语言族，Windows 发布包内置 `clangd` 并主动拉取 diagnostics。 |
 | **兼容工具名** | 保留常用文件查找、摘要、符号体、代码搜索、watcher/settings 等兼容入口。 |
 | **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
 
@@ -106,7 +106,7 @@ auto_index_lsp_check(path?, limit=80, timeout_seconds=5.0)
 auto_index_lsp_shutdown(timeout_seconds=5.0)
 ```
 
-`clangd` 按 C family 建模，覆盖 C/C++/Objective-C/CUDA 相关扩展名；多语言项目会按索引结果尝试启动多个 server，例如 `clangd`、`pyright-langserver`、`typescript-language-server`、`rust-analyzer`、`gopls`。找不到可执行文件不会让整个启动失败，而是在压缩状态里标记 `missing`。
+`clangd` 按 C family 建模，覆盖 C/C++/Objective-C/CUDA 相关扩展名。Windows 发布包自带 standalone `clangd 22.1.0`，会优先使用 `third-party/clangd_22.1.0/bin/clangd.exe`，找不到内置文件时才回退到 PATH。多语言项目会按索引结果尝试启动多个 server，例如 `clangd`、`pyright-langserver`、`typescript-language-server`、`rust-analyzer`、`gopls`。找不到可执行文件不会让整个启动失败，而是在压缩状态里标记 `missing`。
 
 `clangd` 启动前会自动准备编译配置：
 
@@ -140,6 +140,8 @@ S:clangd/c-family/missing/files=4/ccdb=managed/.clangd-/cfg=vcxproj/std=c++20
 | `unavailable` | 项目有可识别语言族，但没有任何 server 可用。 |
 | `no_targets` | 当前索引里没有需要 LSP 的语言族。 |
 | `not_configured` | 尚未设置 auto-index 项目根目录。 |
+
+Windows C/C++ 项目只要发布包里保留 `third-party/clangd_22.1.0`，不需要额外安装 LLVM 或把 `clangd.exe` 加进 PATH。其它语言 server 仍按本机 PATH 查找。
 
 `shutdown` 会关闭当前项目下所有 LSP server：
 
@@ -219,6 +221,9 @@ auto-index-mcp/
 |       |-- workspace/
 |       |-- __main__.py
 |       `-- server.py
+|-- third-party/
+|   `-- clangd_22.1.0/
+|       `-- bin/clangd.exe
 |-- tests/
 |   |-- test_auto_index_service.py
 |   `-- test_watcher_updates.py

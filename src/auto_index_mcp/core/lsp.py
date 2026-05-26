@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from .clangd_bootstrap import ClangdBootstrap, prepare_clangd
+from .lsp_resolver import resolve_lsp_executable
 from .lsp_session import DiagnosticLine, LspSession, ProcessFactory
 
 
@@ -39,7 +39,7 @@ class LspManager:
         executable_resolver: ExecutableResolver | None = None,
         process_factory: ProcessFactory | None = None,
     ) -> None:
-        self.executable_resolver = executable_resolver or shutil.which
+        self.executable_resolver = executable_resolver or resolve_lsp_executable
         self.process_factory = process_factory or subprocess.Popen
         self.sessions: dict[str, LspSession] = {}
 

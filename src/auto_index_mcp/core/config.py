@@ -22,6 +22,7 @@ DEFAULT_EXCLUDE_DIRS = {
     "node_modules",
     "obj",
     "target",
+    "third-party",
 }
 
 DEFAULT_EXCLUDE_FILE_PATTERNS = {

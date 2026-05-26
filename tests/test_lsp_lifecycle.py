@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from auto_index_mcp.core.lsp import LspManager
+from auto_index_mcp.core.lsp_resolver import resolve_lsp_executable
 from auto_index_mcp.core.service import AutoIndexService
 
 
@@ -149,6 +150,13 @@ def test_lsp_start_bootstraps_managed_database_from_vcxproj(tmp_path: Path) -> N
     assert "/DUNIVERSALSIGBYPASSER_EXPORTS" in payload
     assert "/std:c++20" in payload
     assert '"arguments"' in payload
+
+
+def test_lsp_resolver_prefers_bundled_clangd() -> None:
+    resolved = resolve_lsp_executable("clangd")
+
+    assert resolved is not None
+    assert resolved.replace("\\", "/").endswith("third-party/clangd_22.1.0/bin/clangd.exe")
 
 
 def test_lsp_shutdown_stops_all_sessions(tmp_path: Path) -> None:
