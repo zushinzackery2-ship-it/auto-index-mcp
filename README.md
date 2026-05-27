@@ -77,7 +77,8 @@
 | `search/` | ripgrep/Python fallback 搜索后端。 |
 | `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、兼容入口拆分。 |
 | `core/lsp.py` | LSP server 自动探测、进程生命周期、JSON-RPC initialize/shutdown、压缩状态输出。 |
-| `core/clangd_bootstrap.py` | `clangd` 编译数据库自动发现、`.vcxproj` 解析和托管配置生成。 |
+| `core/clangd_bootstrap.py` | `clangd` 编译数据库自动发现和托管配置生成。 |
+| `core/msbuild_profile.py` | `.vcxproj` 配置解析、源文件归属匹配、MSVC 宏和 include 提取。 |
 | `compatibility/` | 常见兼容工具名和返回格式适配。 |
 
 ---
@@ -112,7 +113,7 @@ auto_index_lsp_shutdown(timeout_seconds=5.0)
 
 - 优先复用项目已有 `compile_commands.json`，包括根目录、`build/**`、`out/**` 下的常见位置。
 - 项目没有编译数据库时，自动生成托管数据库到 `.auto-index-mcp/lsp/clangd/compile_commands.json`。
-- Windows C++ 项目会优先读取 `.vcxproj` 的 `Release|x64` 配置，提取宏、include 目录和 C++ 标准。
+- Windows C++ 项目会优先读取 `.vcxproj` 的 `Release|x64` 配置，按源文件归属选择对应 target 的宏、include 目录和 C++ 标准。
 - 项目已有 `.clangd` 时只检测并标记，不覆盖用户文件。
 - 生成的 `.auto-index-mcp` 属于本地状态，已被扫描器和 `.gitignore` 排除。
 
