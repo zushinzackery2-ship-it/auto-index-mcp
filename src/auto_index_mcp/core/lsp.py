@@ -10,7 +10,7 @@ from .lsp_resolver import resolve_lsp_executable
 from .lsp_session import DiagnosticLine, LspSession, ProcessFactory
 
 
-ExecutableResolver = Callable[[str], str | None]
+ExecutableResolver = Callable[..., str | None]
 DocumentReader = Callable[[dict[str, Any]], tuple[str, str]]
 
 
@@ -62,7 +62,7 @@ class LspManager:
                 state = "ready"
                 ready_count += 1
             else:
-                executable = self.executable_resolver(spec.executable)
+                executable = self._resolve_executable(spec.executable, root)
                 if not executable:
                     state = "missing"
                     missing_count += 1
@@ -133,6 +133,12 @@ class LspManager:
             if count > 0:
                 targets.append((spec, count))
         return targets
+
+    def _resolve_executable(self, name: str, root: Path) -> str | None:
+        try:
+            return self.executable_resolver(name, root)
+        except TypeError:
+            return self.executable_resolver(name)
 
     def _server_line(self, spec: LspServerSpec, state: str, count: int, root: Path, bootstrap: ClangdBootstrap) -> str:
         flags = []

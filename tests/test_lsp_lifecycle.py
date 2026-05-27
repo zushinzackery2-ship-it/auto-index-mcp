@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from auto_index_mcp.core import lsp_resolver
 from auto_index_mcp.core.lsp import LspManager
 from auto_index_mcp.core.lsp_resolver import resolve_lsp_executable
 from auto_index_mcp.core.service import AutoIndexService
@@ -157,6 +158,26 @@ def test_lsp_resolver_prefers_bundled_clangd() -> None:
 
     assert resolved is not None
     assert resolved.replace("\\", "/").endswith("third-party/clangd_22.1.0/bin/clangd.exe")
+
+
+def test_lsp_resolver_prefers_managed_lsp_tools(tmp_path: Path, monkeypatch: Any) -> None:
+    tool_root = tmp_path / "tool-root"
+    project_root = tmp_path / "project-root"
+    scripts_dir = tool_root / ".venv" / "Scripts"
+    npm_bin_dir = tool_root / ".auto-index-mcp" / "lsp" / "npm" / "node_modules" / ".bin"
+    scripts_dir.mkdir(parents=True)
+    npm_bin_dir.mkdir(parents=True)
+    pyright = scripts_dir / "pyright-langserver.exe"
+    tsserver = npm_bin_dir / "typescript-language-server.cmd"
+    pyright.write_text("", encoding="utf-8")
+    tsserver.write_text("", encoding="utf-8")
+    monkeypatch.setattr(lsp_resolver, "_repo_root", lambda: tool_root)
+
+    resolved_pyright = lsp_resolver.resolve_lsp_executable("pyright-langserver", project_root)
+    resolved_tsserver = lsp_resolver.resolve_lsp_executable("typescript-language-server", project_root)
+
+    assert resolved_pyright == str(pyright)
+    assert resolved_tsserver == str(tsserver)
 
 
 def test_lsp_shutdown_stops_all_sessions(tmp_path: Path) -> None:

@@ -106,7 +106,7 @@ auto_index_lsp_check(path?, limit=80, timeout_seconds=5.0)
 auto_index_lsp_shutdown(timeout_seconds=5.0)
 ```
 
-`clangd` 按 C family 建模，覆盖 C/C++/Objective-C/CUDA 相关扩展名。Windows 发布包自带 standalone `clangd 22.1.0`，会优先使用 `third-party/clangd_22.1.0/bin/clangd.exe`，找不到内置文件时才回退到 PATH。多语言项目会按索引结果尝试启动多个 server，例如 `clangd`、`pyright-langserver`、`typescript-language-server`、`rust-analyzer`、`gopls`。找不到可执行文件不会让整个启动失败，而是在压缩状态里标记 `missing`。
+`clangd` 按 C family 建模，覆盖 C/C++/Objective-C/CUDA 相关扩展名。Windows 发布包自带 standalone `clangd 22.1.0`，会优先使用 `third-party/clangd_22.1.0/bin/clangd.exe`。Windows 安装器还会把 `pyright-langserver` 安装到项目 `.venv`，把 `typescript-language-server` 安装到 `.auto-index-mcp/lsp/npm` 托管 npm 工作区。找不到本地托管工具时才回退到 PATH。多语言项目会按索引结果尝试启动多个 server，例如 `clangd`、`pyright-langserver`、`typescript-language-server`、`rust-analyzer`、`gopls`。找不到可执行文件不会让整个启动失败，而是在压缩状态里标记 `missing`。
 
 `clangd` 启动前会自动准备编译配置：
 
@@ -141,7 +141,7 @@ S:clangd/c-family/missing/files=4/ccdb=managed/.clangd-/cfg=vcxproj/std=c++20
 | `no_targets` | 当前索引里没有需要 LSP 的语言族。 |
 | `not_configured` | 尚未设置 auto-index 项目根目录。 |
 
-Windows C/C++ 项目只要发布包里保留 `third-party/clangd_22.1.0`，不需要额外安装 LLVM 或把 `clangd.exe` 加进 PATH。其它语言 server 仍按本机 PATH 查找。
+Windows C/C++ 项目只要发布包里保留 `third-party/clangd_22.1.0`，不需要额外安装 LLVM 或把 `clangd.exe` 加进 PATH。Python LSP 由安装器写入 `.venv`；JavaScript/TypeScript LSP 由安装器写入本地托管 npm 工作区，因此需要机器上已有 Node.js/npm。Rust 和 Go 的 server 仍按本机 PATH 查找。
 
 `shutdown` 会关闭当前项目下所有 LSP server：
 
