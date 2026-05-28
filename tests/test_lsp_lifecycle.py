@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import io
-import json
 from pathlib import Path
 from typing import Any
 
@@ -10,39 +8,7 @@ from auto_index_mcp.core.lsp import LspManager
 from auto_index_mcp.core.lsp_resolver import resolve_lsp_executable
 from auto_index_mcp.core.service import AutoIndexService
 
-
-class FakeProcess:
-    def __init__(self, command: list[str], cwd: str, stdout: bytes | None = None) -> None:
-        self.command = command
-        self.cwd = cwd
-        self.stdin = io.BytesIO()
-        self.stdout = io.BytesIO(stdout or _message({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}))
-        self.stderr = io.BytesIO()
-        self.returncode: int | None = None
-        self.killed = False
-
-    def poll(self) -> int | None:
-        return self.returncode
-
-    def wait(self, timeout: float | None = None) -> int:
-        _ = timeout
-        self.returncode = 0
-        return self.returncode
-
-    def kill(self) -> None:
-        self.killed = True
-        self.returncode = -9
-
-
-class FakeProcessFactory:
-    def __init__(self, stdout: bytes | None = None) -> None:
-        self.stdout = stdout
-        self.processes: list[FakeProcess] = []
-
-    def __call__(self, command: list[str], **kwargs: Any) -> FakeProcess:
-        process = FakeProcess(command, kwargs["cwd"], self.stdout)
-        self.processes.append(process)
-        return process
+from tests.lsp_fixtures import FakeProcessFactory, publish_after_document_message
 
 
 def test_lsp_start_reports_not_configured_without_project() -> None:
@@ -213,28 +179,34 @@ def test_lsp_check_returns_compact_diagnostics_for_one_file(tmp_path: Path) -> N
     project.mkdir()
     source = project / "main.cpp"
     source.write_text("int main()\n{\n    Missing value;\n    return 0;\n}\n", encoding="utf-8")
-    stdout = _message({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}) + _message(
-        {
-            "jsonrpc": "2.0",
-            "method": "textDocument/publishDiagnostics",
-            "params": {
-                "uri": source.as_uri(),
-                "diagnostics": [
-                    {
-                        "severity": 1,
-                        "range": {"start": {"line": 2, "character": 4}},
-                        "message": "unknown type name 'Missing'",
-                    }
-                ],
-            },
-        }
-    )
-    factory = FakeProcessFactory(stdout)
+    factory = FakeProcessFactory()
     service = AutoIndexService(index_root=tmp_path / "index")
     service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
     service.enable(str(project), rebuild=True)
     service.start_lsp(timeout_seconds=0.2)
 
+    publish_after_document_message(
+        factory,
+        "textDocument/didOpen",
+        1,
+        lambda message: service.lsp.sessions["clangd"]._handle_message(
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": source.as_uri(),
+                    "version": message["params"]["textDocument"]["version"],
+                    "diagnostics": [
+                        {
+                            "severity": 1,
+                            "range": {"start": {"line": 2, "character": 4}},
+                            "message": "unknown type name 'Missing'",
+                        }
+                    ],
+                },
+            }
+        ),
+    )
     result = service.check_lsp("main.cpp", timeout_seconds=0.2)
 
     assert result == "CHK|issues|count=1|files=1|limit=80\nE|main.cpp|3:5|unknown type name 'Missing'"
@@ -245,24 +217,28 @@ def test_lsp_check_returns_clean_for_empty_diagnostics(tmp_path: Path) -> None:
     project.mkdir()
     source = project / "main.cpp"
     source.write_text("int main()\n{\n    return 0;\n}\n", encoding="utf-8")
-    stdout = _message({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}) + _message(
-        {
-            "jsonrpc": "2.0",
-            "method": "textDocument/publishDiagnostics",
-            "params": {"uri": source.as_uri(), "diagnostics": []},
-        }
-    )
-    factory = FakeProcessFactory(stdout)
+    factory = FakeProcessFactory()
     service = AutoIndexService(index_root=tmp_path / "index")
     service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
     service.enable(str(project), rebuild=True)
     service.start_lsp(timeout_seconds=0.2)
 
+    publish_after_document_message(
+        factory,
+        "textDocument/didOpen",
+        1,
+        lambda message: service.lsp.sessions["clangd"]._handle_message(
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": source.as_uri(),
+                    "version": message["params"]["textDocument"]["version"],
+                    "diagnostics": [],
+                },
+            }
+        ),
+    )
     result = service.check_lsp("main.cpp", timeout_seconds=0.2)
 
     assert result == "CHK|clean|files=1"
-
-
-def _message(payload: dict[str, Any]) -> bytes:
-    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body

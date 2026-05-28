@@ -33,11 +33,6 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         return service.rebuild()
 
     @mcp.tool()
-    def auto_index_flush() -> dict[str, Any]:
-        """Flush current state. SQLite commits are immediate, so this reports durability."""
-        return service.flush()
-
-    @mcp.tool()
     def auto_index_clear(delete_file: bool = False) -> dict[str, Any]:
         """Clear indexed data and optionally delete the SQLite file."""
         return service.clear(delete_file)
@@ -56,4 +51,3 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
     def auto_index_watcher_status() -> dict[str, Any]:
         """Return filesystem-event auto-refresh status."""
         return service.watcher_status()
-

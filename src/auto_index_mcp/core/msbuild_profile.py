@@ -15,6 +15,7 @@ class CompileProfile:
     includes: tuple[str, ...]
     standard: str
     mode: str
+    flags: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -42,20 +43,27 @@ def load_vcxproj_profiles(root: Path) -> tuple[VcxprojProfile, ...]:
 
 
 def profile_for_file(file_path: Path, profiles: tuple[VcxprojProfile, ...], fallback: CompileProfile) -> CompileProfile:
+    owner = explicit_profile_for_file(file_path, profiles)
+    if owner:
+        return owner
     if not profiles:
         return fallback
-    file_key = _path_key(file_path)
-    for candidate in profiles:
-        if file_key in candidate.source_keys:
-            return candidate.profile
     if len(profiles) == 1:
         return profiles[0].profile
     score, _, owner = max((_ownership_score(file_path, candidate), index, candidate) for index, candidate in enumerate(profiles))
     return owner.profile if score > 0 else fallback
 
 
+def explicit_profile_for_file(file_path: Path, profiles: tuple[VcxprojProfile, ...]) -> CompileProfile | None:
+    file_key = _path_key(file_path)
+    for candidate in profiles:
+        if file_key in candidate.source_keys:
+            return candidate.profile
+    return None
+
+
 def default_profile() -> CompileProfile:
-    return CompileProfile(("_CRT_SECURE_NO_WARNINGS", "NDEBUG", "_WINDOWS", "_USRDLL"), (), "c++20", "basic-msvc")
+    return CompileProfile(("_CRT_SECURE_NO_WARNINGS", "NDEBUG", "_WINDOWS", "_USRDLL"), (), "c++20", "basic-msvc", ("/EHsc",))
 
 
 def _parse_vcxproj(path: Path) -> ET.ElementTree | None:
@@ -90,8 +98,9 @@ def _read_vcxproj_profile(
     defines = _split_msbuild_list(_text(best, "PreprocessorDefinitions"))
     includes = _split_msbuild_paths(_text(best, "AdditionalIncludeDirectories"), path.parent, solution_dir)
     standard = _standard(_text(best, "LanguageStandard"))
+    flags = _compiler_flags(_text(best, "ExceptionHandling"), _text(best, "AdditionalOptions"))
     clean_defines = tuple(item for item in defines if not item.startswith("%("))
-    return CompileProfile(clean_defines, includes, standard, "vcxproj")
+    return CompileProfile(clean_defines, includes, standard, "vcxproj", flags)
 
 
 def _source_paths_from_vcxproj(root: Path, path: Path, tree: ET.ElementTree) -> tuple[Path, ...]:
@@ -163,6 +172,42 @@ def _standard(value: str) -> str:
         "stdcpp20": "c++20",
         "stdcpplatest": "c++latest",
     }.get(value.strip(), "c++20")
+
+
+def _compiler_flags(exception_handling: str, additional_options: str) -> tuple[str, ...]:
+    flags = []
+    explicit_exception = _exception_handling_flag(exception_handling)
+    if explicit_exception:
+        flags.append(explicit_exception)
+    for option in _split_msbuild_options(additional_options):
+        if option.startswith("%(") or option in flags:
+            continue
+        if option.startswith("/EH"):
+            flags.append(option)
+    return tuple(flags)
+
+
+def _exception_handling_flag(value: str) -> str:
+    cleaned = value.strip().lower()
+    return {
+        "": "/EHsc",
+        "0": "",
+        "1": "/EHsc",
+        "true": "/EHsc",
+        "sync": "/EHsc",
+        "async": "/EHa",
+        "synccthrow": "/EHs",
+        "false": "",
+        "no": "",
+        "none": "",
+    }.get(cleaned, "/EHsc")
+
+
+def _split_msbuild_options(text: str) -> tuple[str, ...]:
+    values = []
+    for group in _split_msbuild_list(text):
+        values.extend(item for item in group.split() if item)
+    return tuple(dict.fromkeys(values))
 
 
 def _text(parent: ET.Element, name: str) -> str:

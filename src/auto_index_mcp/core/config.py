@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 DEFAULT_WATCH_DEBOUNCE_SECONDS = 0.25
 
 DEFAULT_EXCLUDE_DIRS = {
@@ -55,6 +55,7 @@ LANGUAGE_BY_EXTENSION = {
     ".jsx": "javascript",
     ".kt": "kotlin",
     ".md": "markdown",
+    ".pas": "pascal",
     ".py": "python",
     ".rs": "rust",
     ".toml": "toml",

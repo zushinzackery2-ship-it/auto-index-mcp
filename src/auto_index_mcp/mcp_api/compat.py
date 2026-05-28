@@ -17,16 +17,6 @@ def register_compat_tools(mcp: FastMCP, service: AutoIndexService, compat: Compa
         return f"{result} Auto-refresh is running."
 
     @mcp.tool()
-    def refresh_index() -> str:
-        """Compatibility tool: rebuild the project index."""
-        return compat.refresh_index()
-
-    @mcp.tool()
-    def build_deep_index(max_workers: int | None = None, timeout: int | None = None) -> str:
-        """Compatibility tool: rebuild the full symbol index."""
-        return compat.build_deep_index(max_workers, timeout)
-
-    @mcp.tool()
     def find_files(pattern: str) -> list[str]:
         """Compatibility tool: find indexed files by glob or filename."""
         return compat.find_files(pattern)
@@ -63,49 +53,3 @@ def register_compat_tools(mcp: FastMCP, service: AutoIndexService, compat: Compa
             start_index,
             max_results,
         )
-
-    @mcp.tool()
-    def get_settings_info() -> dict[str, Any]:
-        """Compatibility tool: return project/index settings."""
-        return compat.get_settings_info()
-
-    @mcp.tool()
-    def get_file_watcher_status() -> dict[str, Any]:
-        """Compatibility tool: return watcher status."""
-        return compat.get_file_watcher_status()
-
-    @mcp.tool()
-    def configure_file_watcher(
-        enabled: bool | None = None,
-        debounce_seconds: float | None = None,
-        additional_exclude_patterns: list | None = None,
-        observer_type: str | None = None,
-    ) -> str:
-        """Compatibility tool: configure filesystem-event watcher."""
-        return compat.configure_file_watcher(enabled, debounce_seconds, additional_exclude_patterns, observer_type)
-
-    @mcp.tool()
-    def clear_settings() -> str:
-        """Compatibility tool: clear index settings and cache."""
-        return compat.clear_settings()
-
-    @mcp.tool()
-    def create_temp_directory() -> dict[str, Any]:
-        """Compatibility tool: ensure the index directory exists."""
-        if service.index_root is None:
-            return {"status": "not_configured", "path": None}
-        service.index_root.mkdir(parents=True, exist_ok=True)
-        return {"status": "success", "path": str(service.index_root)}
-
-    @mcp.tool()
-    def check_temp_directory() -> dict[str, Any]:
-        """Compatibility tool: report index directory status."""
-        if service.index_root is None:
-            return {"exists": False, "path": None}
-        return {"exists": service.index_root.exists(), "path": str(service.index_root)}
-
-    @mcp.tool()
-    def refresh_search_tools() -> str:
-        """Compatibility tool: search backend is detected per request."""
-        return "Search tools are detected per request."
-

@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, BinaryIO, Callable
 
 
@@ -30,10 +31,14 @@ class LspSession:
         self.responses: queue.Queue[dict[str, Any]] = queue.Queue()
         self.stderr_lines: queue.Queue[str] = queue.Queue(maxsize=20)
         self.diagnostics: dict[str, list[dict[str, Any]]] = {}
+        self.open_versions: dict[str, int] = {}
+        self.open_texts: dict[str, str] = {}
+        self.root_key: str | None = None
         self.next_id = 1
 
-    def start(self, root, timeout_seconds: float) -> str:
+    def start(self, root: Path, timeout_seconds: float) -> str:
         try:
+            self.root_key = str(root.resolve())
             self.process = self.process_factory(
                 [self.executable, *self.spec.args],
                 cwd=str(root),
@@ -68,17 +73,49 @@ class LspSession:
         return self.process is not None and self.process.poll() is None
 
     def open_document(self, uri: str, language_id: str, version: int, text: str) -> None:
-        self._send_notification(
-            "textDocument/didOpen",
-            {
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": language_id,
-                    "version": version,
-                    "text": text,
-                }
-            },
-        )
+        if self.open_texts.get(uri) == text and uri in self.diagnostics:
+            return
+        next_version = max(version, self.open_versions.get(uri, 0) + 1)
+        already_open = uri in self.open_versions
+        self.diagnostics.pop(uri, None)
+        previous_version = self.open_versions.get(uri)
+        previous_text = self.open_texts.get(uri)
+        self.open_versions[uri] = next_version
+        self.open_texts[uri] = text
+        try:
+            if already_open:
+                self._send_notification(
+                    "textDocument/didChange",
+                    {
+                        "textDocument": {
+                            "uri": uri,
+                            "version": next_version,
+                        },
+                        "contentChanges": [{"text": text}],
+                    },
+                )
+            else:
+                self._send_notification(
+                    "textDocument/didOpen",
+                    {
+                        "textDocument": {
+                            "uri": uri,
+                            "languageId": language_id,
+                            "version": next_version,
+                            "text": text,
+                        }
+                    },
+                )
+        except OSError:
+            if previous_version is None:
+                self.open_versions.pop(uri, None)
+            else:
+                self.open_versions[uri] = previous_version
+            if previous_text is None:
+                self.open_texts.pop(uri, None)
+            else:
+                self.open_texts[uri] = previous_text
+            raise
 
     def wait_for_diagnostics(self, uris: set[str], timeout_seconds: float) -> None:
         deadline = time.time() + timeout_seconds
@@ -155,6 +192,12 @@ class LspSession:
             params = message.get("params") or {}
             uri = params.get("uri")
             if isinstance(uri, str):
+                expected_version = self.open_versions.get(uri)
+                if expected_version is None:
+                    return
+                diagnostic_version = params.get("version")
+                if isinstance(diagnostic_version, int) and diagnostic_version < expected_version:
+                    return
                 self.diagnostics[uri] = params.get("diagnostics") or []
             return
         if "id" in message:

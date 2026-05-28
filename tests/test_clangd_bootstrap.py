@@ -1,43 +1,15 @@
 from __future__ import annotations
 
-import io
 import json
+import os
 from pathlib import Path
 from typing import Any
 
+from auto_index_mcp.core import clangd_bootstrap
 from auto_index_mcp.core.lsp import LspManager
 from auto_index_mcp.core.service import AutoIndexService
 
-
-class FakeProcess:
-    def __init__(self, command: list[str], cwd: str) -> None:
-        self.command = command
-        self.cwd = cwd
-        self.stdin = io.BytesIO()
-        self.stdout = io.BytesIO(_message({"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}}))
-        self.stderr = io.BytesIO()
-        self.returncode: int | None = None
-
-    def poll(self) -> int | None:
-        return self.returncode
-
-    def wait(self, timeout: float | None = None) -> int:
-        _ = timeout
-        self.returncode = 0
-        return self.returncode
-
-    def kill(self) -> None:
-        self.returncode = -9
-
-
-class FakeProcessFactory:
-    def __init__(self) -> None:
-        self.processes: list[FakeProcess] = []
-
-    def __call__(self, command: list[str], **kwargs: Any) -> FakeProcess:
-        process = FakeProcess(command, kwargs["cwd"])
-        self.processes.append(process)
-        return process
+from tests.lsp_fixtures import FakeProcessFactory, messages_from_stream, publish_after_document_message
 
 
 def test_managed_clangd_database_uses_vcxproj_that_owns_source(tmp_path: Path) -> None:
@@ -90,16 +62,121 @@ def test_managed_clangd_database_uses_vcxproj_that_owns_source(tmp_path: Path) -
     assert "/DWIN32_LEAN_AND_MEAN" in arguments
     assert "/DREI_CORE_BUILD_DLL=1" in arguments
     assert "/DWRONG_EXPORTS" not in arguments
+    assert "/EHsc" in arguments
     assert any(argument.startswith("/I") and "Rei-OS" in argument for argument in arguments)
 
 
-def _vcxproj(source: Path, definitions: str, includes: str) -> str:
+def test_managed_clangd_database_maps_vcxproj_exception_handling(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    source = project / "src" / "worker.cpp"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "void run()\n"
+        "{\n"
+        "    throw 1;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (project / "worker.vcxproj").write_text(
+        _vcxproj(source, "WORKER_EXPORTS;%(PreprocessorDefinitions)", "", exception_handling="Async"),
+        encoding="utf-8",
+    )
+    factory = FakeProcessFactory()
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
+    service.enable(str(project), rebuild=True)
+
+    service.start_lsp(timeout_seconds=0.2)
+    managed_db = project / ".auto-index-mcp" / "lsp" / "clangd" / "compile_commands.json"
+    rows = json.loads(managed_db.read_text(encoding="utf-8"))
+    arguments = rows[0]["arguments"]
+
+    assert "/EHa" in arguments
+    assert "/EHsc" not in arguments
+
+
+def test_managed_clangd_database_is_replaced_atomically(tmp_path: Path, monkeypatch: Any) -> None:
+    project = tmp_path / "project"
+    source = project / "main.cpp"
+    source.parent.mkdir(parents=True)
+    source.write_text("int main()\n{\n    return 0;\n}\n", encoding="utf-8")
+    replaced: list[tuple[Path, Path]] = []
+    original_replace = os.replace
+
+    def spy_replace(source_path: str | Path, target_path: str | Path) -> None:
+        replaced.append((Path(source_path), Path(target_path)))
+        original_replace(source_path, target_path)
+
+    monkeypatch.setattr(clangd_bootstrap.os, "replace", spy_replace)
+    factory = FakeProcessFactory()
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
+    service.enable(str(project), rebuild=True)
+
+    service.start_lsp(timeout_seconds=0.2)
+    managed_db = project / ".auto-index-mcp" / "lsp" / "clangd" / "compile_commands.json"
+
+    assert replaced
+    assert replaced[-1][0].name.startswith(".compile_commands.json.")
+    assert replaced[-1][1] == managed_db
+    assert json.loads(managed_db.read_text(encoding="utf-8"))[0]["file"] == str(source.resolve())
+
+
+def test_full_lsp_check_skips_c_family_files_outside_managed_clangd_targets(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    owned = project / "app" / "owned.cpp"
+    platform_noise = project / "reference" / "linux_only.c"
+    owned.parent.mkdir(parents=True)
+    platform_noise.parent.mkdir(parents=True)
+    owned.write_text("int owned()\n{\n    return 1;\n}\n", encoding="utf-8")
+    platform_noise.write_text("#include <unistd.h>\nint linux_only;\n", encoding="utf-8")
+    (project / "app.vcxproj").write_text(
+        _vcxproj(owned, "APP_EXPORTS;%(PreprocessorDefinitions)", ""),
+        encoding="utf-8",
+    )
+    factory = FakeProcessFactory()
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
+    service.enable(str(project), rebuild=True)
+
+    service.start_lsp(timeout_seconds=0.2)
+    publish_after_document_message(
+        factory,
+        "textDocument/didOpen",
+        1,
+        lambda message: service.lsp.sessions["clangd"]._handle_message(
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": owned.as_uri(),
+                    "version": message["params"]["textDocument"]["version"],
+                    "diagnostics": [],
+                },
+            }
+        ),
+    )
+    result = service.check_lsp(timeout_seconds=0.2)
+    opened_uris = [
+        message["params"]["textDocument"]["uri"]
+        for message in messages_from_stream(factory.processes[0].stdin.getvalue())
+        if message.get("method") == "textDocument/didOpen"
+    ]
+
+    assert result == "CHK|clean|files=1"
+    assert owned.as_uri() in opened_uris
+    assert platform_noise.as_uri() not in opened_uris
+
+
+def _vcxproj(source: Path, definitions: str, includes: str, exception_handling: str = "") -> str:
+    exception_node = f"<ExceptionHandling>{exception_handling}</ExceptionHandling>" if exception_handling else ""
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <PreprocessorDefinitions>{definitions}</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>{includes}</AdditionalIncludeDirectories>
+      {exception_node}
       <LanguageStandard>stdcpp20</LanguageStandard>
     </ClCompile>
   </ItemDefinitionGroup>
@@ -108,8 +185,3 @@ def _vcxproj(source: Path, definitions: str, includes: str) -> str:
   </ItemGroup>
 </Project>
 """
-
-
-def _message(payload: dict[str, Any]) -> bytes:
-    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body

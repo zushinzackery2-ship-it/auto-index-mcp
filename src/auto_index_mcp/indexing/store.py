@@ -8,8 +8,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..core.config import INDEX_VERSION
 from ..core.models import FileRecord
+from .store_schema import initialize_schema
 
 
 class IndexStore:
@@ -19,10 +19,12 @@ class IndexStore:
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
         try:
             yield conn
             conn.commit()
@@ -34,61 +36,7 @@ class IndexStore:
 
     def initialize(self) -> None:
         with self.connect() as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS files (
-                    path TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    parent TEXT NOT NULL,
-                    extension TEXT NOT NULL,
-                    language TEXT NOT NULL,
-                    size INTEGER NOT NULL,
-                    mtime_ns INTEGER NOT NULL,
-                    sha1 TEXT NOT NULL,
-                    line_count INTEGER NOT NULL,
-                    imports TEXT NOT NULL,
-                    symbols TEXT NOT NULL,
-                    snippet TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS symbols (
-                    id INTEGER PRIMARY KEY,
-                    file_path TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    line INTEGER NOT NULL,
-                    end_line INTEGER NOT NULL,
-                    signature TEXT NOT NULL,
-                    complexity INTEGER NOT NULL DEFAULT 1,
-                    calls TEXT NOT NULL DEFAULT '[]',
-                    called_by TEXT NOT NULL DEFAULT '[]',
-                    FOREIGN KEY(file_path) REFERENCES files(path) ON DELETE CASCADE
-                )
-                """
-            )
-            self._ensure_symbol_columns(conn)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path)")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS child_indexes (
-                    path TEXT PRIMARY KEY,
-                    root TEXT NOT NULL,
-                    db_path TEXT NOT NULL,
-                    file_count INTEGER NOT NULL,
-                    updated_at REAL,
-                    version INTEGER NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                "CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(path UNINDEXED, name, parent, language, symbols, imports, snippet)"
-            )
-            self.set_metadata(conn, "version", INDEX_VERSION)
+            initialize_schema(conn, self.set_metadata)
 
     def replace_all(self, root: str, records: list[FileRecord], child_indexes: list[dict[str, Any]] | None = None) -> None:
         with self.connect() as conn:
@@ -275,17 +223,6 @@ class IndexStore:
             "INSERT INTO metadata VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, json.dumps(value)),
         )
-
-    def _ensure_symbol_columns(self, conn: sqlite3.Connection) -> None:
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(symbols)").fetchall()}
-        additions = {
-            "complexity": "INTEGER NOT NULL DEFAULT 1",
-            "calls": "TEXT NOT NULL DEFAULT '[]'",
-            "called_by": "TEXT NOT NULL DEFAULT '[]'",
-        }
-        for name, definition in additions.items():
-            if name not in columns:
-                conn.execute(f"ALTER TABLE symbols ADD COLUMN {name} {definition}")
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)

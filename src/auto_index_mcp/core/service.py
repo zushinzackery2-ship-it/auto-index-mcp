@@ -45,6 +45,7 @@ class AutoIndexService:
             raise ValueError(f"root_path is not a directory: {root_path}")
         if self.root_path and self.root_path != root:
             self.stop_lsp()
+            self.stop_watcher()
         self.root_path = root
         self.enabled = True
         self.index_root = self.index_root_override or project_index_root(root)
@@ -108,10 +109,6 @@ class AutoIndexService:
         else:
             self.store.clear()
         return self.status()
-
-    def flush(self) -> dict[str, Any]:
-        self._require_store()
-        return {"status": "flushed", "index_path": str(self.store.db_path)}
 
     def start_watcher(self, debounce_seconds: float = DEFAULT_WATCH_DEBOUNCE_SECONDS) -> dict[str, Any]:
         self._require_ready()

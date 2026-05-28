@@ -160,6 +160,24 @@ def test_watcher_refreshes_child_link_metadata_without_parent_rebuild(tmp_path: 
         parent_service.stop_watcher()
 
 
+def test_root_switch_stops_active_watcher_when_auto_watch_is_not_restarted(tmp_path: Path) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "main.py").write_text("print('first')\n", encoding="utf-8")
+    (second / "main.py").write_text("print('second')\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(first), rebuild=True)
+    service.start_watcher(debounce_seconds=0.1)
+
+    service.enable(str(second), rebuild=True)
+
+    assert service.root_path == second.resolve()
+    assert service.watcher_status() == {"running": False}
+
+
 def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:

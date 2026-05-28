@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..core.config import DEFAULT_WATCH_DEBOUNCE_SECONDS
 from ..core.service import AutoIndexService
 
 
@@ -14,15 +13,6 @@ class CompatService:
     def set_project_path(self, path: str) -> str:
         result = self.service.enable(path, rebuild=True)
         return f"Project path set to: {result['root']}. Indexed {result['file_count']} files."
-
-    def refresh_index(self) -> str:
-        result = self.service.rebuild()
-        return f"Shallow index re-built with {result['file_count']} files."
-
-    def build_deep_index(self, max_workers: int | None = None, timeout: int | None = None) -> str:
-        _ = max_workers, timeout
-        result = self.service.rebuild()
-        return f"Project re-indexed. Found {result['file_count']} files."
 
     def find_files(self, pattern: str) -> list[str]:
         self.service._require_store()
@@ -114,33 +104,6 @@ class CompatService:
             "has_more": len(all_matches) > start_index + len(page),
             "backend": response["backend"],
         }
-
-    def get_settings_info(self) -> dict[str, Any]:
-        return self.service.status()
-
-    def get_file_watcher_status(self) -> dict[str, Any]:
-        return self.service.watcher_status()
-
-    def configure_file_watcher(
-        self,
-        enabled: bool | None = None,
-        debounce_seconds: float | None = None,
-        additional_exclude_patterns: list | None = None,
-        observer_type: str | None = None,
-    ) -> str:
-        _ = additional_exclude_patterns, observer_type
-        if enabled is False:
-            self.service.stop_watcher()
-            return "File watcher disabled."
-        if enabled is True:
-            self.service.start_watcher(debounce_seconds or DEFAULT_WATCH_DEBOUNCE_SECONDS)
-            return "File watcher enabled."
-        return "File watcher configuration unchanged."
-
-    def clear_settings(self) -> str:
-        self.service.clear(delete_file=True)
-        return "Settings and cached index cleared."
-
 
 def _fuzzy_pattern(pattern: str) -> str:
     escaped = [char for char in pattern if char.strip()]

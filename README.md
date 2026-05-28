@@ -31,7 +31,7 @@
 | **代码搜索** | 优先使用 ripgrep；遇到嵌套数据库时使用索引文件集合回退搜索。 |
 | **自动刷新** | 使用系统文件变更事件触发，短 debounce 合并连续变更，再做轻量快照比对。 |
 | **LSP 语义检查** | 基于当前索引项目自动探测语言族，Windows 发布包内置 `clangd` 并主动拉取 diagnostics。 |
-| **兼容工具名** | 保留常用文件查找、摘要、符号体、代码搜索、watcher/settings 等兼容入口。 |
+| **兼容工具名** | 保留常用文件查找、摘要、符号体、代码搜索等兼容入口。 |
 | **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
 
 ---
@@ -41,12 +41,14 @@
 | 分类 | API | 说明 |
 |:-----|:----|:-----|
 | **生命周期** | `auto_index_enable()` | 设置项目根目录，可选择立即重建索引。 |
+| **生命周期** | `auto_index_disable()` | 停用当前索引状态并停止当前项目语义服务。 |
 | **生命周期** | `auto_index_status()` | 返回根目录、索引库路径、文件数量、更新时间、最近错误。 |
 | **生命周期** | `auto_index_rebuild()` | 强制全量扫描并重写持久索引。 |
 | **生命周期** | `auto_index_clear()` | 清空索引数据，可选择删除 SQLite 文件。 |
 | **导航** | `auto_index_overview()` | 返回语言分布、目录分布、样例文件等紧凑概览。 |
 | **导航** | `auto_index_tree_get()` | 返回目录级摘要、语言构成和样例文件。 |
 | **导航** | `auto_index_query()` | 按文本、语言、父目录和游标查询索引文件。 |
+| **导航** | `auto_index_file_summary()` | 返回单文件 import、符号和复杂度摘要。 |
 | **导航** | `auto_index_get()` | 返回单个索引文件记录。 |
 | **导航** | `auto_index_resolve_path()` | 按文件名或路径片段解析候选文件。 |
 | **搜索** | `auto_index_text_search()` | 对源码进行 literal 或 regex 搜索。 |
@@ -54,6 +56,7 @@
 | **搜索** | `auto_index_symbol_body()` | 返回指定符号的源码片段。 |
 | **漂移检查** | `auto_index_diff_filesystem()` | 对比索引与当前文件系统的新增、删除、变化。 |
 | **自动刷新** | `auto_index_watcher_start()` | 启动文件系统事件驱动的自动刷新。 |
+| **自动刷新** | `auto_index_watcher_stop()` | 停止文件系统事件驱动的自动刷新。 |
 | **自动刷新** | `auto_index_watcher_status()` | 查看 watcher 运行状态、触发次数、最近结果。 |
 | **LSP** | `auto_index_lsp_start()` | 为当前索引项目自动启动可用 LSP server，返回压缩状态文本。 |
 | **LSP** | `auto_index_lsp_check()` | 主动拉取当前项目或指定文件的 LSP diagnostics，返回高密度文本摘要。 |
@@ -63,6 +66,8 @@
 | **兼容入口** | `get_file_summary()` | 返回单文件 import、符号和复杂度摘要。 |
 | **兼容入口** | `get_symbol_body()` | 按兼容格式返回符号源码体。 |
 | **兼容入口** | `search_code_advanced()` | 支持文件过滤、regex、上下文、分页和 fuzzy 搜索。 |
+
+冗余的历史兼容入口不再注册到 MCP 工具面，例如旧式 temp-directory、settings、watcher 配置和重复 rebuild/search-refresh 包装；请使用上表中的 native API 或保留的常用兼容入口。
 
 ---
 
@@ -90,7 +95,8 @@
 `auto_index_text_search()` 和兼容入口 `search_code_advanced()` 的正文匹配遵循“索引范围 + 实时文件内容”模型：
 
 - 文件集合来自当前索引，新增、删除、重命名文件需要 watcher 或重建索引后才进入搜索范围。
-- 正文内容优先通过 ripgrep 读取工作区实时文件；没有 ripgrep 或涉及嵌套子索引时回退为 Python 读取索引文件集合。
+- 正文内容优先通过 ripgrep 读取工作区实时文件；搜索仍受索引文件集合约束，即使文件被 `.gitignore` 覆盖或位于隐藏目录，也会按 auto-index 排除规则处理。
+- 没有 ripgrep 或涉及嵌套子索引时回退为 Python 读取索引文件集合。
 - 因此，已索引文件的内容刚被修改后，正文搜索通常能立即命中新内容；结构摘要和符号关系仍以索引刷新后的数据为准。
 
 这个分工让低上下文导航保持稳定范围，同时让代码正文搜索尽量贴近磁盘上的最新内容。

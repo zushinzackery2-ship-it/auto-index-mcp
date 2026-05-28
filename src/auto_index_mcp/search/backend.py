@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from ..core.config import DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_FILE_PATTERNS
+
 
 def search_text(
     root: Path,
@@ -36,6 +38,9 @@ def _ripgrep(
     allowed: set[str],
 ) -> list[dict] | None:
     command = ["rg", "--line-number", "--with-filename", "--no-heading", "--color", "never"]
+    command.extend(["--no-ignore", "--hidden"])
+    for glob in _exclude_globs():
+        command.extend(["--glob", glob])
     if not regex:
         command.append("-F")
     if not case_sensitive:
@@ -57,6 +62,16 @@ def _ripgrep(
         if len(matches) >= limit:
             break
     return matches
+
+
+def _exclude_globs() -> list[str]:
+    globs = []
+    for directory in sorted(DEFAULT_EXCLUDE_DIRS):
+        globs.append(f"!**/{directory}/**")
+    for pattern in sorted(DEFAULT_EXCLUDE_FILE_PATTERNS):
+        globs.append(f"!{pattern}")
+        globs.append(f"!**/{pattern}")
+    return globs
 
 
 def _python_search(

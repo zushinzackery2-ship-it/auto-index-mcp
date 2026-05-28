@@ -13,6 +13,8 @@ SYMBOL_PATTERNS = [
     ("function", re.compile(r"^\s*(?:export\s+)?def\s+([A-Za-z_][\w]*)\s*\(")),
     ("function", re.compile(r"^\s*(?:export\s+)?func\s+([A-Za-z_][\w]*)\s*\(")),
     ("function", re.compile(r"^\s*(?:pub\s+)?fn\s+([A-Za-z_][\w]*)\s*\(")),
+    ("function", re.compile(r"^\s*(?:class\s+)?function\s+([A-Za-z_][\w]*)\s*\(", re.IGNORECASE)),
+    ("procedure", re.compile(r"^\s*(?:class\s+)?procedure\s+([A-Za-z_][\w]*)\s*\(", re.IGNORECASE)),
     ("function", re.compile(r"^\s*(?:public|private|protected|static|virtual|inline|constexpr)\s+[\w:<>,\[\]?*&\s]+\s+([A-Za-z_][\w]*)\s*\([^;]*\)\s*(?:\{|$)")),
     ("variable", re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][\w]*)\s*=")),
     ("type", re.compile(r"^\s*(?:export\s+)?type\s+([A-Za-z_][\w]*)\s*=")),
