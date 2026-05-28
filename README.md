@@ -69,6 +69,8 @@
 
 冗余的历史兼容入口不再注册到 MCP 工具面，例如旧式 temp-directory、settings、watcher 配置和重复 rebuild/search-refresh 包装；请使用上表中的 native API 或保留的常用兼容入口。
 
+`set_project_path()` 的兼容文本会同时报告 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。
+
 ---
 
 ## 设计边界

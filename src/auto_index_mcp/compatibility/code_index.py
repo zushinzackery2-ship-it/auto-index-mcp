@@ -12,7 +12,10 @@ class CompatService:
 
     def set_project_path(self, path: str) -> str:
         result = self.service.enable(path, rebuild=True)
-        return f"Project path set to: {result['root']}. Indexed {result['file_count']} files."
+        total = result.get("total_file_count", result["file_count"])
+        child_count = result.get("child_index_count", 0)
+        child_suffix = f" across {child_count} child indexes" if child_count else ""
+        return f"Project path set to: {result['root']}. Indexed {total} total files ({result['file_count']} local{child_suffix})."
 
     def find_files(self, pattern: str) -> list[str]:
         self.service._require_store()
