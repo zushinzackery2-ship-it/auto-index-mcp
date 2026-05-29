@@ -41,6 +41,50 @@ class FakeProcessFactory:
         return process
 
 
+class HangingProcess:
+    def __init__(self, command: list[str], cwd: str) -> None:
+        self.command = command
+        self.cwd = cwd
+        self.stdin = io.BytesIO()
+        self.stdout = _BlockingStream()
+        self.stderr = io.BytesIO()
+        self.returncode: int | None = None
+        self.killed = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        _ = timeout
+        self.returncode = 0
+        return self.returncode
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+
+class HangingProcessFactory:
+    def __init__(self) -> None:
+        self.processes: list[HangingProcess] = []
+
+    def __call__(self, command: list[str], **kwargs: Any) -> HangingProcess:
+        process = HangingProcess(command, kwargs["cwd"])
+        self.processes.append(process)
+        return process
+
+
+class _BlockingStream:
+    def readline(self) -> bytes:
+        time.sleep(10.0)
+        return b""
+
+    def read(self, length: int = -1) -> bytes:
+        _ = length
+        time.sleep(10.0)
+        return b""
+
+
 def lsp_message(payload: dict[str, Any]) -> bytes:
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body

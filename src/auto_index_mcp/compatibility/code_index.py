@@ -12,17 +12,27 @@ class CompatService:
 
     def set_project_path(self, path: str) -> str:
         root = Path(path).resolve()
-        db_existed = self.service._db_path(root).exists()
-        result = self.service.enable(str(root), rebuild=False)
-        if db_existed and self._can_reuse_index(root):
-            self.service.sync_index_to_filesystem()
+        if self._can_return_active_status(root):
             result = self.service.status()
         else:
-            result = self.service.rebuild()
+            db_existed = self.service._db_path(root).exists()
+            result = self.service.enable(str(root), rebuild=False)
+            if db_existed and self._can_reuse_index(root):
+                self.service.sync_index_to_filesystem()
+                result = self.service.status()
+            else:
+                result = self.service.rebuild()
         total = result.get("total_file_count", result["file_count"])
         child_count = result.get("child_index_count", 0)
         child_suffix = f" across {child_count} child indexes" if child_count else ""
         return f"Project path set to: {result['root']}. Indexed {total} total files ({result['file_count']} local{child_suffix})."
+
+    def _can_return_active_status(self, root: Path) -> bool:
+        return (
+            self.service.enabled
+            and self.service.root_path == root
+            and self.service.store is not None
+        )
 
     def _can_reuse_index(self, root: Path) -> bool:
         if not self.service.store:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -29,6 +30,11 @@ class LspManager(LspCheckMixin):
         self.unavailable_servers: dict[str, tuple[str, int]] = {}
         self.bootstrap = ClangdBootstrap((), ())
         self.bootstrap_input_signature = ""
+        self._start_lock = threading.RLock()
+        self._start_thread: threading.Thread | None = None
+        self._start_root: Path | None = None
+        self._last_start_result = "LSP|not_started"
+        self._last_start_updated_at: float | None = None
 
     def start(self, root: Path | None, files: list[dict[str, Any]], timeout_seconds: float = 10.0) -> str:
         if root is None:
@@ -87,13 +93,113 @@ class LspManager(LspCheckMixin):
             status = "unavailable"
         elif missing_count or error_count:
             status = "partial"
-        return "\n".join([f"LSP|{status}|{root.as_posix()}"] + lines)
+        result = "\n".join([f"LSP|{status}|{root.as_posix()}"] + lines)
+        with self._start_lock:
+            self._last_start_result = result
+            self._last_start_updated_at = time.time()
+        return result
+
+    def start_async(self, root: Path | None, files: list[dict[str, Any]], timeout_seconds: float = 10.0) -> str:
+        if root is None:
+            return "LSP|not_configured"
+        with self._start_lock:
+            if self._is_starting(root):
+                return self._starting_result(root)
+        cached = self._cached_ready_start(root, files)
+        if cached:
+            return cached
+        with self._start_lock:
+            if self._is_starting(root):
+                return self._starting_result(root)
+            root_snapshot = root
+            file_snapshot = [dict(item) for item in files]
+            self._start_root = root_snapshot
+            self._last_start_result = f"LSP|starting|{root_snapshot.as_posix()}"
+            self._last_start_updated_at = time.time()
+            self._start_thread = threading.Thread(
+                target=self._run_background_start,
+                args=(root_snapshot, file_snapshot, timeout_seconds),
+                name="auto-index-lsp-start",
+                daemon=True,
+            )
+            self._start_thread.start()
+            return self._starting_result(root_snapshot)
+
+    def start_status(self, root: Path | None) -> str:
+        if root is None:
+            return "LSP|not_configured"
+        with self._start_lock:
+            if self._is_starting(root):
+                return self._starting_result(root)
+            return self._last_start_result
+
+    def _run_background_start(self, root: Path, files: list[dict[str, Any]], timeout_seconds: float) -> None:
+        try:
+            self.start(root, files, timeout_seconds)
+        except Exception as exc:
+            with self._start_lock:
+                self._last_start_result = f"LSP|error|{root.as_posix()}|{type(exc).__name__}:{exc}"
+                self._last_start_updated_at = time.time()
+        finally:
+            with self._start_lock:
+                if self._start_root == root:
+                    self._start_thread = None
+
+    def _is_starting(self, root: Path) -> bool:
+        return (
+            self._start_thread is not None
+            and self._start_thread.is_alive()
+            and self._start_root == root
+        )
+
+    def _starting_result(self, root: Path) -> str:
+        suffix = ""
+        if self._last_start_updated_at is not None:
+            suffix = f"|elapsed={round(time.time() - self._last_start_updated_at, 3)}"
+        return f"LSP|starting|{root.as_posix()}{suffix}"
+
+    def _cached_ready_start(self, root: Path, files: list[dict[str, Any]]) -> str | None:
+        targets = self._target_specs(files)
+        if not targets:
+            self.stop_all(0.2)
+            return f"LSP|no_targets|{root.as_posix()}"
+        target_keys = {spec.key for spec, _ in targets}
+        if any(key not in self.sessions for key in target_keys):
+            return None
+        if any(key not in target_keys for key in self.sessions):
+            return None
+        if "clangd" in target_keys:
+            input_signature = self._clangd_input_signature(root, files)
+            if input_signature != self.bootstrap_input_signature:
+                return None
+            bootstrap = self.bootstrap
+        else:
+            bootstrap = ClangdBootstrap((), ())
+        lines = []
+        for spec, count in targets:
+            effective = effective_spec(spec, bootstrap)
+            executable = self._resolve_executable(spec.executable, root)
+            signature = (str(root.resolve()), executable or "", effective.args, bootstrap.signature if spec.key == "clangd" else "")
+            session = self.sessions.get(spec.key)
+            if not session or not session.is_running() or self.session_signatures.get(spec.key) != signature:
+                return None
+            lines.append(self._server_line(spec, "ready", count, root, bootstrap))
+        result = "\n".join([f"LSP|ready|{root.as_posix()}"] + lines)
+        with self._start_lock:
+            self._last_start_result = result
+            self._last_start_updated_at = time.time()
+        return result
 
     def shutdown(self, root: Path | None, timeout_seconds: float = 5.0) -> str:
         if root is None:
             return "LSP|not_configured"
         timeout_seconds = max(0.1, timeout_seconds)
         if not self.sessions:
+            with self._start_lock:
+                self._start_thread = None
+                self._start_root = None
+                self._last_start_result = f"LSP|stopped|{root.as_posix()}"
+                self._last_start_updated_at = time.time()
             return f"LSP|stopped|{root.as_posix()}"
 
         lines = []
@@ -104,6 +210,11 @@ class LspManager(LspCheckMixin):
         self.sessions.clear()
         self.session_signatures.clear()
         self.unavailable_servers.clear()
+        with self._start_lock:
+            self._start_thread = None
+            self._start_root = None
+            self._last_start_result = f"LSP|stopped|{root.as_posix()}"
+            self._last_start_updated_at = time.time()
         return "\n".join([f"LSP|stopped|{root.as_posix()}"] + lines)
 
     def stop_all(self, timeout_seconds: float = 2.0) -> None:
@@ -112,6 +223,11 @@ class LspManager(LspCheckMixin):
         self.sessions.clear()
         self.session_signatures.clear()
         self.unavailable_servers.clear()
+        with self._start_lock:
+            self._start_thread = None
+            self._start_root = None
+            self._last_start_result = "LSP|stopped"
+            self._last_start_updated_at = time.time()
 
     def _target_specs(self, files: list[dict[str, Any]]) -> list[tuple[LspServerSpec, int]]:
         targets = []

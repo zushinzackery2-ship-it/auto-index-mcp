@@ -13,7 +13,9 @@ def register_compat_tools(mcp: FastMCP, service: AutoIndexService, compat: Compa
     def set_project_path(path: str) -> str:
         """Compatibility tool: initialize indexing for a project directory."""
         result = compat.set_project_path(path)
-        service.start_watcher()
+        watcher = service.watcher_status()
+        if not watcher.get("running"):
+            service.start_watcher()
         return f"{result} Auto-refresh is running."
 
     @mcp.tool()

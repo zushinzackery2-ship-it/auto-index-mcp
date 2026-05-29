@@ -69,7 +69,7 @@
 
 冗余的历史兼容入口不再注册到 MCP 工具面，例如旧式 temp-directory、settings、watcher 配置和重复 rebuild/search-refresh 包装；请使用上表中的 native API 或保留的常用兼容入口。
 
-`set_project_path()` 的兼容文本会同时报告 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。重复设置同一个已有索引根目录时会复用 `.auto-index-mcp/index.db`，用轻量文件快照补齐离线期间的新增/修改/删除，并保持 watcher 幂等；需要强制全量刷新时使用 `auto_index_rebuild()`。
+`set_project_path()` 的兼容文本会同时报告 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。首次设置或切换到一个已有索引根目录时会复用 `.auto-index-mcp/index.db`，用轻量文件快照补齐离线期间的新增/修改/删除；重复设置当前 active root 时直接返回当前状态，不做同步 catch-up，避免 Agent 高频重复调用时被目录扫描阻塞。需要强制全量刷新时使用 `auto_index_rebuild()`。
 
 ---
 
@@ -129,6 +129,12 @@ auto_index_lsp_shutdown(timeout_seconds=5.0)
 - 生成的 `.auto-index-mcp` 属于本地状态，已被扫描器和 `.gitignore` 排除。
 - 重复 `auto_index_lsp_start()` 会复用未变化的 clangd bootstrap；索引中的 C family 文件、`.vcxproj`、根目录 `.clangd` 或根目录 `compile_commands.json` 变化后才会重新准备配置。
 
+`auto_index_lsp_start()` 面向 Agent 高频调用做了幂等快路径：已有可复用会话时直接返回缓存后的 `ready` 状态；冷启动或 server 初始化较慢时，MCP 调用线程不会等待到 server 完成初始化，而是启动后台任务并返回 `LSP|starting|...`。后续重复调用只读取当前启动状态，不会重复创建第二个 LSP 进程，也不会继续阻塞调用方。
+
+```text
+LSP|starting|D:/Project|elapsed=0.013
+```
+
 返回值使用面向 Agent 的高密度文本，减少重复 JSON 字段名：
 
 ```text
@@ -148,6 +154,7 @@ S:clangd/c-family/missing/files=4/ccdb=managed/.clangd-/cfg=vcxproj/std=c++20
 
 | 状态 | 含义 |
 |:-----|:-----|
+| `starting` | LSP 冷启动已在后台进行，重复调用只返回启动状态，不阻塞等待。 |
 | `ready` | 目标语言族的 server 都已可用。 |
 | `partial` | 部分 server 可用，部分缺失或启动失败。 |
 | `unavailable` | 项目有可识别语言族，但没有任何 server 可用。 |

@@ -10,7 +10,7 @@ from auto_index_mcp.core.clangd_bootstrap import ClangdBootstrap
 from auto_index_mcp.core.lsp import LspManager
 from auto_index_mcp.core.service import AutoIndexService
 
-from tests.lsp_fixtures import FakeProcessFactory
+from tests.lsp_fixtures import FakeProcessFactory, HangingProcessFactory
 
 
 class RecordingSession:
@@ -93,6 +93,73 @@ def test_lsp_start_reuses_cached_clangd_bootstrap_for_unchanged_inputs(tmp_path:
     service.start_lsp(timeout_seconds=0.2)
 
     assert calls == 1
+    assert len(factory.processes) == 1
+
+
+def test_repeated_set_project_path_on_active_root_returns_status_without_sync(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def ready():\n    return True\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    compat = CompatService(service)
+    compat.set_project_path(str(project))
+    (project / "created_after_active_root.py").write_text("def later():\n    return True\n", encoding="utf-8")
+
+    def fail_sync() -> dict[str, Any]:
+        raise AssertionError("active-root repeated set_project_path should not synchronously catch up")
+
+    monkeypatch.setattr(service, "sync_index_to_filesystem", fail_sync)
+    started = time.perf_counter()
+    result = compat.set_project_path(str(project))
+    elapsed = time.perf_counter() - started
+
+    assert "Indexed 1 total files (1 local)" in result
+    assert elapsed < 0.1
+
+
+def test_lsp_start_async_returns_quickly_while_server_initialization_hangs(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("value = 1\n", encoding="utf-8")
+
+    factory = HangingProcessFactory()
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
+    service.enable(str(project), rebuild=True)
+
+    started = time.perf_counter()
+    first = service.start_lsp(timeout_seconds=5.0, background=True)
+    second = service.start_lsp(timeout_seconds=5.0, background=True)
+    elapsed = time.perf_counter() - started
+
+    assert first.startswith(f"LSP|starting|{project.as_posix()}")
+    assert second.startswith(f"LSP|starting|{project.as_posix()}")
+    assert elapsed < 0.2
+    assert len(factory.processes) == 1
+
+
+def test_lsp_start_async_returns_ready_after_background_start_completes(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("value = 1\n", encoding="utf-8")
+
+    factory = FakeProcessFactory()
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
+    service.enable(str(project), rebuild=True)
+
+    first = service.start_lsp(timeout_seconds=0.2, background=True)
+    deadline = time.perf_counter() + 1.0
+    ready = ""
+    while time.perf_counter() < deadline:
+        ready = service.start_lsp(timeout_seconds=0.2, background=True)
+        if ready.startswith("LSP|ready|"):
+            break
+        time.sleep(0.01)
+
+    assert first.startswith(f"LSP|starting|{project.as_posix()}")
+    assert ready.startswith(f"LSP|ready|{project.as_posix()}")
     assert len(factory.processes) == 1
 
 

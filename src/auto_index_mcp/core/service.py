@@ -143,9 +143,14 @@ class AutoIndexService:
             self.watcher = None
         return self.watcher_status()
 
-    def start_lsp(self, timeout_seconds: float = 10.0) -> str:
+    def start_lsp(self, timeout_seconds: float = 10.0, background: bool = False) -> str:
         files = self.view.all_files() if self.store else []
+        if background:
+            return self.lsp.start_async(self.root_path, files, timeout_seconds)
         return self.lsp.start(self.root_path, files, timeout_seconds)
+
+    def lsp_start_status(self) -> str:
+        return self.lsp.start_status(self.root_path)
 
     def check_lsp(self, path: str | None = None, limit: int = 80, timeout_seconds: float = 5.0) -> str:
         files = self.view.all_files() if self.store else []
