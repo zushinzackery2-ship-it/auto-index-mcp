@@ -4,6 +4,7 @@ import re
 import fnmatch
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 
 from ..core.config import DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_FILE_PATTERNS
@@ -49,19 +50,54 @@ def _ripgrep(
         command.extend(["--glob", file_pattern])
     command.extend(["--", pattern, str(root)])
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if completed.returncode not in (0, 1):
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
         return None
     matches = []
-    for line in completed.stdout.splitlines():
-        parsed = _parse_rg_line(root, line)
-        if parsed and parsed["path"] in allowed:
-            matches.append(parsed)
-        if len(matches) >= limit:
-            break
+    stopped_after_limit = False
+    timed_out = _terminate_after(process, 30.0)
+    try:
+        if not process.stdout:
+            return None
+        for line in process.stdout:
+            parsed = _parse_rg_line(root, line.rstrip("\r\n"))
+            if parsed and parsed["path"] in allowed:
+                matches.append(parsed)
+            if len(matches) >= max(1, limit):
+                stopped_after_limit = True
+                process.terminate()
+                break
+        return_code = process.wait(timeout=1.0)
+    except (OSError, subprocess.TimeoutExpired):
+        process.kill()
+        process.wait(timeout=1.0)
+        return None
+    finally:
+        timed_out.cancel()
+        stdout_close = getattr(process.stdout, "close", None)
+        if stdout_close:
+            stdout_close()
+    if stopped_after_limit:
+        return matches
+    if return_code not in (0, 1):
+        return None
     return matches
+
+
+def _terminate_after(process: subprocess.Popen, timeout_seconds: float) -> threading.Timer:
+    def terminate() -> None:
+        if process.poll() is None:
+            process.terminate()
+
+    timer = threading.Timer(timeout_seconds, terminate)
+    timer.daemon = True
+    timer.start()
+    return timer
 
 
 def _exclude_globs() -> list[str]:

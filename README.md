@@ -99,6 +99,7 @@
 
 - 文件集合来自当前索引，新增、删除、重命名文件需要 watcher 或重建索引后才进入搜索范围。
 - 正文内容优先通过 ripgrep 读取工作区实时文件；搜索仍受索引文件集合约束，即使文件被 `.gitignore` 覆盖或位于隐藏目录，也会按 auto-index 排除规则处理。
+- 使用 ripgrep 时按 `limit` 流式读取匹配结果，达到限制后终止子进程，避免大仓高频命中把 stdout 全量收进内存。
 - 没有 ripgrep 或涉及嵌套子索引时回退为 Python 读取索引文件集合。
 - 因此，已索引文件的内容刚被修改后，正文搜索通常能立即命中新内容；结构摘要和符号关系仍以索引刷新后的数据为准。
 
@@ -164,6 +165,8 @@ S:pyright/stopped
 ```
 
 `check` 是主动拉取 diagnostics 的入口。MCP 不会把后台 LSP 结果主动注入 Agent 上下文；Agent 需要调用 `auto_index_lsp_check()` 才会得到语义检查结果。未指定文件时会按 `timeout_seconds` 的总预算打开项目目标文件；预算耗尽会返回 `partial` 和 `unchecked`，不会为了全项目检查无限等待。
+
+LSP client 会响应常见 server-initiated request，使用客户端侧自增文档版本，并归一化 Windows file URI（例如 `file:///D:/...` 与 `file:///d%3A/...`），避免 server 已 ready 但 diagnostics 被误丢弃。
 
 ```text
 CHK|issues|count=2|files=1|limit=80

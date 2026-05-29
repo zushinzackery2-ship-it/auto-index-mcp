@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
+from urllib.parse import unquote
 
 
 ProcessFactory = Callable[..., subprocess.Popen]
@@ -36,6 +37,7 @@ class LspSession:
         self.open_workspace_signatures: dict[str, str] = {}
         self.root_key: str | None = None
         self.next_id = 1
+        self._send_lock = threading.Lock()
 
     def start(self, root: Path, timeout_seconds: float) -> str:
         try:
@@ -74,11 +76,12 @@ class LspSession:
         return self.process is not None and self.process.poll() is None
 
     def open_document(self, uri: str, language_id: str, version: int, text: str, workspace_signature: str = "") -> None:
+        uri = _normalize_uri(uri)
         unchanged_text = self.open_texts.get(uri) == text
         unchanged_workspace = self.open_workspace_signatures.get(uri) == workspace_signature
         if unchanged_text and unchanged_workspace and uri in self.diagnostics:
             return
-        next_version = max(version, self.open_versions.get(uri, 0) + 1)
+        next_version = self.open_versions.get(uri, 0) + 1
         already_open = uri in self.open_versions
         reopen = already_open and unchanged_text and not unchanged_workspace
         self.diagnostics.pop(uri, None)
@@ -180,8 +183,9 @@ class LspSession:
             raise OSError("LSP process stdin is not available")
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-        self.process.stdin.write(header + body)
-        self.process.stdin.flush()
+        with self._send_lock:
+            self.process.stdin.write(header + body)
+            self.process.stdin.flush()
 
     def _wait_for_response(self, request_id: int, timeout_seconds: float) -> dict[str, Any] | None:
         deadline = time.time() + timeout_seconds
@@ -215,6 +219,7 @@ class LspSession:
             params = message.get("params") or {}
             uri = params.get("uri")
             if isinstance(uri, str):
+                uri = _normalize_uri(uri)
                 expected_version = self.open_versions.get(uri)
                 if expected_version is None:
                     return
@@ -223,8 +228,33 @@ class LspSession:
                     return
                 self.diagnostics[uri] = params.get("diagnostics") or []
             return
+        if "id" in message and "method" in message:
+            self._respond_to_server_request(message)
+            return
         if "id" in message:
             self.responses.put(message)
+
+    def _respond_to_server_request(self, message: dict[str, Any]) -> None:
+        request_id = message.get("id")
+        method = message.get("method")
+        result = None
+        if method == "workspace/configuration":
+            items = message.get("params", {}).get("items") or []
+            result = [None for _ in items]
+        elif method == "client/registerCapability":
+            result = None
+        elif method == "window/workDoneProgress/create":
+            result = None
+        elif method == "workspace/workspaceFolders":
+            result = []
+        else:
+            self._send({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32601, "message": f"method not found: {method}"},
+            })
+            return
+        self._send({"jsonrpc": "2.0", "id": request_id, "result": result})
 
     def _read_stderr(self, stream: BinaryIO) -> None:
         while True:
@@ -239,6 +269,16 @@ class LspSession:
                     self.stderr_lines.put_nowait(text)
             except OSError:
                 return
+
+
+def _normalize_uri(uri: str) -> str:
+    if not uri.startswith("file:///"):
+        return uri
+    decoded = unquote(uri)
+    prefix_length = len("file:///")
+    if len(decoded) > prefix_length + 1 and decoded[prefix_length].isalpha() and decoded[prefix_length + 1] == ":":
+        return f"file:///{decoded[prefix_length].upper()}{decoded[prefix_length + 1:]}"
+    return decoded
 
 
 def _read_headers(stream: BinaryIO) -> dict[str, str]:
