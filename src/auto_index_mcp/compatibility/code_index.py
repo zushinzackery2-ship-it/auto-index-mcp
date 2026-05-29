@@ -11,11 +11,24 @@ class CompatService:
         self.service = service
 
     def set_project_path(self, path: str) -> str:
-        result = self.service.enable(path, rebuild=True)
+        root = Path(path).resolve()
+        db_existed = self.service._db_path(root).exists()
+        result = self.service.enable(str(root), rebuild=False)
+        if db_existed and self._can_reuse_index(root):
+            self.service.sync_index_to_filesystem()
+            result = self.service.status()
+        else:
+            result = self.service.rebuild()
         total = result.get("total_file_count", result["file_count"])
         child_count = result.get("child_index_count", 0)
         child_suffix = f" across {child_count} child indexes" if child_count else ""
         return f"Project path set to: {result['root']}. Indexed {total} total files ({result['file_count']} local{child_suffix})."
+
+    def _can_reuse_index(self, root: Path) -> bool:
+        if not self.service.store:
+            return False
+        metadata = self.service.store.get_metadata_map()
+        return metadata.get("root") == str(root) and metadata.get("updated_at") is not None
 
     def find_files(self, pattern: str) -> list[str]:
         self.service._require_store()

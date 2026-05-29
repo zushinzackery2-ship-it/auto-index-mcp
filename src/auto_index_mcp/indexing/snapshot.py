@@ -51,6 +51,23 @@ def take_watch_snapshot(
     return WatchSnapshot(files=files, child_indexes=_child_index_snapshot(root, own_db_path, boundaries))
 
 
+def snapshot_from_index(root: Path, files: list[dict], child_indexes: list[dict]) -> WatchSnapshot:
+    root = root.resolve()
+    indexed_files = {
+        item["path"]: (int(item.get("size", 0)), int(item.get("mtime_ns", 0)))
+        for item in files
+    }
+    indexed_children = {}
+    for child in child_indexes:
+        db_path = Path(child["db_path"])
+        try:
+            rel = db_path.resolve().relative_to(root).as_posix()
+        except (OSError, ValueError):
+            rel = f"{child['path'].rstrip('/')}/{INDEX_DIR_NAME}/{INDEX_DB_NAME}"
+        indexed_children[rel] = _database_fingerprint(db_path)
+    return WatchSnapshot(files=indexed_files, child_indexes=indexed_children)
+
+
 def _iter_source_files(root: Path, boundary_roots: list[Path]) -> list[Path]:
     files: list[Path] = []
     for dir_path, dir_names, file_names in os.walk(root):

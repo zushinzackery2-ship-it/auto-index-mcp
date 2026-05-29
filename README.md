@@ -61,7 +61,7 @@
 | **LSP** | `auto_index_lsp_start()` | 为当前索引项目自动启动可用 LSP server，返回压缩状态文本。 |
 | **LSP** | `auto_index_lsp_check()` | 主动拉取当前项目或指定文件的 LSP diagnostics，返回高密度文本摘要。 |
 | **LSP** | `auto_index_lsp_shutdown()` | 关闭当前项目下所有 LSP server。 |
-| **兼容入口** | `set_project_path()` | 用常见项目设置工具名初始化索引。 |
+| **兼容入口** | `set_project_path()` | 用常见项目设置工具名初始化或复用已有索引。 |
 | **兼容入口** | `find_files()` | 按 glob 或文件名查找索引文件。 |
 | **兼容入口** | `get_file_summary()` | 返回单文件 import、符号和复杂度摘要。 |
 | **兼容入口** | `get_symbol_body()` | 按兼容格式返回符号源码体。 |
@@ -69,7 +69,7 @@
 
 冗余的历史兼容入口不再注册到 MCP 工具面，例如旧式 temp-directory、settings、watcher 配置和重复 rebuild/search-refresh 包装；请使用上表中的 native API 或保留的常用兼容入口。
 
-`set_project_path()` 的兼容文本会同时报告 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。
+`set_project_path()` 的兼容文本会同时报告 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。重复设置同一个已有索引根目录时会复用 `.auto-index-mcp/index.db`，用轻量文件快照补齐离线期间的新增/修改/删除，并保持 watcher 幂等；需要强制全量刷新时使用 `auto_index_rebuild()`。
 
 ---
 
@@ -84,6 +84,7 @@
 | `search/` | ripgrep/Python fallback 搜索后端。 |
 | `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、兼容入口拆分。 |
 | `core/lsp.py` | LSP server 自动探测、进程生命周期、JSON-RPC initialize/shutdown、压缩状态输出。 |
+| `core/lsp_checks.py` | LSP diagnostics 拉取、文件打开预算控制、缺失 server 摘要。 |
 | `core/clangd_bootstrap.py` | `clangd` 编译数据库自动发现和托管配置生成。 |
 | `core/msbuild_profile.py` | `.vcxproj` 配置解析、源文件归属匹配、MSVC 宏和 include 提取。 |
 | `compatibility/` | 常见兼容工具名和返回格式适配。 |
@@ -125,6 +126,7 @@ auto_index_lsp_shutdown(timeout_seconds=5.0)
 - Windows kernel-driver `.vcxproj` 会识别 `WindowsKernelModeDriver*`/`Driver` 配置，并为 managed clangd 配置补充 WDK `km/shared/ucrt` include、目标架构宏和 clang target。
 - 项目已有 `.clangd` 时只检测并标记，不覆盖用户文件。
 - 生成的 `.auto-index-mcp` 属于本地状态，已被扫描器和 `.gitignore` 排除。
+- 重复 `auto_index_lsp_start()` 会复用未变化的 clangd bootstrap；索引中的 C family 文件、`.vcxproj`、根目录 `.clangd` 或根目录 `compile_commands.json` 变化后才会重新准备配置。
 
 返回值使用面向 Agent 的高密度文本，减少重复 JSON 字段名：
 
@@ -161,7 +163,7 @@ S:clangd/stopped
 S:pyright/stopped
 ```
 
-`check` 是主动拉取 diagnostics 的入口。MCP 不会把后台 LSP 结果主动注入 Agent 上下文；Agent 需要调用 `auto_index_lsp_check()` 才会得到语义检查结果。
+`check` 是主动拉取 diagnostics 的入口。MCP 不会把后台 LSP 结果主动注入 Agent 上下文；Agent 需要调用 `auto_index_lsp_check()` 才会得到语义检查结果。未指定文件时会按 `timeout_seconds` 的总预算打开项目目标文件；预算耗尽会返回 `partial` 和 `unchecked`，不会为了全项目检查无限等待。
 
 ```text
 CHK|issues|count=2|files=1|limit=80

@@ -10,7 +10,7 @@ from .navigation_format import compact_file, overview_result, tree_result
 from ..workspace.view import WorkspaceView
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.scanner import SourceScanner
-from ..indexing.snapshot import take_watch_snapshot
+from ..indexing.snapshot import snapshot_from_index, take_watch_snapshot
 from ..search.backend import search_text
 from ..indexing.store import IndexStore
 from ..indexing.updater import IndexUpdater
@@ -114,6 +114,13 @@ class AutoIndexService:
         self._require_ready()
         if debounce_seconds < 0.05:
             raise ValueError("debounce_seconds must be >= 0.05")
+        if (
+            self.watcher
+            and self.watcher.is_running()
+            and self.watcher.root.resolve() == self.root_path.resolve()
+            and self.watcher.debounce_seconds == debounce_seconds
+        ):
+            return self.watcher_status()
         if self.watcher:
             self.watcher.stop()
         children = lambda: [Path(child["root"]) for child in self.store.child_indexes()]
@@ -121,6 +128,14 @@ class AutoIndexService:
         self.watcher = FileEventWatcher(self.root_path, snapshot, IndexUpdater(self.root_path, self.store, self.rebuild).apply, debounce_seconds)
         self.watcher.start()
         return self.watcher_status()
+
+    def sync_index_to_filesystem(self) -> dict[str, Any]:
+        self._require_ready()
+        child_indexes = self.store.child_indexes()
+        child_roots = [Path(child["root"]) for child in child_indexes]
+        previous = snapshot_from_index(self.root_path, self.store.all_files(), child_indexes)
+        current = take_watch_snapshot(self.root_path, child_roots, self.store.db_path)
+        return IndexUpdater(self.root_path, self.store, self.rebuild).apply(previous, current)
 
     def stop_watcher(self) -> dict[str, Any]:
         if self.watcher:

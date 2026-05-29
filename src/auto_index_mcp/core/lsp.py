@@ -2,21 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 from .clangd_bootstrap import ClangdBootstrap, prepare_clangd
-from .config import LANGUAGE_BY_EXTENSION
+from .lsp_checks import LspCheckMixin, remaining_seconds
 from .lsp_resolver import resolve_lsp_executable
-from .lsp_session import DiagnosticLine, LspSession, ProcessFactory
-from .lsp_specs import SERVER_SPECS, LspServerSpec, diagnostic_line, effective_spec, format_check_result, is_file_supported, language_id, presence
+from .lsp_session import LspSession, ProcessFactory
+from .lsp_specs import SERVER_SPECS, LspServerSpec, effective_spec, is_file_supported, presence
 
 
 ExecutableResolver = Callable[..., str | None]
-DocumentReader = Callable[[dict[str, Any]], tuple[str, str]]
 
 
-class LspManager:
+class LspManager(LspCheckMixin):
     def __init__(
         self,
         executable_resolver: ExecutableResolver | None = None,
@@ -28,11 +28,13 @@ class LspManager:
         self.session_signatures: dict[str, tuple[str, str, tuple[str, ...], str]] = {}
         self.unavailable_servers: dict[str, tuple[str, int]] = {}
         self.bootstrap = ClangdBootstrap((), ())
+        self.bootstrap_input_signature = ""
 
     def start(self, root: Path | None, files: list[dict[str, Any]], timeout_seconds: float = 10.0) -> str:
         if root is None:
             return "LSP|not_configured"
         timeout_seconds = max(0.1, timeout_seconds)
+        deadline = time.monotonic() + timeout_seconds
         targets = self._target_specs(files)
         if not targets:
             self.stop_all(0.2)
@@ -48,8 +50,7 @@ class LspManager:
         missing_count = 0
         error_count = 0
         unavailable_servers: dict[str, tuple[str, int]] = {}
-        bootstrap = prepare_clangd(root, files)
-        self.bootstrap = bootstrap
+        bootstrap = self._prepare_clangd(root, files, target_keys)
         for spec, count in targets:
             effective = effective_spec(spec, bootstrap)
             executable = self._resolve_executable(spec.executable, root)
@@ -70,7 +71,7 @@ class LspManager:
                 else:
                     session = LspSession(effective, executable, self.process_factory)
                     self.sessions[spec.key] = session
-                    state = session.start(root, timeout_seconds)
+                    state = session.start(root, max(0.1, remaining_seconds(deadline)))
                     if state == "ready":
                         self.session_signatures[spec.key] = signature
                         ready_count += 1
@@ -87,35 +88,6 @@ class LspManager:
         elif missing_count or error_count:
             status = "partial"
         return "\n".join([f"LSP|{status}|{root.as_posix()}"] + lines)
-
-    def check(
-        self,
-        root: Path | None,
-        files: list[dict[str, Any]],
-        read_document: DocumentReader,
-        path: str | None = None,
-        limit: int = 80,
-        timeout_seconds: float = 5.0,
-    ) -> str:
-        if root is None:
-            return "CHK|not_configured"
-        running = {key: session for key, session in self.sessions.items() if session.is_running()}
-        self._mark_stopped_sessions_unavailable(files, running)
-        if not running:
-            if self.unavailable_servers:
-                return self._unavailable_check_result()
-            return "CHK|not_started"
-
-        targets = self._check_targets(root, files, path)
-        if path and not targets:
-            return f"CHK|not_found|{path}"
-        workspace_signature = self._workspace_signature(files)
-        missing_server_keys = self._missing_target_server_keys(targets, running)
-        opened, unchecked = self._open_targets(targets, running, read_document, workspace_signature)
-        missing_diagnostics = self._wait_for_opened_diagnostics(opened, timeout_seconds)
-        diagnostics = self._collect_diagnostics(opened, limit)
-        result = format_check_result(diagnostics, len(opened) - len(missing_diagnostics), unchecked + len(missing_diagnostics), limit)
-        return self._with_unavailable_servers(result, missing_server_keys)
 
     def shutdown(self, root: Path | None, timeout_seconds: float = 5.0) -> str:
         if root is None:
@@ -162,141 +134,57 @@ class LspManager:
         suffix = "/" + "/".join(flags) if flags else ""
         return f"S:{spec.key}/{spec.family}/{state}/files={count}{suffix}"
 
-    def _check_targets(self, root: Path, files: list[dict[str, Any]], path: str | None) -> list[dict[str, Any]]:
-        if not path:
-            return self._default_check_targets(files)
-        needle = path.replace("\\", "/").strip("/").lower()
-        indexed = [item for item in files if item["path"].lower() == needle]
-        if indexed:
-            return indexed
-        return self._filesystem_target(root, path)
+    def _prepare_clangd(self, root: Path, files: list[dict[str, Any]], target_keys: set[str]) -> ClangdBootstrap:
+        if "clangd" not in target_keys:
+            self.bootstrap = ClangdBootstrap((), ())
+            self.bootstrap_input_signature = ""
+            return self.bootstrap
+        input_signature = self._clangd_input_signature(root, files)
+        if input_signature == self.bootstrap_input_signature:
+            return self.bootstrap
+        self.bootstrap = prepare_clangd(root, files)
+        self.bootstrap_input_signature = input_signature
+        return self.bootstrap
 
-    def _default_check_targets(self, files: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        checked_paths = self.bootstrap.checked_paths
-        if not checked_paths:
-            return files
-        normalized = {path.lower() for path in checked_paths}
-        return [
-            item
-            for item in files
-            if not is_file_supported(SERVER_SPECS[0], item) or item["path"].lower() in normalized
-        ]
-
-    def _filesystem_target(self, root: Path, path: str) -> list[dict[str, Any]]:
-        try:
-            raw = Path(path)
-            target = raw.resolve() if raw.is_absolute() else (root / path.replace("\\", "/").strip("/")).resolve()
-            rel = target.relative_to(root.resolve()).as_posix()
-        except (OSError, ValueError):
-            return []
-        if not target.is_file():
-            return []
-        extension = target.suffix.lower()
-        item = {
-            "path": rel,
-            "name": target.name,
-            "parent": str(Path(rel).parent).replace("\\", "/"),
-            "extension": extension,
-            "language": LANGUAGE_BY_EXTENSION.get(extension, "text"),
-            "mtime_ns": target.stat().st_mtime_ns,
-            "source_root": str(root),
-            "source_path": rel,
-        }
-        return [item] if any(is_file_supported(spec, item) for spec in SERVER_SPECS) else []
-
-    def _open_targets(
-        self,
-        files: list[dict[str, Any]],
-        running: dict[str, LspSession],
-        read_document: DocumentReader,
-        workspace_signature: str,
-    ) -> tuple[list[tuple[LspSession, str, str]], int]:
-        opened = []
-        unchecked = 0
-        for item in files:
-            session = self._session_for_item(item, running)
-            if session is None:
-                unchecked += 1
-                continue
-            try:
-                text, uri = read_document(item)
-                session.open_document(uri, language_id(item), int(item.get("mtime_ns", 1)), text, workspace_signature)
-                opened.append((session, uri, item["path"]))
-            except (OSError, UnicodeDecodeError, ValueError):
-                unchecked += 1
-        return opened, unchecked
-
-    def _workspace_signature(self, files: list[dict[str, Any]]) -> str:
+    def _clangd_input_signature(self, root: Path, files: list[dict[str, Any]]) -> str:
         digest = hashlib.sha1()
+        digest.update(str(root.resolve()).encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
         for item in sorted(files, key=lambda value: value["path"]):
-            if not any(is_file_supported(spec, item) for spec in SERVER_SPECS):
+            if not _is_clangd_input_item(item):
                 continue
-            digest.update(item["path"].encode("utf-8", errors="surrogateescape"))
-            digest.update(b"\0")
-            digest.update(str(item.get("sha1", "")).encode("ascii", errors="ignore"))
-            digest.update(b"\0")
-            digest.update(str(item.get("size", 0)).encode("ascii", errors="ignore"))
-            digest.update(b"\0")
-            digest.update(str(item.get("mtime_ns", 0)).encode("ascii", errors="ignore"))
-            digest.update(b"\0")
+            _add_item_signature(digest, item)
+        _add_path_signature(digest, root / ".clangd")
+        _add_path_signature(digest, root / "compile_commands.json")
         return digest.hexdigest()
 
-    def _session_for_item(self, item: dict[str, Any], running: dict[str, LspSession]) -> LspSession | None:
-        for spec in SERVER_SPECS:
-            if spec.key in running and is_file_supported(spec, item):
-                return running[spec.key]
-        return None
 
-    def _mark_stopped_sessions_unavailable(self, files: list[dict[str, Any]], running: dict[str, LspSession]) -> None:
-        for key in list(self.sessions):
-            if key not in running and key not in self.unavailable_servers:
-                self.unavailable_servers[key] = ("error", self._target_count(key, files))
+def _is_clangd_input_item(item: dict[str, Any]) -> bool:
+    path = item.get("path", "").lower()
+    return (
+        is_file_supported(SERVER_SPECS[0], item)
+        or path.endswith(".vcxproj")
+        or path.endswith("compile_commands.json")
+    )
 
-    def _target_count(self, key: str, files: list[dict[str, Any]]) -> int:
-        spec = next((candidate for candidate in SERVER_SPECS if candidate.key == key), None)
-        return sum(1 for item in files if spec and is_file_supported(spec, item))
 
-    def _missing_target_server_keys(self, files: list[dict[str, Any]], running: dict[str, LspSession]) -> set[str]:
-        keys = set()
-        for item in files:
-            for spec in SERVER_SPECS:
-                if spec.key not in running and spec.key in self.unavailable_servers and is_file_supported(spec, item):
-                    keys.add(spec.key)
-                    break
-        return keys
+def _add_item_signature(digest: Any, item: dict[str, Any]) -> None:
+    digest.update(item["path"].encode("utf-8", errors="surrogateescape"))
+    digest.update(b"\0")
+    digest.update(str(item.get("sha1", "")).encode("ascii", errors="ignore"))
+    digest.update(b"\0")
+    digest.update(str(item.get("size", 0)).encode("ascii", errors="ignore"))
+    digest.update(b"\0")
+    digest.update(str(item.get("mtime_ns", 0)).encode("ascii", errors="ignore"))
+    digest.update(b"\0")
 
-    def _wait_for_opened_diagnostics(self, opened: list[tuple[LspSession, str, str]], timeout_seconds: float) -> set[tuple[LspSession, str]]:
-        by_session: dict[LspSession, set[str]] = {}
-        for session, uri, _ in opened:
-            by_session.setdefault(session, set()).add(uri)
-        per_session_timeout = max(0.1, timeout_seconds) / max(1, len(by_session))
-        for session, uris in by_session.items():
-            session.wait_for_diagnostics(uris, per_session_timeout)
-        return {
-            (session, uri)
-            for session, uris in by_session.items()
-            for uri in uris
-            if uri not in session.diagnostics
-        }
 
-    def _collect_diagnostics(self, opened: list[tuple[LspSession, str, str]], limit: int) -> list[DiagnosticLine]:
-        rows = []
-        for session, uri, path in opened:
-            for diagnostic in session.diagnostics.get(uri, []):
-                rows.append(diagnostic_line(path, diagnostic))
-                if len(rows) >= max(1, limit):
-                    return rows
-        return rows
-
-    def _unavailable_check_result(self) -> str:
-        return f"CHK|unavailable|servers={self._unavailable_server_details(set(self.unavailable_servers))}"
-
-    def _with_unavailable_servers(self, result: str, keys: set[str]) -> str:
-        if not keys:
-            return result
-        lines = result.splitlines()
-        lines[0] = f"{lines[0]}|servers={self._unavailable_server_details(keys)}"
-        return "\n".join(lines)
-
-    def _unavailable_server_details(self, keys: set[str]) -> str:
-        return ",".join(f"{key}:{state}:{count}" for key, (state, count) in sorted(self.unavailable_servers.items()) if key in keys)
+def _add_path_signature(digest: Any, path: Path) -> None:
+    digest.update(str(path.resolve()).encode("utf-8", errors="surrogateescape"))
+    digest.update(b"\0")
+    try:
+        stat = path.stat()
+        digest.update(f"{stat.st_size}:{stat.st_mtime_ns}".encode("ascii"))
+    except OSError:
+        digest.update(b"missing")
+    digest.update(b"\0")
