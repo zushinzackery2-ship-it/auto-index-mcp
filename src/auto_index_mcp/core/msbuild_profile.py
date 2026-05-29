@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ class CompileProfile:
     standard: str
     mode: str
     flags: tuple[str, ...]
+    target: str = ""
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,7 @@ def _read_vcxproj_profile(
     platform: str,
 ) -> CompileProfile | None:
     best = None
+    selected_condition = ""
     for group in _children(tree.getroot(), "ItemDefinitionGroup"):
         condition = group.attrib.get("Condition", "")
         if configuration and platform and f"{configuration}|{platform}" not in condition:
@@ -89,6 +92,7 @@ def _read_vcxproj_profile(
         if cl_compile is None:
             continue
         best = cl_compile
+        selected_condition = condition
         break
     if best is None:
         best = _descendant(tree.getroot(), "ClCompile")
@@ -97,10 +101,106 @@ def _read_vcxproj_profile(
     solution_dir = _solution_dir(root, path)
     defines = _split_msbuild_list(_text(best, "PreprocessorDefinitions"))
     includes = _split_msbuild_paths(_text(best, "AdditionalIncludeDirectories"), path.parent, solution_dir)
+    target = ""
+    effective_platform = platform or _platform_from_condition(selected_condition) or _project_platform(tree)
+    if _is_kernel_driver_project(tree):
+        includes = (*includes, *_windows_kernel_include_paths())
+        defines = (*defines, *_kernel_arch_defines(effective_platform))
+        target = _clang_target(effective_platform)
     standard = _standard(_text(best, "LanguageStandard"))
     flags = _compiler_flags(_text(best, "ExceptionHandling"), _text(best, "AdditionalOptions"))
     clean_defines = tuple(item for item in defines if not item.startswith("%("))
-    return CompileProfile(clean_defines, includes, standard, "vcxproj", flags)
+    return CompileProfile(clean_defines, includes, standard, "vcxproj", flags, target)
+
+
+def _is_kernel_driver_project(tree: ET.ElementTree) -> bool:
+    root = tree.getroot()
+    return any(
+        "windowskernelmodedriver" in _text(group, "PlatformToolset").lower()
+        or _text(group, "ConfigurationType").lower() == "driver"
+        or bool(_text(group, "DriverType"))
+        for group in _children(root, "PropertyGroup")
+    )
+
+
+def _windows_kernel_include_paths() -> tuple[str, ...]:
+    for base in _windows_kernel_include_roots():
+        paths = _windows_kernel_include_paths_from(base)
+        if paths:
+            return paths
+    return ()
+
+
+def _windows_kernel_include_roots() -> tuple[Path, ...]:
+    candidates = []
+    override = os.environ.get("AUTO_INDEX_WDK_INCLUDE_ROOT")
+    if override:
+        candidates.append(Path(override))
+    sdk_dir = os.environ.get("WindowsSdkDir")
+    if sdk_dir:
+        candidates.append(Path(sdk_dir) / "Include")
+    candidates.append(Path("C:/Program Files (x86)/Windows Kits/10/Include"))
+    return tuple(dict.fromkeys(path for path in candidates if str(path)))
+
+
+def _windows_kernel_include_paths_from(base: Path) -> tuple[str, ...]:
+    sdk_version = os.environ.get("WindowsSDKVersion", "").strip("\\/")
+    try:
+        if sdk_version:
+            requested = base / sdk_version
+            if (requested / "km" / "ntifs.h").exists():
+                return _kernel_include_tuple(requested)
+        versions = [path for path in base.iterdir() if path.is_dir() and (path / "km" / "ntifs.h").exists()]
+    except OSError:
+        return ()
+    if not versions:
+        return ()
+    latest = sorted(versions, key=lambda path: _version_key(path.name))[-1]
+    return _kernel_include_tuple(latest)
+
+
+def _kernel_include_tuple(version_root: Path) -> tuple[str, ...]:
+    return tuple(str((version_root / name).resolve()) for name in ("km", "shared", "ucrt") if (version_root / name).is_dir())
+
+
+def _kernel_arch_defines(platform: str) -> tuple[str, ...]:
+    cleaned = platform.strip().lower()
+    if cleaned == "x64":
+        return ("_AMD64_", "AMD64", "_M_AMD64=100", "_WIN64")
+    if cleaned == "win32":
+        return ("_X86_", "i386", "_M_IX86=600")
+    if cleaned == "arm64":
+        return ("_ARM64_", "ARM64", "_M_ARM64=1", "_WIN64")
+    if cleaned == "arm":
+        return ("_ARM_", "ARM", "_M_ARM=7")
+    return ()
+
+
+def _clang_target(platform: str) -> str:
+    cleaned = platform.strip().lower()
+    return {
+        "x64": "x86_64-pc-windows-msvc",
+        "win32": "i686-pc-windows-msvc",
+        "arm64": "aarch64-pc-windows-msvc",
+        "arm": "arm-pc-windows-msvc",
+    }.get(cleaned, "")
+
+
+def _platform_from_condition(condition: str) -> str:
+    match = re.search(r"'\$\(Configuration\)\|\$\(Platform\)'\s*==\s*'[^']*\|([^']+)'", condition)
+    return match.group(1) if match else ""
+
+
+def _project_platform(tree: ET.ElementTree) -> str:
+    for group in _children(tree.getroot(), "PropertyGroup"):
+        platform = _platform_from_condition(group.attrib.get("Condition", ""))
+        if platform:
+            return platform
+    return ""
+
+
+def _version_key(value: str) -> tuple[int, ...]:
+    return tuple(int(part) if part.isdigit() else 0 for part in value.split("."))
 
 
 def _source_paths_from_vcxproj(root: Path, path: Path, tree: ET.ElementTree) -> tuple[Path, ...]:

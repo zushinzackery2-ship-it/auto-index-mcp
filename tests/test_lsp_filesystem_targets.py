@@ -124,6 +124,73 @@ def test_absolute_check_reuses_unchanged_open_document_diagnostics(tmp_path: Pat
     assert methods == ["textDocument/didOpen"]
 
 
+def test_header_change_reopens_unchanged_source_to_refresh_diagnostics(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "main.cpp"
+    header = project / "main.h"
+    source.write_text('#include "main.h"\nint main()\n{\n    return missing_decl();\n}\n', encoding="utf-8")
+    header.write_text("int existing_decl();\n", encoding="utf-8")
+    factory = FakeProcessFactory()
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
+    service.enable(str(project), rebuild=True)
+    service.start_lsp(timeout_seconds=0.2)
+
+    publish_after_document_message(
+        factory,
+        "textDocument/didOpen",
+        1,
+        lambda message: service.lsp.sessions["clangd"]._handle_message(
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": source.as_uri(),
+                    "version": message["params"]["textDocument"]["version"],
+                    "diagnostics": [
+                        {
+                            "severity": 1,
+                            "range": {"start": {"line": 3, "character": 11}},
+                            "message": "use of undeclared identifier 'missing_decl'",
+                        }
+                    ],
+                },
+            }
+        ),
+    )
+    first = service.check_lsp("main.cpp", timeout_seconds=0.2)
+
+    header.write_text("int existing_decl();\nint missing_decl();\n", encoding="utf-8")
+    service.rebuild()
+    publish_after_document_message(
+        factory,
+        "textDocument/didOpen",
+        2,
+        lambda message: service.lsp.sessions["clangd"]._handle_message(
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": source.as_uri(),
+                    "version": message["params"]["textDocument"]["version"],
+                    "diagnostics": [],
+                },
+            }
+        ),
+    )
+    second = service.check_lsp("main.cpp", timeout_seconds=0.2)
+    methods = [
+        message.get("method")
+        for message in messages_from_stream(factory.processes[0].stdin.getvalue())
+        if str(message.get("method", "")).startswith("textDocument/")
+    ]
+
+    assert first == "CHK|issues|count=1|files=1|limit=80\nE|main.cpp|4:12|use of undeclared identifier 'missing_decl'"
+    assert second == "CHK|clean|files=1"
+    assert methods == ["textDocument/didOpen", "textDocument/didClose", "textDocument/didOpen"]
+
+
 def test_rechecking_same_file_uses_did_change_and_discards_old_diagnostics(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

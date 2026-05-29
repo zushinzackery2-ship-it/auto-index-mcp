@@ -131,19 +131,99 @@ def test_lsp_resolver_prefers_managed_lsp_tools(tmp_path: Path, monkeypatch: Any
     project_root = tmp_path / "project-root"
     scripts_dir = tool_root / ".venv" / "Scripts"
     npm_bin_dir = tool_root / ".auto-index-mcp" / "lsp" / "npm" / "node_modules" / ".bin"
+    go_bin_dir = tool_root / ".auto-index-mcp" / "lsp" / "go" / "bin"
     scripts_dir.mkdir(parents=True)
     npm_bin_dir.mkdir(parents=True)
+    go_bin_dir.mkdir(parents=True)
     pyright = scripts_dir / "pyright-langserver.exe"
     tsserver = npm_bin_dir / "typescript-language-server.cmd"
+    gopls = go_bin_dir / "gopls.exe"
     pyright.write_text("", encoding="utf-8")
     tsserver.write_text("", encoding="utf-8")
+    gopls.write_text("", encoding="utf-8")
     monkeypatch.setattr(lsp_resolver, "_repo_root", lambda: tool_root)
 
     resolved_pyright = lsp_resolver.resolve_lsp_executable("pyright-langserver", project_root)
     resolved_tsserver = lsp_resolver.resolve_lsp_executable("typescript-language-server", project_root)
+    resolved_gopls = lsp_resolver.resolve_lsp_executable("gopls", project_root)
 
     assert resolved_pyright == str(pyright)
     assert resolved_tsserver == str(tsserver)
+    assert resolved_gopls == str(gopls)
+
+
+def test_lsp_check_reports_missing_servers_when_no_session_can_start(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "view.ts").write_text("export const value = 1;\n", encoding="utf-8")
+    (project / "main.go").write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: None, FakeProcessFactory())
+    service.enable(str(project), rebuild=True)
+
+    started = service.start_lsp(timeout_seconds=0.2)
+    checked = service.check_lsp(timeout_seconds=0.2)
+
+    assert started.splitlines()[0] == f"LSP|unavailable|{project.as_posix()}"
+    assert "S:tsserver/js-ts/missing/files=1" in started
+    assert "S:gopls/go/missing/files=1" in started
+    assert checked == "CHK|unavailable|servers=gopls:missing:1,tsserver:missing:1"
+
+
+def test_lsp_check_keeps_missing_server_details_when_other_sessions_are_ready(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "tool.py").write_text("value = 1\n", encoding="utf-8")
+    (project / "view.ts").write_text("export const value = 1;\n", encoding="utf-8")
+    (project / "main.go").write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
+
+    factory = FakeProcessFactory()
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: "/bin/pyright-langserver" if name == "pyright-langserver" else None, factory)
+    service.enable(str(project), rebuild=True)
+
+    started = service.start_lsp(timeout_seconds=0.2)
+    publish_after_document_message(
+        factory,
+        "textDocument/didOpen",
+        1,
+        lambda message: service.lsp.sessions["pyright"]._handle_message(
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": (project / "tool.py").as_uri(),
+                    "version": message["params"]["textDocument"]["version"],
+                    "diagnostics": [],
+                },
+            }
+        ),
+    )
+    checked = service.check_lsp(timeout_seconds=0.2)
+
+    assert started.splitlines()[0] == f"LSP|partial|{project.as_posix()}"
+    assert "S:pyright/python/ready/files=1" in started
+    assert "S:tsserver/js-ts/missing/files=1" in started
+    assert "S:gopls/go/missing/files=1" in started
+    assert checked == "CHK|partial|files=1|unchecked=2|servers=gopls:missing:1,tsserver:missing:1"
+
+
+def test_lsp_check_reports_server_that_exited_after_start(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "view.ts").write_text("export const value = 1;\n", encoding="utf-8")
+
+    factory = FakeProcessFactory()
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: "/bin/typescript-language-server", factory)
+    service.enable(str(project), rebuild=True)
+    service.start_lsp(timeout_seconds=0.2)
+    factory.processes[0].returncode = 1
+
+    checked = service.check_lsp(timeout_seconds=0.2)
+
+    assert checked == "CHK|unavailable|servers=tsserver:error:1"
 
 
 def test_lsp_shutdown_stops_all_sessions(tmp_path: Path) -> None:

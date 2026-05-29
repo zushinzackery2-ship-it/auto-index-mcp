@@ -90,6 +90,8 @@ def _write_compile_commands(
 def _command_for_file(file_path: Path, profile: CompileProfile) -> list[str]:
     mode = "/TC" if file_path.suffix.lower() == ".c" else "/TP"
     command = [_compiler(), "/nologo", mode, *profile.flags, f"/std:{profile.standard}"]
+    if profile.target:
+        command.append(f"--target={profile.target}")
     command.extend(f"/D{define}" for define in _unique(("WIN32", "_WINDOWS", *profile.defines)))
     command.extend(f"/I{include}" for include in _unique(profile.includes))
     command.extend(["/c", str(file_path)])

@@ -115,13 +115,14 @@ auto_index_lsp_check(path?, limit=80, timeout_seconds=5.0)
 auto_index_lsp_shutdown(timeout_seconds=5.0)
 ```
 
-`clangd` 按 C family 建模，覆盖 C/C++/Objective-C/CUDA 相关扩展名。Windows 发布包自带 standalone `clangd 22.1.0`，会优先使用 `third-party/clangd_22.1.0/bin/clangd.exe`。Windows 安装器还会把 `pyright-langserver` 安装到项目 `.venv`，把 `typescript-language-server` 安装到 `.auto-index-mcp/lsp/npm` 托管 npm 工作区。找不到本地托管工具时才回退到 PATH。多语言项目会按索引结果尝试启动多个 server，例如 `clangd`、`pyright-langserver`、`typescript-language-server`、`rust-analyzer`、`gopls`。找不到可执行文件不会让整个启动失败，而是在压缩状态里标记 `missing`。
+`clangd` 按 C family 建模，覆盖 C/C++/Objective-C/CUDA 相关扩展名。Windows 发布包自带 standalone `clangd 22.1.0`，会优先使用 `third-party/clangd_22.1.0/bin/clangd.exe`。Windows 安装器还会把 `pyright-langserver` 安装到项目 `.venv`，把 `typescript-language-server` 安装到 `.auto-index-mcp/lsp/npm` 托管 npm 工作区；`gopls` 可放在 `.auto-index-mcp/lsp/go/bin` 由 resolver 优先发现。找不到本地托管工具时才回退到 PATH。多语言项目会按索引结果尝试启动多个 server，例如 `clangd`、`pyright-langserver`、`typescript-language-server`、`rust-analyzer`、`gopls`。找不到可执行文件不会让整个启动失败，而是在压缩状态里标记 `missing`。
 
 `clangd` 启动前会自动准备编译配置：
 
 - 优先复用项目已有 `compile_commands.json`，包括根目录、`build/**`、`out/**` 下的常见位置。
 - 项目没有编译数据库时，自动生成托管数据库到 `.auto-index-mcp/lsp/clangd/compile_commands.json`。
 - Windows C++ 项目会优先读取 `.vcxproj` 的 `Release|x64` 配置，按源文件归属选择对应 target 的宏、include 目录和 C++ 标准。
+- Windows kernel-driver `.vcxproj` 会识别 `WindowsKernelModeDriver*`/`Driver` 配置，并为 managed clangd 配置补充 WDK `km/shared/ucrt` include、目标架构宏和 clang target。
 - 项目已有 `.clangd` 时只检测并标记，不覆盖用户文件。
 - 生成的 `.auto-index-mcp` 属于本地状态，已被扫描器和 `.gitignore` 排除。
 
@@ -150,7 +151,7 @@ S:clangd/c-family/missing/files=4/ccdb=managed/.clangd-/cfg=vcxproj/std=c++20
 | `no_targets` | 当前索引里没有需要 LSP 的语言族。 |
 | `not_configured` | 尚未设置 auto-index 项目根目录。 |
 
-Windows C/C++ 项目只要发布包里保留 `third-party/clangd_22.1.0`，不需要额外安装 LLVM 或把 `clangd.exe` 加进 PATH。Python LSP 由安装器写入 `.venv`；JavaScript/TypeScript LSP 由安装器写入本地托管 npm 工作区，因此需要机器上已有 Node.js/npm。Rust 和 Go 的 server 仍按本机 PATH 查找。
+Windows C/C++ 项目只要发布包里保留 `third-party/clangd_22.1.0`，不需要额外安装 LLVM 或把 `clangd.exe` 加进 PATH。Python LSP 由安装器写入 `.venv`；JavaScript/TypeScript LSP 由安装器写入本地托管 npm 工作区，因此需要机器上已有 Node.js/npm。Go LSP 可从本地托管 Go 目录或 PATH 解析；没有 Go 或没有 `gopls` 时 `install_result.txt` 会记录 `gopls=missing-go` / `gopls=missing-gopls`，运行时状态会标记 `S:gopls/go/missing`。Rust server 仍按本机 PATH 查找。
 
 `shutdown` 会关闭当前项目下所有 LSP server：
 
@@ -178,6 +179,12 @@ LSP 尚未启动时返回：
 
 ```text
 CHK|not_started
+```
+
+如果目标语言的 server 没有可执行文件，`check` 会带上缺失 server 摘要：
+
+```text
+CHK|unavailable|servers=gopls:missing:4,tsserver:missing:12
 ```
 
 ---

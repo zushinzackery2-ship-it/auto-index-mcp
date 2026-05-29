@@ -95,6 +95,41 @@ def test_managed_clangd_database_maps_vcxproj_exception_handling(tmp_path: Path)
     assert "/EHsc" not in arguments
 
 
+def test_managed_clangd_database_adds_wdk_includes_for_kernel_driver(tmp_path: Path, monkeypatch: Any) -> None:
+    project = tmp_path / "project"
+    wdk_include_root = tmp_path / "wdk" / "Include"
+    for name in ("km", "shared", "ucrt"):
+        include_dir = wdk_include_root / "10.0.1.0" / name
+        include_dir.mkdir(parents=True)
+    (wdk_include_root / "10.0.1.0" / "km" / "ntifs.h").write_text("typedef int NTSTATUS;\n", encoding="utf-8")
+    monkeypatch.setenv("AUTO_INDEX_WDK_INCLUDE_ROOT", str(wdk_include_root))
+    monkeypatch.setenv("WindowsSDKVersion", "10.0.1.0")
+    source = project / "driver" / "main.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("#include <ntifs.h>\n", encoding="utf-8")
+    (source.parent / "driver.vcxproj").write_text(
+        _vcxproj(source, "RELEASE;%(PreprocessorDefinitions)", "", driver=True),
+        encoding="utf-8",
+    )
+    factory = FakeProcessFactory()
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.lsp = LspManager(lambda name: f"/bin/{name}", factory)
+    service.enable(str(project), rebuild=True)
+
+    service.start_lsp(timeout_seconds=0.2)
+    managed_db = project / ".auto-index-mcp" / "lsp" / "clangd" / "compile_commands.json"
+    rows = json.loads(managed_db.read_text(encoding="utf-8"))
+    arguments = rows[0]["arguments"]
+
+    assert "--target=x86_64-pc-windows-msvc" in arguments
+    assert "/D_AMD64_" in arguments
+    assert "/D_M_AMD64=100" in arguments
+    assert "/D_WIN64" in arguments
+    assert any(argument.startswith("/I") and argument.endswith("\\km") for argument in arguments)
+    assert any(argument.startswith("/I") and argument.endswith("\\shared") for argument in arguments)
+    assert any(argument.startswith("/I") and argument.endswith("\\ucrt") for argument in arguments)
+
+
 def test_managed_clangd_database_is_replaced_atomically(tmp_path: Path, monkeypatch: Any) -> None:
     project = tmp_path / "project"
     source = project / "main.cpp"
@@ -168,10 +203,18 @@ def test_full_lsp_check_skips_c_family_files_outside_managed_clangd_targets(tmp_
     assert platform_noise.as_uri() not in opened_uris
 
 
-def _vcxproj(source: Path, definitions: str, includes: str, exception_handling: str = "") -> str:
+def _vcxproj(source: Path, definitions: str, includes: str, exception_handling: str = "", driver: bool = False) -> str:
     exception_node = f"<ExceptionHandling>{exception_handling}</ExceptionHandling>" if exception_handling else ""
+    driver_group = """
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>KMDF</DriverType>
+  </PropertyGroup>
+""" if driver else ""
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  {driver_group}
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <PreprocessorDefinitions>{definitions}</PreprocessorDefinitions>

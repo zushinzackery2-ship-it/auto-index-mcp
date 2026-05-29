@@ -12,8 +12,11 @@ set "LOG_FILE=%PROJECT_ROOT%\install_windows.log"
 set "CLANGD_CHECK_FILE=%PROJECT_ROOT%\.clangd-check.tmp"
 set "PYRIGHT_CHECK_FILE=%PROJECT_ROOT%\.pyright-check.tmp"
 set "TSSERVER_CHECK_FILE=%PROJECT_ROOT%\.tsserver-check.tmp"
+set "GOPLS_CHECK_FILE=%PROJECT_ROOT%\.gopls-check.tmp"
 set "NPM_LSP_DIR=%PROJECT_ROOT%\.auto-index-mcp\lsp\npm"
+set "GO_LSP_DIR=%PROJECT_ROOT%\.auto-index-mcp\lsp\go"
 set "PYTHON_CMD="
+set "GO_LSP_STATUS=missing-gopls"
 
 if exist "%RESULT_FILE%" del /q "%RESULT_FILE%" >nul 2>nul
 if exist "%LOG_FILE%" del /q "%LOG_FILE%" >nul 2>nul
@@ -87,6 +90,15 @@ if errorlevel 1 (
     goto fail
 )
 
+go.exe version >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    call :log "Go was not found on PATH; Go LSP support remains unavailable."
+    set "GO_LSP_STATUS=missing-go"
+) else (
+    if not exist "%GO_LSP_DIR%\bin" mkdir "%GO_LSP_DIR%\bin" >nul 2>nul
+    call :log "Go was found on PATH; install gopls separately or place it in the managed Go bin directory to enable Go LSP support."
+)
+
 call :log "Verifying MCP server entrypoint."
 "%VENV_PY%" -m auto_index_mcp.server --help >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
@@ -136,6 +148,21 @@ if not defined TSSERVER_EXE (
 )
 call :log "TypeScript LSP: %TSSERVER_EXE%"
 
+if exist "%GOPLS_CHECK_FILE%" del /q "%GOPLS_CHECK_FILE%" >nul 2>nul
+"%VENV_PY%" -c "from auto_index_mcp.core.lsp_resolver import resolve_lsp_executable; print(resolve_lsp_executable('gopls') or '')" > "%GOPLS_CHECK_FILE%" 2>> "%LOG_FILE%"
+if errorlevel 1 (
+    set "FAIL_REASON=Go LSP resolver verification failed."
+    goto fail
+)
+set /p GOPLS_EXE=<"%GOPLS_CHECK_FILE%"
+del /q "%GOPLS_CHECK_FILE%" >nul 2>nul
+if defined GOPLS_EXE (
+    call :log "Go LSP: %GOPLS_EXE%"
+) else (
+    set "GOPLS_EXE=%GO_LSP_STATUS%"
+    call :log "Go LSP: %GO_LSP_STATUS%"
+)
+
 call :write_config
 
 (
@@ -145,6 +172,7 @@ call :write_config
     echo clangd=%CLANGD_EXE%
     echo pyright=%PYRIGHT_EXE%
     echo typescript_language_server=%TSSERVER_EXE%
+    echo gopls=%GOPLS_EXE%
     echo config_example=%CONFIG_FILE%
     echo log=%LOG_FILE%
     echo.

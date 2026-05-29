@@ -46,6 +46,8 @@ def _local_executable(name: str, root: Path) -> Path | None:
         root / ".venv" / "bin" / name,
         root / ".auto-index-mcp" / "lsp" / "npm" / "node_modules" / ".bin" / f"{name}.cmd",
         root / ".auto-index-mcp" / "lsp" / "npm" / "node_modules" / ".bin" / name,
+        root / ".auto-index-mcp" / "lsp" / "go" / "bin" / f"{name}.exe",
+        root / ".auto-index-mcp" / "lsp" / "go" / "bin" / name,
     )
     return _first_existing(candidates)
 

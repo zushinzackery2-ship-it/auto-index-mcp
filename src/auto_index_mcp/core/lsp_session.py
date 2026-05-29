@@ -33,6 +33,7 @@ class LspSession:
         self.diagnostics: dict[str, list[dict[str, Any]]] = {}
         self.open_versions: dict[str, int] = {}
         self.open_texts: dict[str, str] = {}
+        self.open_workspace_signatures: dict[str, str] = {}
         self.root_key: str | None = None
         self.next_id = 1
 
@@ -72,18 +73,36 @@ class LspSession:
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
-    def open_document(self, uri: str, language_id: str, version: int, text: str) -> None:
-        if self.open_texts.get(uri) == text and uri in self.diagnostics:
+    def open_document(self, uri: str, language_id: str, version: int, text: str, workspace_signature: str = "") -> None:
+        unchanged_text = self.open_texts.get(uri) == text
+        unchanged_workspace = self.open_workspace_signatures.get(uri) == workspace_signature
+        if unchanged_text and unchanged_workspace and uri in self.diagnostics:
             return
         next_version = max(version, self.open_versions.get(uri, 0) + 1)
         already_open = uri in self.open_versions
+        reopen = already_open and unchanged_text and not unchanged_workspace
         self.diagnostics.pop(uri, None)
         previous_version = self.open_versions.get(uri)
         previous_text = self.open_texts.get(uri)
+        previous_workspace_signature = self.open_workspace_signatures.get(uri)
         self.open_versions[uri] = next_version
         self.open_texts[uri] = text
+        self.open_workspace_signatures[uri] = workspace_signature
         try:
-            if already_open:
+            if reopen:
+                self._send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
+                self._send_notification(
+                    "textDocument/didOpen",
+                    {
+                        "textDocument": {
+                            "uri": uri,
+                            "languageId": language_id,
+                            "version": next_version,
+                            "text": text,
+                        }
+                    },
+                )
+            elif already_open:
                 self._send_notification(
                     "textDocument/didChange",
                     {
@@ -115,6 +134,10 @@ class LspSession:
                 self.open_texts.pop(uri, None)
             else:
                 self.open_texts[uri] = previous_text
+            if previous_workspace_signature is None:
+                self.open_workspace_signatures.pop(uri, None)
+            else:
+                self.open_workspace_signatures[uri] = previous_workspace_signature
             raise
 
     def wait_for_diagnostics(self, uris: set[str], timeout_seconds: float) -> None:
