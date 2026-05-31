@@ -256,6 +256,33 @@ def test_rebuild_reuse_if_fresh_skips_rescan(tmp_path: Path, monkeypatch) -> Non
     assert calls["n"] == 1
 
 
+def test_apply_skips_redundant_write_when_index_already_current(tmp_path: Path) -> None:
+    from auto_index_mcp.indexing.snapshot import WatchSnapshot, take_watch_snapshot
+    from auto_index_mcp.indexing.updater import IndexUpdater
+
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "main.py"
+    source.write_text("def a():\n    return 1\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+
+    updater = IndexUpdater(service.root_path, service.store, service.rebuild)
+    stale_previous = WatchSnapshot(files={}, child_indexes={})
+
+    # DB already matches the live tree (as if a peer process just wrote it):
+    # apply must skip the redundant read+resolve+write.
+    result = updater.apply(stale_previous, take_watch_snapshot(service.root_path))
+    assert result["status"] == "shared-index-current"
+
+    # After a real on-disk change (different size) the DB is stale, so apply
+    # must do the work rather than skip it.
+    source.write_text("def a():\n    return 123456789\n", encoding="utf-8")
+    result_stale = updater.apply(stale_previous, take_watch_snapshot(service.root_path))
+    assert result_stale["status"] == "incremental"
+
+
 def test_parent_workspace_reuses_child_index(tmp_path: Path) -> None:
     project = tmp_path / "project"
     child = project / "child"

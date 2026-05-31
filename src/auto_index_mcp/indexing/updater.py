@@ -56,6 +56,13 @@ class IndexUpdater:
             result["child_indexes_modified"] = len(child_modified)
             return result
         stored_records = {item["path"]: _dict_to_record(item) for item in self.store.all_files()}
+        if self._db_reflects_changes(stored_records, added, modified, deleted, current):
+            # Another process sharing this index already wrote these filesystem
+            # changes. Skip the redundant read+resolve+write; the watcher still
+            # realigns its snapshot to the live tree on return.
+            result = UpdateResult("shared-index-current", len(added), len(modified), len(deleted), 0, False, round(time.time() - start, 3)).to_dict()
+            result["child_indexes_modified"] = len(child_modified)
+            return result
         records = dict(stored_records)
         for path in deleted:
             records.pop(path, None)
@@ -77,6 +84,20 @@ class IndexUpdater:
         ).to_dict()
         result["child_indexes_modified"] = len(child_modified)
         return result
+
+    def _db_reflects_changes(
+        self,
+        stored_records: dict[str, FileRecord],
+        added: list[str],
+        modified: list[str],
+        deleted: list[str],
+        current: WatchSnapshot,
+    ) -> bool:
+        for path in added + modified:
+            record = stored_records.get(path)
+            if record is None or (record.size, record.mtime_ns) != current.files.get(path):
+                return False
+        return all(path not in stored_records for path in deleted)
 
     def refresh_child_links(self) -> None:
         children = discover_child_indexes(self.root, self.store.db_path)
