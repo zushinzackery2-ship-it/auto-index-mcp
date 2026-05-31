@@ -169,6 +169,11 @@ class LspClient:
     def diagnostics_for(self, uri: str) -> list[dict[str, Any]]:
         return self._diagnostics.get(normalize_uri(uri), [])
 
+    def received_diagnostics(self, uri: str) -> bool:
+        # True even when the list is empty (a published "clean" result),
+        # distinguishing it from diagnostics that simply have not arrived.
+        return normalize_uri(uri) in self._diagnostics
+
     # -- internals ---------------------------------------------------------
 
     def _notify_open(self, uri: str, language_id: str, version: int, text: str) -> None:
