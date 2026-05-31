@@ -11,6 +11,7 @@ __pycache__/
 mcp-client-config.windows.json
 install_result.txt
 install_windows.log
+third-party/
 build/
 dist/
 *.egg-info/

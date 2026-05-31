@@ -9,14 +9,7 @@ set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 set "CONFIG_FILE=%PROJECT_ROOT%\mcp-client-config.windows.json"
 set "RESULT_FILE=%PROJECT_ROOT%\install_result.txt"
 set "LOG_FILE=%PROJECT_ROOT%\install_windows.log"
-set "CLANGD_CHECK_FILE=%PROJECT_ROOT%\.clangd-check.tmp"
-set "PYRIGHT_CHECK_FILE=%PROJECT_ROOT%\.pyright-check.tmp"
-set "TSSERVER_CHECK_FILE=%PROJECT_ROOT%\.tsserver-check.tmp"
-set "GOPLS_CHECK_FILE=%PROJECT_ROOT%\.gopls-check.tmp"
-set "NPM_LSP_DIR=%PROJECT_ROOT%\.auto-index-mcp\lsp\npm"
-set "GO_LSP_DIR=%PROJECT_ROOT%\.auto-index-mcp\lsp\go"
 set "PYTHON_CMD="
-set "GO_LSP_STATUS=missing-gopls"
 
 if exist "%RESULT_FILE%" del /q "%RESULT_FILE%" >nul 2>nul
 if exist "%LOG_FILE%" del /q "%LOG_FILE%" >nul 2>nul
@@ -69,98 +62,11 @@ if errorlevel 1 (
     goto fail
 )
 
-call :log "Installing Python LSP server into the virtual environment."
-"%VENV_PY%" -m pip install --upgrade pyright >> "%LOG_FILE%" 2>&1
-if errorlevel 1 (
-    set "FAIL_REASON=Failed to install pyright."
-    goto fail
-)
-
-call npm.cmd --version >> "%LOG_FILE%" 2>&1
-if errorlevel 1 (
-    set "FAIL_REASON=npm was not found on PATH. Install Node.js to enable JavaScript/TypeScript LSP support."
-    goto fail
-)
-
-if not exist "%NPM_LSP_DIR%" mkdir "%NPM_LSP_DIR%" >nul 2>nul
-call :log "Installing JavaScript/TypeScript LSP server into the managed npm workspace."
-call npm.cmd --prefix "%NPM_LSP_DIR%" install --no-audit --fund=false typescript typescript-language-server >> "%LOG_FILE%" 2>&1
-if errorlevel 1 (
-    set "FAIL_REASON=Failed to install typescript-language-server."
-    goto fail
-)
-
-go.exe version >> "%LOG_FILE%" 2>&1
-if errorlevel 1 (
-    call :log "Go was not found on PATH; Go LSP support remains unavailable."
-    set "GO_LSP_STATUS=missing-go"
-) else (
-    if not exist "%GO_LSP_DIR%\bin" mkdir "%GO_LSP_DIR%\bin" >nul 2>nul
-    call :log "Go was found on PATH; install gopls separately or place it in the managed Go bin directory to enable Go LSP support."
-)
-
 call :log "Verifying MCP server entrypoint."
 "%VENV_PY%" -m auto_index_mcp.server --help >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
     set "FAIL_REASON=MCP server entrypoint verification failed."
     goto fail
-)
-
-if exist "%CLANGD_CHECK_FILE%" del /q "%CLANGD_CHECK_FILE%" >nul 2>nul
-"%VENV_PY%" -c "from auto_index_mcp.core.lsp_resolver import resolve_lsp_executable; print(resolve_lsp_executable('clangd') or '')" > "%CLANGD_CHECK_FILE%" 2>> "%LOG_FILE%"
-if errorlevel 1 (
-    set "FAIL_REASON=Bundled clangd resolver verification failed."
-    goto fail
-)
-set /p CLANGD_EXE=<"%CLANGD_CHECK_FILE%"
-del /q "%CLANGD_CHECK_FILE%" >nul 2>nul
-if not defined CLANGD_EXE (
-    set "FAIL_REASON=Bundled clangd resolver verification failed."
-    goto fail
-)
-call :log "Bundled clangd: %CLANGD_EXE%"
-
-if exist "%PYRIGHT_CHECK_FILE%" del /q "%PYRIGHT_CHECK_FILE%" >nul 2>nul
-"%VENV_PY%" -c "from auto_index_mcp.core.lsp_resolver import resolve_lsp_executable; print(resolve_lsp_executable('pyright-langserver') or '')" > "%PYRIGHT_CHECK_FILE%" 2>> "%LOG_FILE%"
-if errorlevel 1 (
-    set "FAIL_REASON=Pyright resolver verification failed."
-    goto fail
-)
-set /p PYRIGHT_EXE=<"%PYRIGHT_CHECK_FILE%"
-del /q "%PYRIGHT_CHECK_FILE%" >nul 2>nul
-if not defined PYRIGHT_EXE (
-    set "FAIL_REASON=Pyright resolver verification failed."
-    goto fail
-)
-call :log "Pyright LSP: %PYRIGHT_EXE%"
-
-if exist "%TSSERVER_CHECK_FILE%" del /q "%TSSERVER_CHECK_FILE%" >nul 2>nul
-"%VENV_PY%" -c "from auto_index_mcp.core.lsp_resolver import resolve_lsp_executable; print(resolve_lsp_executable('typescript-language-server') or '')" > "%TSSERVER_CHECK_FILE%" 2>> "%LOG_FILE%"
-if errorlevel 1 (
-    set "FAIL_REASON=TypeScript resolver verification failed."
-    goto fail
-)
-set /p TSSERVER_EXE=<"%TSSERVER_CHECK_FILE%"
-del /q "%TSSERVER_CHECK_FILE%" >nul 2>nul
-if not defined TSSERVER_EXE (
-    set "FAIL_REASON=TypeScript resolver verification failed."
-    goto fail
-)
-call :log "TypeScript LSP: %TSSERVER_EXE%"
-
-if exist "%GOPLS_CHECK_FILE%" del /q "%GOPLS_CHECK_FILE%" >nul 2>nul
-"%VENV_PY%" -c "from auto_index_mcp.core.lsp_resolver import resolve_lsp_executable; print(resolve_lsp_executable('gopls') or '')" > "%GOPLS_CHECK_FILE%" 2>> "%LOG_FILE%"
-if errorlevel 1 (
-    set "FAIL_REASON=Go LSP resolver verification failed."
-    goto fail
-)
-set /p GOPLS_EXE=<"%GOPLS_CHECK_FILE%"
-del /q "%GOPLS_CHECK_FILE%" >nul 2>nul
-if defined GOPLS_EXE (
-    call :log "Go LSP: %GOPLS_EXE%"
-) else (
-    set "GOPLS_EXE=%GO_LSP_STATUS%"
-    call :log "Go LSP: %GO_LSP_STATUS%"
 )
 
 call :write_config
@@ -169,10 +75,6 @@ call :write_config
     echo status=success
     echo project_root=%PROJECT_ROOT%
     echo python=%VENV_PY%
-    echo clangd=%CLANGD_EXE%
-    echo pyright=%PYRIGHT_EXE%
-    echo typescript_language_server=%TSSERVER_EXE%
-    echo gopls=%GOPLS_EXE%
     echo config_example=%CONFIG_FILE%
     echo log=%LOG_FILE%
     echo.

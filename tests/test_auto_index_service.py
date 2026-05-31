@@ -62,7 +62,7 @@ def test_default_index_lives_inside_project_root(tmp_path: Path) -> None:
 
 def test_third_party_directory_is_not_indexed(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    third_party = project / "third-party" / "clangd_22.1.0" / "lib"
+    third_party = project / "third-party" / "vendor" / "lib"
     third_party.mkdir(parents=True)
     (project / "main.py").write_text("print('indexed')\n", encoding="utf-8")
     (third_party / "noise.h").write_text("#define NOISE 1\n", encoding="utf-8")

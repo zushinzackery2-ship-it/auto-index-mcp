@@ -30,7 +30,6 @@
 | **符号索引** | 支持 Python AST 符号，JavaScript/TypeScript/通用文本轻量符号提取。 |
 | **代码搜索** | 优先使用 ripgrep；遇到嵌套数据库时使用索引文件集合回退搜索。 |
 | **自动刷新** | 使用系统文件变更事件触发，短 debounce 合并连续变更，再做轻量快照比对。 |
-| **LSP 语义检查** | 基于当前索引项目自动探测语言族，Windows 发布包内置 `clangd` 并主动拉取 diagnostics。 |
 | **兼容工具名** | 保留常用文件查找、摘要、符号体、代码搜索等兼容入口。 |
 | **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
 
@@ -41,7 +40,7 @@
 | 分类 | API | 说明 |
 |:-----|:----|:-----|
 | **生命周期** | `auto_index_enable()` | 设置项目根目录，可选择立即重建索引。 |
-| **生命周期** | `auto_index_disable()` | 停用当前索引状态并停止当前项目语义服务。 |
+| **生命周期** | `auto_index_disable()` | 停用当前索引状态并停止自动刷新。 |
 | **生命周期** | `auto_index_status()` | 返回根目录、索引库路径、文件数量、更新时间、最近错误。 |
 | **生命周期** | `auto_index_rebuild()` | 强制全量扫描并重写持久索引。 |
 | **生命周期** | `auto_index_clear()` | 清空索引数据，可选择删除 SQLite 文件。 |
@@ -58,9 +57,6 @@
 | **自动刷新** | `auto_index_watcher_start()` | 启动文件系统事件驱动的自动刷新。 |
 | **自动刷新** | `auto_index_watcher_stop()` | 停止文件系统事件驱动的自动刷新。 |
 | **自动刷新** | `auto_index_watcher_status()` | 查看 watcher 运行状态、触发次数、最近结果。 |
-| **LSP** | `auto_index_lsp_start()` | 为当前索引项目自动启动可用 LSP server，返回压缩状态文本。 |
-| **LSP** | `auto_index_lsp_check()` | 主动拉取当前项目或指定文件的 LSP diagnostics，返回高密度文本摘要。 |
-| **LSP** | `auto_index_lsp_shutdown()` | 关闭当前项目下所有 LSP server。 |
 | **兼容入口** | `set_project_path()` | 用常见项目设置工具名初始化或复用已有索引。 |
 | **兼容入口** | `find_files()` | 按 glob 或文件名查找索引文件。 |
 | **兼容入口** | `get_file_summary()` | 返回单文件 import、符号和复杂度摘要。 |
@@ -83,10 +79,6 @@
 | `languages/` | Python、JavaScript/TypeScript 和通用文本符号提取。 |
 | `search/` | ripgrep/Python fallback 搜索后端。 |
 | `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、兼容入口拆分。 |
-| `core/lsp.py` | LSP server 自动探测、进程生命周期、JSON-RPC initialize/shutdown、压缩状态输出。 |
-| `core/lsp_checks.py` | LSP diagnostics 拉取、文件打开预算控制、缺失 server 摘要。 |
-| `core/clangd_bootstrap.py` | `clangd` 编译数据库自动发现和托管配置生成。 |
-| `core/msbuild_profile.py` | `.vcxproj` 配置解析、源文件归属匹配、MSVC 宏和 include 提取。 |
 | `compatibility/` | 常见兼容工具名和返回格式适配。 |
 
 ---
@@ -104,102 +96,6 @@
 - 因此，已索引文件的内容刚被修改后，正文搜索通常能立即命中新内容；结构摘要和符号关系仍以索引刷新后的数据为准。
 
 这个分工让低上下文导航保持稳定范围，同时让代码正文搜索尽量贴近磁盘上的最新内容。
-
-## LSP 生命周期
-
-LSP 是索引层之上的按需语义增强。Agent 不需要传项目根目录或语言；`auto_index_lsp_start()` 直接复用 `auto_index_enable()` / `set_project_path()` 已经设置的当前项目，并从索引文件集合里自动统计语言族。
-
-LSP 工具只暴露面向 Agent 的高层入口，不暴露原始 `textDocument/*` 协议：
-
-```text
-auto_index_lsp_start(timeout_seconds=10.0)
-auto_index_lsp_check(path?, limit=80, timeout_seconds=5.0)
-auto_index_lsp_shutdown(timeout_seconds=5.0)
-```
-
-`clangd` 按 C family 建模，覆盖 C/C++/Objective-C/CUDA 相关扩展名。Windows 发布包自带 standalone `clangd 22.1.0`，会优先使用 `third-party/clangd_22.1.0/bin/clangd.exe`。Windows 安装器还会把 `pyright-langserver` 安装到项目 `.venv`，把 `typescript-language-server` 安装到 `.auto-index-mcp/lsp/npm` 托管 npm 工作区；`gopls` 可放在 `.auto-index-mcp/lsp/go/bin` 由 resolver 优先发现。找不到本地托管工具时才回退到 PATH。多语言项目会按索引结果尝试启动多个 server，例如 `clangd`、`pyright-langserver`、`typescript-language-server`、`rust-analyzer`、`gopls`。找不到可执行文件不会让整个启动失败，而是在压缩状态里标记 `missing`。
-
-`clangd` 启动前会自动准备编译配置：
-
-- 优先复用项目已有 `compile_commands.json`，包括根目录、`build/**`、`out/**` 下的常见位置。
-- 项目没有编译数据库时，自动生成托管数据库到 `.auto-index-mcp/lsp/clangd/compile_commands.json`。
-- Windows C++ 项目会优先读取 `.vcxproj` 的 `Release|x64` 配置，按源文件归属选择对应 target 的宏、include 目录和 C++ 标准。
-- Windows kernel-driver `.vcxproj` 会识别 `WindowsKernelModeDriver*`/`Driver` 配置，并为 managed clangd 配置补充 WDK `km/shared/ucrt` include、目标架构宏和 clang target。
-- 项目已有 `.clangd` 时只检测并标记，不覆盖用户文件。
-- 生成的 `.auto-index-mcp` 属于本地状态，已被扫描器和 `.gitignore` 排除。
-- 重复 `auto_index_lsp_start()` 会复用未变化的 clangd bootstrap；索引中的 C family 文件、`.vcxproj`、根目录 `.clangd` 或根目录 `compile_commands.json` 变化后才会重新准备配置。
-
-`auto_index_lsp_start()` 面向 Agent 高频调用做了幂等快路径：已有可复用会话时直接返回缓存后的 `ready` 状态；冷启动或 server 初始化较慢时，MCP 调用线程不会等待到 server 完成初始化，而是启动后台任务并返回 `LSP|starting|...`。后续重复调用只读取当前启动状态，不会重复创建第二个 LSP 进程，也不会继续阻塞调用方。
-
-```text
-LSP|starting|D:/Project|elapsed=0.013
-```
-
-返回值使用面向 Agent 的高密度文本，减少重复 JSON 字段名：
-
-```text
-LSP|partial|D:/Project
-S:clangd/c-family/ready/files=342/ccdb=project:build/.clangd+/cfg=project
-S:pyright/python/missing/files=28
-```
-
-没有项目编译数据库时，`clangd` 行会标记托管配置来源：
-
-```text
-LSP|unavailable|D:/Project
-S:clangd/c-family/missing/files=4/ccdb=managed/.clangd-/cfg=vcxproj/std=c++20
-```
-
-状态头含义：
-
-| 状态 | 含义 |
-|:-----|:-----|
-| `starting` | LSP 冷启动已在后台进行，重复调用只返回启动状态，不阻塞等待。 |
-| `ready` | 目标语言族的 server 都已可用。 |
-| `partial` | 部分 server 可用，部分缺失或启动失败。 |
-| `unavailable` | 项目有可识别语言族，但没有任何 server 可用。 |
-| `no_targets` | 当前索引里没有需要 LSP 的语言族。 |
-| `not_configured` | 尚未设置 auto-index 项目根目录。 |
-
-Windows C/C++ 项目只要发布包里保留 `third-party/clangd_22.1.0`，不需要额外安装 LLVM 或把 `clangd.exe` 加进 PATH。Python LSP 由安装器写入 `.venv`；JavaScript/TypeScript LSP 由安装器写入本地托管 npm 工作区，因此需要机器上已有 Node.js/npm。Go LSP 可从本地托管 Go 目录或 PATH 解析；没有 Go 或没有 `gopls` 时 `install_result.txt` 会记录 `gopls=missing-go` / `gopls=missing-gopls`，运行时状态会标记 `S:gopls/go/missing`。Rust server 仍按本机 PATH 查找。
-
-`shutdown` 会关闭当前项目下所有 LSP server：
-
-```text
-LSP|stopped|D:/Project
-S:clangd/stopped
-S:pyright/stopped
-```
-
-`check` 是主动拉取 diagnostics 的入口。MCP 不会把后台 LSP 结果主动注入 Agent 上下文；Agent 需要调用 `auto_index_lsp_check()` 才会得到语义检查结果。未指定文件时会按 `timeout_seconds` 的总预算打开项目目标文件；预算耗尽会返回 `partial` 和 `unchecked`，不会为了全项目检查无限等待。
-
-LSP client 会响应常见 server-initiated request，使用客户端侧自增文档版本，并归一化 Windows file URI（例如 `file:///D:/...` 与 `file:///d%3A/...`），避免 server 已 ready 但 diagnostics 被误丢弃。
-
-```text
-CHK|issues|count=2|files=1|limit=80
-E|src/main.cpp|12:5|unknown type name 'Foo'
-W|src/app.py|8:1|unused import os
-```
-
-无诊断时返回：
-
-```text
-CHK|clean|files=42
-```
-
-LSP 尚未启动时返回：
-
-```text
-CHK|not_started
-```
-
-如果目标语言的 server 没有可执行文件，`check` 会带上缺失 server 摘要：
-
-```text
-CHK|unavailable|servers=gopls:missing:4,tsserver:missing:12
-```
-
----
 
 ## 索引存储
 
@@ -249,9 +145,6 @@ auto-index-mcp/
 |       |-- workspace/
 |       |-- __main__.py
 |       `-- server.py
-|-- third-party/
-|   `-- clangd_22.1.0/
-|       `-- bin/clangd.exe
 |-- tests/
 |   |-- test_auto_index_service.py
 |   `-- test_watcher_updates.py
