@@ -26,31 +26,41 @@ def enrich_symbols(lines: list[str], symbols: list[SymbolRecord]) -> list[Symbol
                 called_by=[],
             )
         )
-    return _resolve_local_callers(enriched)
+    return enriched
 
 
 def resolve_project_callers(records: list[FileRecord]) -> list[FileRecord]:
+    # Authoritative recompute: called_by is derived entirely from the (stable) calls
+    # data of the current record set, never seeded from previously stored called_by.
+    # This keeps the reverse-call graph self-healing - references to files that were
+    # deleted or renamed simply stop being recomputed instead of lingering forever.
     symbol_locations: dict[str, list[tuple[int, int]]] = {}
     for record_index, record in enumerate(records):
         for symbol_index, symbol in enumerate(record.symbols):
             symbol_locations.setdefault(symbol.name, []).append((record_index, symbol_index))
 
-    callers: dict[tuple[int, int], list[str]] = {}
+    local_callers: dict[tuple[int, int], list[str]] = {}
+    project_callers: dict[tuple[int, int], list[str]] = {}
     for record_index, record in enumerate(records):
+        local_names = {symbol.name for symbol in record.symbols}
         for symbol in record.symbols:
-            caller_name = f"{record.path}::{symbol.name}"
+            project_caller = f"{record.path}::{symbol.name}"
             for call in symbol.calls:
+                if call in local_names and call != symbol.name:
+                    for location in symbol_locations[call]:
+                        if location[0] == record_index:
+                            local_callers.setdefault(location, []).append(symbol.name)
                 locations = symbol_locations.get(call, [])
-                if len(locations) != 1:
-                    continue
-                callers.setdefault(locations[0], []).append(caller_name)
+                if len(locations) == 1:
+                    project_callers.setdefault(locations[0], []).append(project_caller)
 
     updated_records = []
     for record_index, record in enumerate(records):
         symbols = []
         for symbol_index, symbol in enumerate(record.symbols):
-            merged = list(dict.fromkeys(symbol.called_by + callers.get((record_index, symbol_index), [])))
-            symbols.append(replace(symbol, called_by=merged))
+            location = (record_index, symbol_index)
+            resolved = list(dict.fromkeys(local_callers.get(location, []) + project_callers.get(location, [])))
+            symbols.append(replace(symbol, called_by=resolved))
         updated_records.append(replace(record, symbols=symbols))
     return updated_records
 
@@ -71,28 +81,6 @@ def _calls(lines: list[str], own_name: str) -> list[str]:
             if name not in calls:
                 calls.append(name)
     return calls
-
-
-def _resolve_local_callers(symbols: list[SymbolRecord]) -> list[SymbolRecord]:
-    names = {symbol.name for symbol in symbols}
-    callers: dict[str, list[str]] = {name: [] for name in names}
-    for symbol in symbols:
-        for call in symbol.calls:
-            if call in callers and symbol.name not in callers[call]:
-                callers[call].append(symbol.name)
-    return [
-        SymbolRecord(
-            name=symbol.name,
-            kind=symbol.kind,
-            line=symbol.line,
-            end_line=symbol.end_line,
-            signature=symbol.signature,
-            complexity=symbol.complexity,
-            calls=symbol.calls,
-            called_by=callers[symbol.name],
-        )
-        for symbol in symbols
-    ]
 
 
 def _strip_comments(line: str) -> str:

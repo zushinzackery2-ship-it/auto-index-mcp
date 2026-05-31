@@ -18,7 +18,10 @@ class CompatService:
             db_existed = self.service._db_path(root).exists()
             result = self.service.enable(str(root), rebuild=False)
             if db_existed and self._can_reuse_index(root):
-                self.service.sync_index_to_filesystem()
+                # Reuse the existing index and return immediately. Catching up
+                # files changed while offline is the watcher's job: its first
+                # background tick diffs the live tree against the index, so doing
+                # the same full os.walk synchronously here only blocks the request.
                 result = self.service.status()
             else:
                 result = self.service.rebuild()

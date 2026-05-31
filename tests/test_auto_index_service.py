@@ -164,6 +164,71 @@ def test_cross_file_called_by(tmp_path: Path) -> None:
     assert "a.py::run" in helper["called_by"]
 
 
+def test_rebuild_prunes_called_by_for_deleted_file(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "a.py").write_text("from b import helper\n\ndef run():\n    return helper()\n", encoding="utf-8")
+    (project / "b.py").write_text("def helper():\n    return True\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+
+    helper = next(s for s in service.file_summary("b.py")["symbols"] if s["name"] == "helper")
+    assert "a.py::run" in helper["called_by"]
+
+    (project / "a.py").unlink()
+    rebuild = service.rebuild()
+
+    # b.py is unchanged on disk so it is reused, yet the reverse reference to the
+    # deleted a.py must not survive the reuse path.
+    assert rebuild["reused"] >= 1
+    assert all(item["path"] != "a.py" for item in service.all_files())
+    helper = next(s for s in service.file_summary("b.py")["symbols"] if s["name"] == "helper")
+    assert "a.py::run" not in helper["called_by"]
+
+
+def test_incremental_update_prunes_called_by_for_deleted_file(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "a.py").write_text("from b import helper\n\ndef run():\n    return helper()\n", encoding="utf-8")
+    (project / "b.py").write_text("def helper():\n    return True\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+
+    helper = next(s for s in service.file_summary("b.py")["symbols"] if s["name"] == "helper")
+    assert "a.py::run" in helper["called_by"]
+
+    (project / "a.py").unlink()
+    service.sync_index_to_filesystem()
+
+    assert all(item["path"] != "a.py" for item in service.all_files())
+    helper = next(s for s in service.file_summary("b.py")["symbols"] if s["name"] == "helper")
+    assert "a.py::run" not in helper["called_by"]
+
+
+def test_set_project_path_reuse_skips_synchronous_catch_up(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+
+    # First service builds the persistent index.
+    CompatService(AutoIndexService(index_root=tmp_path / "index")).set_project_path(str(project))
+
+    # A fresh service reusing that index must NOT run a synchronous filesystem
+    # catch-up on the request thread; the watcher owns offline catch-up.
+    reused = AutoIndexService(index_root=tmp_path / "index")
+
+    def _fail_sync(*args: object, **kwargs: object) -> dict:
+        raise AssertionError("reuse path must not call sync_index_to_filesystem")
+
+    monkeypatch.setattr(reused, "sync_index_to_filesystem", _fail_sync)
+    result = CompatService(reused).set_project_path(str(project))
+
+    assert "Indexed 1 total files" in result
+    assert "main.py" in [item["path"] for item in reused.all_files()]
+
+
 def test_parent_workspace_reuses_child_index(tmp_path: Path) -> None:
     project = tmp_path / "project"
     child = project / "child"
