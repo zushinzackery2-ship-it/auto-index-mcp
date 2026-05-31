@@ -229,6 +229,33 @@ def test_set_project_path_reuse_skips_synchronous_catch_up(tmp_path: Path, monke
     assert "main.py" in [item["path"] for item in reused.all_files()]
 
 
+def test_rebuild_reuse_if_fresh_skips_rescan(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)  # builds a fresh index
+
+    calls = {"n": 0}
+    real_rebuild = service._rebuild_now
+
+    def _spy() -> dict:
+        calls["n"] += 1
+        return real_rebuild()
+
+    monkeypatch.setattr(service, "_rebuild_now", _spy)
+
+    # Index is already fresh: reuse_if_fresh must not trigger a rescan.
+    service.rebuild(reuse_if_fresh=True)
+    assert calls["n"] == 0
+    assert "main.py" in [item["path"] for item in service.all_files()]
+
+    # A forced rebuild still rescans.
+    service.rebuild()
+    assert calls["n"] == 1
+
+
 def test_parent_workspace_reuses_child_index(tmp_path: Path) -> None:
     project = tmp_path / "project"
     child = project / "child"

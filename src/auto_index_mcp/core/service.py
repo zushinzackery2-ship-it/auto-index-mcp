@@ -4,12 +4,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import DEFAULT_WATCH_DEBOUNCE_SECONDS, project_index_root
+from .config import DEFAULT_BUILD_LOCK_WAIT_SECONDS, DEFAULT_WATCH_DEBOUNCE_SECONDS, project_index_root
 from .navigation_format import compact_file, overview_result, tree_result
 from ..workspace.view import WorkspaceView
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.scanner import SourceScanner
 from ..indexing.snapshot import snapshot_from_index, take_watch_snapshot
+from ..indexing.build_lock import BuildLock
 from ..search.backend import search_text
 from ..indexing.store import IndexStore
 from ..indexing.updater import IndexUpdater
@@ -57,8 +58,20 @@ class AutoIndexService:
         self.enabled = False
         return self.status()
 
-    def rebuild(self) -> dict[str, Any]:
+    def rebuild(self, reuse_if_fresh: bool = False) -> dict[str, Any]:
         self._require_ready()
+        lock = BuildLock(self.index_root / "index.build.lock")
+        acquired = lock.acquire(DEFAULT_BUILD_LOCK_WAIT_SECONDS)
+        try:
+            # When another process already built a fresh index for this root
+            # while we waited for the lock, reuse it instead of scanning again.
+            if reuse_if_fresh and acquired and self._index_is_fresh():
+                return self.status()
+            return self._rebuild_now()
+        finally:
+            lock.release()
+
+    def _rebuild_now(self) -> dict[str, Any]:
         start = time.time()
         existing = {item["path"]: item for item in self.store.all_files()}
         children = discover_child_indexes(self.root_path, self.store.db_path)
@@ -79,6 +92,16 @@ class AutoIndexService:
             "elapsed_seconds": round(time.time() - start, 3),
             "index_path": str(self.store.db_path),
         }
+
+    def _index_is_fresh(self) -> bool:
+        if self.store is None or self.root_path is None:
+            return False
+        meta = self.store.get_metadata_map()
+        return (
+            meta.get("root") == str(self.root_path)
+            and meta.get("updated_at") is not None
+            and int(meta.get("file_count", 0)) > 0
+        )
 
     def status(self) -> dict[str, Any]:
         meta = self.store.get_metadata_map() if self.store else {}

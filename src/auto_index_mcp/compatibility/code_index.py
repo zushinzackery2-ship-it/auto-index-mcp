@@ -24,7 +24,10 @@ class CompatService:
                 # the same full os.walk synchronously here only blocks the request.
                 result = self.service.status()
             else:
-                result = self.service.rebuild()
+                # First-time build: a cross-process lock collapses concurrent
+                # agents pointing at the same directory into a single rebuild;
+                # losers reuse the index the winner just produced.
+                result = self.service.rebuild(reuse_if_fresh=True)
         total = result.get("total_file_count", result["file_count"])
         child_count = result.get("child_index_count", 0)
         child_suffix = f" across {child_count} child indexes" if child_count else ""

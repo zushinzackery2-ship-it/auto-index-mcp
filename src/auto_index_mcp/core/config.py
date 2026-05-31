@@ -4,6 +4,9 @@ from pathlib import Path
 
 INDEX_VERSION = 2
 DEFAULT_WATCH_DEBOUNCE_SECONDS = 0.25
+# How long a rebuild waits for a concurrent process to finish building the
+# shared index before it falls back to building unsynchronised itself.
+DEFAULT_BUILD_LOCK_WAIT_SECONDS = 60.0
 
 DEFAULT_EXCLUDE_DIRS = {
     ".git",
