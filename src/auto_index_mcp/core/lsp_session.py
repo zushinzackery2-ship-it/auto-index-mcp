@@ -8,7 +8,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
-from urllib.parse import unquote
+
+from .lsp_protocol import normalize_uri, read_headers
+from .lsp_writer import LspWriter
 
 
 ProcessFactory = Callable[..., subprocess.Popen]
@@ -38,6 +40,7 @@ class LspSession:
         self.root_key: str | None = None
         self.next_id = 1
         self._send_lock = threading.Lock()
+        self._writer = LspWriter(self.spec.key)
 
     def start(self, root: Path, timeout_seconds: float) -> str:
         try:
@@ -53,6 +56,10 @@ class LspSession:
                 threading.Thread(target=self._read_stdout, args=(self.process.stdout,), daemon=True).start()
             if self.process.stderr:
                 threading.Thread(target=self._read_stderr, args=(self.process.stderr,), daemon=True).start()
+            if not self.process.stdin:
+                self.shutdown(0.2)
+                return "error"
+            self._writer.start(self.process.stdin)
             request_id = self._send_request(
                 "initialize",
                 {
@@ -76,7 +83,7 @@ class LspSession:
         return self.process is not None and self.process.poll() is None
 
     def open_document(self, uri: str, language_id: str, version: int, text: str, workspace_signature: str = "") -> None:
-        uri = _normalize_uri(uri)
+        uri = normalize_uri(uri)
         unchanged_text = self.open_texts.get(uri) == text
         unchanged_workspace = self.open_workspace_signatures.get(uri) == workspace_signature
         if unchanged_text and unchanged_workspace and uri in self.diagnostics:
@@ -93,7 +100,7 @@ class LspSession:
         self.open_workspace_signatures[uri] = workspace_signature
         try:
             if reopen:
-                self._send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
+                self._send_notification("textDocument/didClose", {"textDocument": {"uri": uri}}, wait=False)
                 self._send_notification(
                     "textDocument/didOpen",
                     {
@@ -104,6 +111,7 @@ class LspSession:
                             "text": text,
                         }
                     },
+                    wait=False,
                 )
             elif already_open:
                 self._send_notification(
@@ -115,6 +123,7 @@ class LspSession:
                         },
                         "contentChanges": [{"text": text}],
                     },
+                    wait=False,
                 )
             else:
                 self._send_notification(
@@ -127,6 +136,7 @@ class LspSession:
                             "text": text,
                         }
                     },
+                    wait=False,
                 )
         except OSError:
             if previous_version is None:
@@ -159,6 +169,7 @@ class LspSession:
             request_id = self._send_request("shutdown", None)
             self._wait_for_response(request_id, timeout_seconds)
             self._send_notification("exit", None)
+            self._writer.stop()
             self.process.wait(timeout=timeout_seconds)
             return "stopped"
         except (OSError, subprocess.TimeoutExpired):
@@ -172,20 +183,19 @@ class LspSession:
     def _send_request(self, method: str, params: Any) -> int:
         request_id = self.next_id
         self.next_id += 1
-        self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}, wait=True)
         return request_id
 
-    def _send_notification(self, method: str, params: Any) -> None:
-        self._send({"jsonrpc": "2.0", "method": method, "params": params})
+    def _send_notification(self, method: str, params: Any, wait: bool = True) -> None:
+        self._send({"jsonrpc": "2.0", "method": method, "params": params}, wait=wait)
 
-    def _send(self, payload: dict[str, Any]) -> None:
+    def _send(self, payload: dict[str, Any], wait: bool = True) -> None:
         if not self.process or not self.process.stdin:
             raise OSError("LSP process stdin is not available")
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
         with self._send_lock:
-            self.process.stdin.write(header + body)
-            self.process.stdin.flush()
+            self._writer.send(header + body, wait=wait)
 
     def _wait_for_response(self, request_id: int, timeout_seconds: float) -> dict[str, Any] | None:
         deadline = time.time() + timeout_seconds
@@ -201,7 +211,7 @@ class LspSession:
     def _read_stdout(self, stream: BinaryIO) -> None:
         while True:
             try:
-                headers = _read_headers(stream)
+                headers = read_headers(stream)
                 if not headers:
                     return
                 length = int(headers.get("content-length", "0"))
@@ -219,7 +229,7 @@ class LspSession:
             params = message.get("params") or {}
             uri = params.get("uri")
             if isinstance(uri, str):
-                uri = _normalize_uri(uri)
+                uri = normalize_uri(uri)
                 expected_version = self.open_versions.get(uri)
                 if expected_version is None:
                     return
@@ -269,26 +279,3 @@ class LspSession:
                     self.stderr_lines.put_nowait(text)
             except OSError:
                 return
-
-
-def _normalize_uri(uri: str) -> str:
-    if not uri.startswith("file:///"):
-        return uri
-    decoded = unquote(uri)
-    prefix_length = len("file:///")
-    if len(decoded) > prefix_length + 1 and decoded[prefix_length].isalpha() and decoded[prefix_length + 1] == ":":
-        return f"file:///{decoded[prefix_length].upper()}{decoded[prefix_length + 1:]}"
-    return decoded
-
-
-def _read_headers(stream: BinaryIO) -> dict[str, str]:
-    headers = {}
-    while True:
-        line = stream.readline()
-        if not line:
-            return {}
-        if line in (b"\r\n", b"\n"):
-            return headers
-        name, _, value = line.decode("ascii", errors="ignore").partition(":")
-        if name:
-            headers[name.strip().lower()] = value.strip()

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import queue
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -11,6 +13,7 @@ from .lsp_specs import SERVER_SPECS, diagnostic_line, format_check_result, is_fi
 
 
 DocumentReader = Callable[[dict[str, Any]], tuple[str, str]]
+IO_SLICE_SECONDS = 0.25
 
 
 def remaining_seconds(deadline: float) -> float:
@@ -26,22 +29,24 @@ class LspCheckMixin:
         path: str | None = None,
         limit: int = 80,
         timeout_seconds: float = 5.0,
+        workspace_signature_seed: str = "",
     ) -> str:
         if root is None:
             return "CHK|not_configured"
         timeout_seconds = max(0.1, timeout_seconds)
         deadline = time.monotonic() + timeout_seconds
+        targets = self._check_targets(root, files, path)
+        if path and not targets:
+            return f"CHK|not_found|{path}"
+        target_context = targets if path else files
         running = {key: session for key, session in self.sessions.items() if session.is_running()}
-        self._mark_stopped_sessions_unavailable(files, running)
+        self._mark_stopped_sessions_unavailable(target_context, running)
         if not running:
             if self.unavailable_servers:
                 return self._unavailable_check_result()
             return "CHK|not_started"
 
-        targets = self._check_targets(root, files, path)
-        if path and not targets:
-            return f"CHK|not_found|{path}"
-        workspace_signature = self._workspace_signature(files)
+        workspace_signature = self._workspace_signature(target_context, workspace_signature_seed)
         missing_server_keys = self._missing_target_server_keys(targets, running)
         opened, unchecked = self._open_targets(targets, running, read_document, workspace_signature, deadline)
         missing_diagnostics = self._wait_for_opened_diagnostics(opened, remaining_seconds(deadline))
@@ -53,10 +58,11 @@ class LspCheckMixin:
     def _check_targets(self, root: Path, files: list[dict[str, Any]], path: str | None) -> list[dict[str, Any]]:
         if not path:
             return self._default_check_targets(files)
-        needle = path.replace("\\", "/").strip("/").lower()
-        indexed = [item for item in files if item["path"].lower() == needle]
-        if indexed:
-            return indexed
+        if files:
+            needle = path.replace("\\", "/").strip("/").lower()
+            indexed = [item for item in files if item["path"].lower() == needle]
+            if indexed:
+                return indexed
         return self._filesystem_target(root, path)
 
     def _default_check_targets(self, files: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -111,15 +117,20 @@ class LspCheckMixin:
                 unchecked += 1
                 continue
             try:
-                text, uri = read_document(item)
-                session.open_document(uri, language_id(item), int(item.get("mtime_ns", 1)), text, workspace_signature)
+                text, uri = _run_with_budget(lambda: read_document(item), deadline)
+                _run_with_budget(
+                    lambda: session.open_document(uri, language_id(item), int(item.get("mtime_ns", 1)), text, workspace_signature),
+                    deadline,
+                )
                 opened.append((session, uri, item["path"]))
-            except (OSError, UnicodeDecodeError, ValueError):
+            except (OSError, UnicodeDecodeError, ValueError, TimeoutError):
                 unchecked += 1
         return opened, unchecked
 
-    def _workspace_signature(self, files: list[dict[str, Any]]) -> str:
+    def _workspace_signature(self, files: list[dict[str, Any]], seed: str = "") -> str:
         digest = hashlib.sha1()
+        digest.update(seed.encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
         for item in sorted(files, key=lambda value: value["path"]):
             if not any(is_file_supported(spec, item) for spec in SERVER_SPECS):
                 continue
@@ -189,6 +200,31 @@ class LspCheckMixin:
 
     def _unavailable_server_details(self, keys: set[str]) -> str:
         return ",".join(f"{key}:{state}:{count}" for key, (state, count) in sorted(self.unavailable_servers.items()) if key in keys)
+
+def _run_with_budget(operation: Callable[[], Any], deadline: float) -> Any:
+    remaining = remaining_seconds(deadline)
+    if remaining <= 0:
+        raise TimeoutError("LSP check budget exhausted")
+    result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def worker() -> None:
+        try:
+            result_queue.put_nowait((True, operation()))
+        except BaseException as exc:
+            try:
+                result_queue.put_nowait((False, exc))
+            except queue.Full:
+                pass
+
+    thread = threading.Thread(target=worker, name="auto-index-lsp-check-io", daemon=True)
+    thread.start()
+    try:
+        ok, value = result_queue.get(timeout=min(remaining, IO_SLICE_SECONDS))
+    except queue.Empty as exc:
+        raise TimeoutError("LSP check IO operation timed out") from exc
+    if ok:
+        return value
+    raise value
 
 
 def _add_item_signature(digest: Any, item: dict[str, Any]) -> None:

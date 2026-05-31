@@ -76,13 +76,12 @@ class LspManager(LspCheckMixin):
                     unavailable_servers[spec.key] = (state, count)
                 else:
                     session = LspSession(effective, executable, self.process_factory)
-                    self.sessions[spec.key] = session
                     state = session.start(root, max(0.1, remaining_seconds(deadline)))
                     if state == "ready":
+                        self.sessions[spec.key] = session
                         self.session_signatures[spec.key] = signature
                         ready_count += 1
                     else:
-                        self.sessions.pop(spec.key, None)
                         error_count += 1
                         unavailable_servers[spec.key] = (state, count)
             lines.append(self._server_line(spec, state, count, root, bootstrap))
@@ -132,6 +131,17 @@ class LspManager(LspCheckMixin):
             if self._is_starting(root):
                 return self._starting_result(root)
             return self._last_start_result
+
+    def check_start_status(self, root: Path | None) -> str | None:
+        if root is None:
+            return None
+        with self._start_lock:
+            if not self._is_starting(root):
+                return None
+            elapsed = ""
+            if self._last_start_updated_at is not None:
+                elapsed = f"|elapsed={round(time.time() - self._last_start_updated_at, 3)}"
+            return f"CHK|starting|{root.as_posix()}{elapsed}"
 
     def _run_background_start(self, root: Path, files: list[dict[str, Any]], timeout_seconds: float) -> None:
         try:
