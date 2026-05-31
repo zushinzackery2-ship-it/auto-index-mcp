@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..core.config import DEFAULT_EXCLUDE_DIRS, TEXT_EXTENSIONS
-from ..workspace.discovery import INDEX_DB_NAME, INDEX_DIR_NAME
+from ..workspace.discovery import INDEX_DB_NAME, INDEX_DIR_NAME, iter_index_databases
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,7 @@ def _iter_source_files(root: Path, boundary_roots: list[Path]) -> list[Path]:
 def _child_index_snapshot(root: Path, own_db_path: Path | None, boundary_roots: list[Path]) -> dict[str, tuple[int, ...]]:
     snapshot: dict[str, tuple[int, ...]] = {}
     own_db = own_db_path.resolve() if own_db_path else None
-    for db_path in root.rglob(f"{INDEX_DIR_NAME}/{INDEX_DB_NAME}"):
+    for db_path in iter_index_databases(root):
         try:
             resolved = db_path.resolve()
             if own_db and resolved == own_db:

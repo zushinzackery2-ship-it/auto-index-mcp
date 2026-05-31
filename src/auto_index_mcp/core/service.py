@@ -110,7 +110,7 @@ class AutoIndexService:
             self.store.clear()
         return self.status()
 
-    def start_watcher(self, debounce_seconds: float = DEFAULT_WATCH_DEBOUNCE_SECONDS) -> dict[str, Any]:
+    def start_watcher(self, debounce_seconds: float = DEFAULT_WATCH_DEBOUNCE_SECONDS, wait_ready: bool = True) -> dict[str, Any]:
         self._require_ready()
         if debounce_seconds < 0.05:
             raise ValueError("debounce_seconds must be >= 0.05")
@@ -125,8 +125,9 @@ class AutoIndexService:
             self.watcher.stop()
         children = lambda: [Path(child["root"]) for child in self.store.child_indexes()]
         snapshot = lambda: take_watch_snapshot(self.root_path, children(), self.store.db_path)
-        self.watcher = FileEventWatcher(self.root_path, snapshot, IndexUpdater(self.root_path, self.store, self.rebuild).apply, debounce_seconds)
-        self.watcher.start()
+        previous = snapshot_from_index(self.root_path, self.store.all_files(), self.store.child_indexes()) if not wait_ready else None
+        self.watcher = FileEventWatcher(self.root_path, snapshot, IndexUpdater(self.root_path, self.store, self.rebuild).apply, debounce_seconds, previous)
+        self.watcher.start(wait_ready=wait_ready)
         return self.watcher_status()
 
     def sync_index_to_filesystem(self) -> dict[str, Any]:

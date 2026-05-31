@@ -18,12 +18,14 @@ class FileEventWatcher:
         take_snapshot: Callable[[], WatchSnapshot],
         apply_changes: Callable[[WatchSnapshot, WatchSnapshot], dict[str, Any]],
         debounce_seconds: float,
+        initial_snapshot: WatchSnapshot | None = None,
     ) -> None:
         self.root = root
         self.take_snapshot = take_snapshot
         self.apply_changes = apply_changes
         self.debounce_seconds = debounce_seconds
-        self._observer: Observer | None = None
+        self._initial_snapshot = initial_snapshot
+        self._observer = None
         self._worker: threading.Thread | None = None
         self._stop = threading.Event()
         self._changed = threading.Event()
@@ -36,23 +38,24 @@ class FileEventWatcher:
         self.change_count = 0
         self.ready = False
 
-    def start(self) -> None:
+    def start(self, wait_ready: bool = True) -> None:
         if self.is_running():
             return
         try:
             self.ready = False
             self.last_error = None
-            self._snapshot = self.take_snapshot()
+            self._snapshot = self._initial_snapshot
             self._stop.clear()
             self._changed.clear()
             self._ready.clear()
-            self._observer = Observer()
-            self._observer.schedule(_ChangeHandler(self._changed), str(self.root), recursive=True)
-            self._observer.start()
+            observer = Observer()
+            observer.schedule(_ChangeHandler(self._changed), str(self.root), recursive=True)
+            observer.start()
+            self._observer = observer
             self._worker = threading.Thread(target=self._run, name="auto-index-watcher", daemon=True)
             self._worker.start()
             self._changed.set()
-            if not self._ready.wait(timeout=5.0):
+            if wait_ready and not self._ready.wait(timeout=5.0):
                 self.last_error = "watcher did not become ready within 5 seconds"
                 raise TimeoutError(self.last_error)
         except Exception:
@@ -106,7 +109,7 @@ class FileEventWatcher:
                 self.change_count += 1
                 if previous is not None:
                     self.last_result = self.apply_changes(previous, current)
-                self._snapshot = self.take_snapshot()
+                self._snapshot = current
                 self.last_update_at = time.time()
                 self.last_error = None
                 self.ready = True

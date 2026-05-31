@@ -15,7 +15,7 @@ def register_compat_tools(mcp: FastMCP, service: AutoIndexService, compat: Compa
         result = compat.set_project_path(path)
         watcher = service.watcher_status()
         if not watcher.get("running"):
-            service.start_watcher()
+            service.start_watcher(wait_ready=False)
         return f"{result} Auto-refresh is running."
 
     @mcp.tool()
