@@ -11,6 +11,7 @@ from ..compatibility.code_index import CompatService
 from ..core.service import AutoIndexService
 from .compat import register_compat_tools
 from .lifecycle import register_lifecycle_tools
+from .lsp import register_lsp_tools
 from .navigation import register_navigation_tools
 from .search import register_search_tools
 
@@ -24,6 +25,7 @@ register_lifecycle_tools(mcp, _service)
 register_navigation_tools(mcp, _service)
 register_search_tools(mcp, _service)
 register_compat_tools(mcp, _service, _compat)
+register_lsp_tools(mcp, _service)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -38,6 +40,7 @@ def _parse_args() -> argparse.Namespace:
 
 def _shutdown_service() -> None:
     _service.stop_watcher()
+    _service.stop_lsp(2.0)
 
 
 def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:

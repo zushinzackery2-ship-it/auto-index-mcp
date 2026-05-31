@@ -23,6 +23,9 @@ class DummyService:
         self.stopped += 1
         return {"running": False}
 
+    def stop_lsp(self, timeout_seconds: float = 5.0) -> str:
+        return "LSP|stopped"
+
 
 class DummyMcp:
     def __init__(self, exc: Exception | None = None) -> None:

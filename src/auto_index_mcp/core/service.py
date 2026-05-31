@@ -16,9 +16,10 @@ from ..indexing.store import IndexStore
 from ..indexing.updater import IndexUpdater
 from ..indexing.watcher import FileEventWatcher
 from ..workspace.discovery import child_indexes_to_dicts, discover_child_indexes
+from ..lsp.service_lsp import ServiceLspMixin
 
 
-class AutoIndexService:
+class AutoIndexService(ServiceLspMixin):
     def __init__(self, index_root: Path | None = None) -> None:
         self.index_root_override = index_root
         self.index_root: Path | None = index_root
@@ -44,6 +45,7 @@ class AutoIndexService:
             raise ValueError(f"root_path is not a directory: {root_path}")
         if self.root_path and self.root_path != root:
             self.stop_watcher()
+            self.stop_lsp(1.0)
         self.root_path = root
         self.enabled = True
         self.index_root = self.index_root_override or project_index_root(root)
@@ -55,6 +57,7 @@ class AutoIndexService:
 
     def disable(self) -> dict[str, Any]:
         self.stop_watcher()
+        self.stop_lsp(2.0)
         self.enabled = False
         return self.status()
 
