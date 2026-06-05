@@ -80,7 +80,7 @@ class WorkspaceView:
         return [{"line": index + 1, "text": lines[index]} for index in range(start, end)]
 
     def diff_filesystem(self, root: Path) -> dict[str, list[str]]:
-        children = self._active_child_indexes()
+        children = self._active_child_indexes(root)
         scan = SourceScanner(str(root), boundary_roots=[Path(child["root"]) for child in children]).scan()
         indexed = {item["path"]: item for item in self.store.all_files()}
         current = {item.path: item for item in scan.records}
@@ -162,11 +162,24 @@ class WorkspaceView:
     def _child_view(self, child: dict[str, Any]) -> "WorkspaceView":
         return WorkspaceView(self._child_store(child), self.visited_db_paths)
 
-    def _active_child_indexes(self) -> list[dict[str, Any]]:
+    def _active_child_indexes(self, containing_root: Path | None = None) -> list[dict[str, Any]]:
         children = []
+        resolved_containing_root = containing_root.resolve() if containing_root else None
         for child in self.store.child_indexes():
             db_path = Path(child["db_path"]).resolve()
-            if db_path.exists() and db_path not in self.visited_db_paths and read_index_metadata(db_path):
+            child_root = Path(child["root"]).resolve()
+            if resolved_containing_root and not self._is_relative_to(child_root, resolved_containing_root):
+                continue
+            metadata = read_index_metadata(db_path)
+            if metadata.get("root") and Path(str(metadata["root"])).resolve() != child_root:
+                continue
+            if db_path.exists() and db_path not in self.visited_db_paths and metadata:
                 children.append(child)
         return children
 
+    def _is_relative_to(self, path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False

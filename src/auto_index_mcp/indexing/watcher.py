@@ -11,6 +11,10 @@ from watchdog.observers import Observer
 from .snapshot import WatchSnapshot
 
 
+READY_TIMEOUT_FLOOR_SECONDS = 8.0
+READY_TIMEOUT_DEBOUNCE_MULTIPLIER = 8.0
+
+
 class FileEventWatcher:
     def __init__(
         self,
@@ -32,6 +36,10 @@ class FileEventWatcher:
         self._ready = threading.Event()
         self._lock = threading.Lock()
         self._snapshot: WatchSnapshot | None = None
+        self.ready_timeout_seconds = max(
+            READY_TIMEOUT_FLOOR_SECONDS,
+            debounce_seconds * READY_TIMEOUT_DEBOUNCE_MULTIPLIER,
+        )
         self.last_update_at: float | None = None
         self.last_result: dict[str, Any] | None = None
         self.last_error: str | None = None
@@ -55,8 +63,8 @@ class FileEventWatcher:
             self._worker = threading.Thread(target=self._run, name="auto-index-watcher", daemon=True)
             self._worker.start()
             self._changed.set()
-            if wait_ready and not self._ready.wait(timeout=5.0):
-                self.last_error = "watcher did not become ready within 5 seconds"
+            if wait_ready and not self._ready.wait(timeout=self.ready_timeout_seconds):
+                self.last_error = f"watcher did not become ready within {self.ready_timeout_seconds:g} seconds"
                 raise TimeoutError(self.last_error)
         except Exception:
             self.stop()

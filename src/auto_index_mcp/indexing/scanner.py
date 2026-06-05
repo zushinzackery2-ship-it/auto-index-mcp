@@ -51,14 +51,16 @@ class SourceScanner:
                 continue
             try:
                 records.append(self._read_record(path))
-            except (OSError, UnicodeDecodeError) as exc:
-                errors.append(f"{self._relative(path)}: {exc}")
+            except (OSError, UnicodeDecodeError, ValueError) as exc:
+                errors.append(f"{self._display_path(path)}: {exc}")
 
         records.sort(key=lambda item: item.path.lower())
         return ScanResult(str(self.root), records, skipped, reused, errors)
 
     def _should_skip(self, path: Path) -> bool:
         resolved = path.resolve()
+        if not self._is_relative_to(resolved, self.root):
+            return True
         if any(self._is_relative_to(resolved, root) for root in self.boundary_roots):
             return True
         if any(part in DEFAULT_EXCLUDE_DIRS for part in path.parts):
@@ -92,7 +94,7 @@ class SourceScanner:
     def read_path(self, path: Path) -> FileRecord:
         path = path.resolve()
         if self._should_skip(path):
-            raise ValueError(f"path is not indexable: {self._relative(path)}")
+            raise ValueError(f"path is not indexable: {self._display_path(path)}")
         return self._read_record(path)
 
     def _read_record(self, path: Path) -> FileRecord:
@@ -161,6 +163,12 @@ class SourceScanner:
 
     def _relative(self, path: Path) -> str:
         return str(path.resolve().relative_to(self.root)).replace("\\", "/")
+
+    def _display_path(self, path: Path) -> str:
+        try:
+            return self._relative(path)
+        except (OSError, ValueError):
+            return str(path)
 
     def _is_relative_to(self, path: Path, root: Path) -> bool:
         try:

@@ -4,6 +4,8 @@ from typing import Callable
 
 from auto_index_mcp.core import service as service_module
 from auto_index_mcp.core.service import AutoIndexService
+from auto_index_mcp.indexing.snapshot import WatchSnapshot
+from auto_index_mcp.indexing.watcher import FileEventWatcher
 
 
 def test_watcher_incrementally_updates_changed_file_without_rebuild(tmp_path: Path) -> None:
@@ -186,6 +188,17 @@ def test_start_watcher_can_return_before_initial_snapshot_settles(tmp_path: Path
         assert _wait_until(lambda: service.watcher_status()["ready"] is True)
     finally:
         service.stop_watcher()
+
+
+def test_watcher_ready_timeout_scales_with_debounce() -> None:
+    watcher = FileEventWatcher(
+        Path("."),
+        lambda: WatchSnapshot(files={}, child_indexes={}),
+        lambda previous, current: {},
+        debounce_seconds=0.5,
+    )
+
+    assert watcher.ready_timeout_seconds >= 8.0
 
 
 def test_background_watcher_applies_changes_since_index_snapshot(tmp_path: Path, monkeypatch) -> None:
