@@ -36,6 +36,34 @@ def test_watcher_incrementally_updates_changed_file_without_rebuild(tmp_path: Pa
         service.stop_watcher()
 
 
+def test_watcher_file_event_does_not_take_full_snapshot(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "main.py"
+    source.write_text("def old_name():\n    return True\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+    service.start_watcher(debounce_seconds=0.1)
+
+    def fail_full_snapshot(*args: object, **kwargs: object) -> object:
+        _ = args, kwargs
+        raise AssertionError("file event should use incremental snapshot")
+
+    try:
+        assert service.watcher_status()["ready"] is True
+        monkeypatch.setattr(service_module, "take_watch_snapshot", fail_full_snapshot)
+
+        source.write_text("def new_name():\n    return False\n", encoding="utf-8")
+
+        assert _wait_until(lambda: _has_symbol(service, "main.py", "new_name"))
+        result = service.watcher_status()["last_result"]
+        assert result["status"] == "incremental"
+        assert result["rebuild"] is False
+    finally:
+        service.stop_watcher()
+
+
 def test_watcher_incrementally_adds_new_file_without_rebuild(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -111,9 +139,10 @@ def test_watcher_slims_parent_when_child_index_appears(tmp_path: Path) -> None:
 
     parent_service = AutoIndexService()
     parent_service.enable(str(project), rebuild=True)
+    parent_store = parent_service._store_context()
 
     assert parent_service.status()["file_count"] == 2
-    assert [item["path"] for item in parent_service.store.all_files()] == ["child/child.py", "root.py"]
+    assert [item["path"] for item in parent_store.all_files()] == ["child/child.py", "root.py"]
 
     parent_service.start_watcher(debounce_seconds=0.1)
     try:
@@ -126,7 +155,7 @@ def test_watcher_slims_parent_when_child_index_appears(tmp_path: Path) -> None:
         )
         result = parent_service.watcher_status()["last_result"]
         assert result["update_mode"] == "structural-rebuild"
-        assert [item["path"] for item in parent_service.store.all_files()] == ["root.py"]
+        assert [item["path"] for item in parent_store.all_files()] == ["root.py"]
         assert parent_service.resolve_path("child.py")["items"][0]["path"] == "child/child.py"
     finally:
         parent_service.stop_watcher()
@@ -212,6 +241,26 @@ def test_background_watcher_applies_changes_since_index_snapshot(tmp_path: Path,
 
     try:
         assert _wait_until(lambda: service.resolve_path("created_while_starting.py")["items"])
+        result = service.watcher_status()["last_result"]
+        assert result["status"] == "incremental"
+        assert result["added"] == 1
+    finally:
+        service.stop_watcher()
+
+
+def test_wait_ready_watcher_applies_changes_since_index_snapshot(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("print('ready')\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+    (project / "created_before_watch.py").write_text("def later():\n    return True\n", encoding="utf-8")
+
+    service.start_watcher(debounce_seconds=0.1, wait_ready=True)
+
+    try:
+        assert service.resolve_path("created_before_watch.py")["items"]
         result = service.watcher_status()["last_result"]
         assert result["status"] == "incremental"
         assert result["added"] == 1

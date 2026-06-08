@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from ..core.config import DEFAULT_EXCLUDE_DIRS, INDEX_VERSION
+from ..core.config import INDEX_VERSION
+from ..indexing.locator import INDEX_DB_NAME, INDEX_DIR_NAME, iter_index_databases
 from ..indexing.metadata_reader import DEFAULT_METADATA_READER, IndexMetadataReader
-
-
-INDEX_DB_NAME = "index.db"
-INDEX_DIR_NAME = ".auto-index-mcp"
 
 
 @dataclass(frozen=True)
@@ -50,18 +46,6 @@ def discover_child_indexes(root: Path, own_db_path: Path, reader: IndexMetadataR
         children.append(child)
         accepted_roots.append(child_root)
     return children
-
-
-def iter_index_databases(root: Path) -> list[Path]:
-    root = root.resolve()
-    matches: list[Path] = []
-    for dir_path, dir_names, file_names in os.walk(root):
-        current = Path(dir_path)
-        dir_names[:] = [name for name in dir_names if not _should_skip_dir(current / name)]
-        if current.name == INDEX_DIR_NAME and INDEX_DB_NAME in file_names:
-            matches.append(current / INDEX_DB_NAME)
-            dir_names[:] = []
-    return matches
 
 
 def child_indexes_to_dicts(children: list[ChildIndex]) -> list[dict[str, Any]]:
@@ -110,13 +94,6 @@ def _read_total_file_count(db_path: Path, visited: set[Path], reader: IndexMetad
     for child in reader.read_child_rows(db_path):
         total += _read_total_file_count(Path(child["db_path"]), visited, reader)
     return total
-
-
-def _should_skip_dir(path: Path) -> bool:
-    resolved = path.resolve()
-    if resolved.name == INDEX_DIR_NAME:
-        return False
-    return any(part in DEFAULT_EXCLUDE_DIRS for part in resolved.parts)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

@@ -16,12 +16,14 @@ class FileEventWatcher:
         self,
         root: Path,
         take_snapshot: Callable[[], WatchSnapshot],
+        update_snapshot: Callable[[WatchSnapshot, set[Path]], WatchSnapshot],
         apply_changes: Callable[[WatchSnapshot, WatchSnapshot], dict[str, Any]],
         debounce_seconds: float,
         initial_snapshot: WatchSnapshot | None = None,
     ) -> None:
         self.root = root
         self.take_snapshot = take_snapshot
+        self.update_snapshot = update_snapshot
         self.apply_changes = apply_changes
         self.debounce_seconds = debounce_seconds
         self._initial_snapshot = initial_snapshot
@@ -31,6 +33,9 @@ class FileEventWatcher:
         self._changed = threading.Event()
         self._ready = threading.Event()
         self._lock = threading.Lock()
+        self._changes_lock = threading.Lock()
+        self._changed_paths: set[Path] = set()
+        self._needs_full_snapshot = False
         self._snapshot: WatchSnapshot | None = None
         self.last_update_at: float | None = None
         self.last_result: dict[str, Any] | None = None
@@ -45,11 +50,14 @@ class FileEventWatcher:
             self.ready = False
             self.last_error = None
             self._snapshot = self._initial_snapshot
+            with self._changes_lock:
+                self._changed_paths.clear()
+                self._needs_full_snapshot = True
             self._stop.clear()
             self._changed.clear()
             self._ready.clear()
             observer = Observer()
-            observer.schedule(_ChangeHandler(self._changed), str(self.root), recursive=True)
+            observer.schedule(_ChangeHandler(self._record_event), str(self.root), recursive=True)
             observer.start()
             self._observer = observer
             self._worker = threading.Thread(target=self._run, name="auto-index-watcher", daemon=True)
@@ -98,10 +106,37 @@ class FileEventWatcher:
                 break
             self._apply_snapshot_change()
 
+    def _record_event(self, event: FileSystemEvent) -> None:
+        if event.is_directory and event.event_type == "modified":
+            return
+        paths = [Path(str(event.src_path))]
+        dest_path = getattr(event, "dest_path", "")
+        if dest_path:
+            paths.append(Path(str(dest_path)))
+        with self._changes_lock:
+            self._changed_paths.update(paths)
+        self._changed.set()
+
+    def _pop_pending_changes(self) -> tuple[bool, set[Path]]:
+        with self._changes_lock:
+            needs_full_snapshot = self._needs_full_snapshot
+            self._needs_full_snapshot = False
+            paths = set(self._changed_paths)
+            self._changed_paths.clear()
+        return needs_full_snapshot, paths
+
     def _apply_snapshot_change(self) -> None:
         with self._lock:
+            paths: set[Path] = set()
             try:
-                current = self._settled_snapshot()
+                needs_full_snapshot, paths = self._pop_pending_changes()
+                if self._snapshot is None or needs_full_snapshot:
+                    current = self.take_snapshot()
+                elif not paths:
+                    self.ready = True
+                    return
+                else:
+                    current = self.update_snapshot(self._snapshot, paths)
                 if current == self._snapshot:
                     self.ready = True
                     return
@@ -115,26 +150,22 @@ class FileEventWatcher:
                 self.ready = True
             except Exception as exc:
                 self.last_error = str(exc)
+                self._requeue_after_error(paths)
             finally:
                 self._ready.set()
 
-    def _settled_snapshot(self) -> WatchSnapshot:
-        current = self.take_snapshot()
-        for _ in range(3):
-            if self._stop.wait(self.debounce_seconds):
-                return current
-            self._changed.clear()
-            latest = self.take_snapshot()
-            if latest == current:
-                return latest
-            current = latest
-        return current
+    def _requeue_after_error(self, paths: set[Path]) -> None:
+        if self._stop.is_set():
+            return
+        with self._changes_lock:
+            self._needs_full_snapshot = True
+            self._changed_paths.update(paths)
+        self._changed.set()
 
 
 class _ChangeHandler(FileSystemEventHandler):
-    def __init__(self, changed: threading.Event) -> None:
-        self.changed = changed
+    def __init__(self, on_event: Callable[[FileSystemEvent], None]) -> None:
+        self.on_event = on_event
 
     def on_any_event(self, event: FileSystemEvent) -> None:
-        _ = event
-        self.changed.set()
+        self.on_event(event)

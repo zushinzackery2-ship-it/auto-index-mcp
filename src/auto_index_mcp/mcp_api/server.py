@@ -65,7 +65,7 @@ def main() -> None:
     try:
         if args.project_path:
             result = _service.enable_reusing_index(args.project_path, rebuild=args.rebuild and not args.no_rebuild)
-            if not args.no_watch and result.get("status") != "build-lock-timeout" and result.get("updated_at") is not None:
+            if not args.no_watch and _service.can_start_auto_watch(result):
                 _service.start_watcher(wait_ready=False)
         if args.transport != "stdio":
             mcp.settings.port = args.port

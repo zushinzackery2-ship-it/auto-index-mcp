@@ -1,13 +1,21 @@
 from __future__ import annotations
 
-import re
 import fnmatch
+import json
+import re
 import shutil
 import subprocess
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 MAX_RG_COMMAND_CHARS = 24_000
+
+
+@dataclass(frozen=True)
+class RipgrepResult:
+    status: str
+    matches: list[dict]
 
 
 def search_text(
@@ -21,8 +29,10 @@ def search_text(
 ) -> tuple[str, list[dict]]:
     if shutil.which("rg"):
         result = _ripgrep(root, pattern, case_sensitive, regex, limit, file_pattern, files)
-        if result is not None:
-            return "ripgrep-indexed-files", result
+        if result.status == "ok":
+            return "ripgrep-indexed-files", result.matches
+        if result.status != "unavailable":
+            return f"ripgrep-{result.status}", result.matches
     return "indexed-files", _python_search(root, files, pattern, case_sensitive, regex, limit, file_pattern)
 
 
@@ -34,19 +44,19 @@ def _ripgrep(
     limit: int,
     file_pattern: str | None,
     files: list[dict],
-) -> list[dict] | None:
+) -> RipgrepResult:
     search_targets = _indexed_search_targets(root, files, file_pattern)
     if not search_targets:
-        return []
+        return RipgrepResult("ok", [])
     matches = []
     for batch in _target_batches(_base_rg_command(pattern, case_sensitive, regex), search_targets):
         result = _ripgrep_batch(root, pattern, case_sensitive, regex, max(1, limit) - len(matches), batch)
-        if result is None:
-            return None
-        matches.extend(result)
+        matches.extend(result.matches)
+        if result.status != "ok":
+            return RipgrepResult(result.status, matches[:max(1, limit)])
         if len(matches) >= max(1, limit):
-            return matches[:max(1, limit)]
-    return matches
+            return RipgrepResult("ok", matches[:max(1, limit)])
+    return RipgrepResult("ok", matches)
 
 
 def _ripgrep_batch(
@@ -56,14 +66,15 @@ def _ripgrep_batch(
     regex: bool,
     limit: int,
     targets: list[tuple[Path, str]],
-) -> list[dict] | None:
+) -> RipgrepResult:
     command = _base_rg_command(pattern, case_sensitive, regex)
     command.extend(str(target) for target, _display_path in targets)
     path_map = _path_map(targets)
     if not path_map:
-        return []
+        return RipgrepResult("ok", [])
     process = None
-    timed_out = None
+    timeout_timer = None
+    timed_out = threading.Event()
     stopped_after_limit = False
     matches = []
     try:
@@ -72,12 +83,14 @@ def _ripgrep_batch(
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
-        timed_out = _terminate_after(process, 30.0)
+        timeout_timer = _terminate_after(process, 30.0, timed_out)
         if not process.stdout:
-            return None
+            return RipgrepResult("unavailable", [])
         for line in process.stdout:
-            parsed = _parse_rg_line(root, line.rstrip("\r\n"), path_map)
+            parsed = _parse_rg_json_line(root, line.rstrip("\r\n"), path_map)
             if parsed:
                 matches.append(parsed)
             if len(matches) >= max(1, limit):
@@ -85,27 +98,34 @@ def _ripgrep_batch(
                 process.terminate()
                 break
         return_code = process.wait(timeout=1.0)
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         if process is not None:
             process.kill()
             process.wait(timeout=1.0)
-        return None
+        return RipgrepResult("unavailable", matches)
+    except subprocess.TimeoutExpired:
+        if process is not None:
+            process.kill()
+            process.wait(timeout=1.0)
+        return RipgrepResult("timeout", matches)
     finally:
-        if timed_out is not None:
-            timed_out.cancel()
+        if timeout_timer is not None:
+            timeout_timer.cancel()
         if process is not None and process.stdout:
             stdout_close = getattr(process.stdout, "close", None)
             if stdout_close:
                 stdout_close()
     if stopped_after_limit:
-        return matches
+        return RipgrepResult("ok", matches)
+    if timed_out.is_set():
+        return RipgrepResult("timeout", matches)
     if return_code not in (0, 1):
-        return None
-    return matches
+        return RipgrepResult("error", matches)
+    return RipgrepResult("ok", matches)
 
 
 def _base_rg_command(pattern: str, case_sensitive: bool, regex: bool) -> list[str]:
-    command = ["rg", "--line-number", "--with-filename", "--no-heading", "--color", "never"]
+    command = ["rg", "--json", "--line-number", "--with-filename", "--no-heading", "--color", "never"]
     command.extend(["--path-separator", "/", "--no-ignore", "--hidden"])
     if not regex:
         command.append("-F")
@@ -115,9 +135,10 @@ def _base_rg_command(pattern: str, case_sensitive: bool, regex: bool) -> list[st
     return command
 
 
-def _terminate_after(process: subprocess.Popen, timeout_seconds: float) -> threading.Timer:
+def _terminate_after(process: subprocess.Popen, timeout_seconds: float, timed_out: threading.Event) -> threading.Timer:
     def terminate() -> None:
         if process.poll() is None:
+            timed_out.set()
             process.terminate()
 
     timer = threading.Timer(timeout_seconds, terminate)
@@ -201,16 +222,25 @@ def _path_map(targets: list[tuple[Path, str]]) -> dict[str, str]:
     return mapping
 
 
-def _parse_rg_line(root: Path, line: str, path_map: dict[str, str] | None = None) -> dict | None:
-    match = re.match(r"^(.*):(\d+):(.*)$", line)
-    if not match:
+def _parse_rg_json_line(root: Path, line: str, path_map: dict[str, str] | None = None) -> dict | None:
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if payload.get("type") != "match":
+        return None
+    data = payload.get("data") or {}
+    path_text = (data.get("path") or {}).get("text")
+    line_text = (data.get("lines") or {}).get("text", "")
+    line_number_value = data.get("line_number")
+    if path_text is None or line_number_value is None:
         return None
     try:
-        line_number = int(match.group(2))
-        source_path = Path(match.group(1)).resolve()
+        line_number = int(line_number_value)
+        source_path = Path(path_text).resolve()
         path = (path_map or {}).get(str(source_path))
         if path is None:
             path = source_path.relative_to(root).as_posix()
-    except (ValueError, OSError):
+    except (TypeError, ValueError, OSError):
         return None
-    return {"path": path, "line": line_number, "text": match.group(3).strip()}
+    return {"path": path, "line": line_number, "text": line_text.strip()}

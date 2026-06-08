@@ -20,6 +20,9 @@ class WorkspaceView:
         self.store = store
         self.visited_db_paths = {path.resolve() for path in visited_db_paths or set()}
         self.visited_db_paths.add(store.db_path.resolve())
+        self._active_children: list[dict[str, Any]] | None = None
+        self._child_stores: dict[str, IndexStore] = {}
+        self._child_views: dict[str, WorkspaceView] = {}
 
     def all_files(self) -> list[dict[str, Any]]:
         files = self.store.all_files()
@@ -29,6 +32,18 @@ class WorkspaceView:
 
     def child_indexes(self) -> list[dict[str, Any]]:
         return self._active_child_indexes()
+
+    def file_headers(self) -> list[dict[str, Any]]:
+        files = self.store.file_headers()
+        for child in self._active_child_indexes():
+            files.extend(self.prefixed_file_headers(child))
+        return sorted(files, key=lambda item: item["path"].lower())
+
+    def search_targets(self) -> list[dict[str, Any]]:
+        targets = self.store.search_targets()
+        for child in self._active_child_indexes():
+            targets.extend(self.prefixed_search_targets(child))
+        return sorted(targets, key=lambda item: item["path"].lower())
 
     def query(self, text: str, languages: list[str], parent: str, limit: int, offset: int) -> list[dict[str, Any]]:
         rows = self.store.query(text, languages, parent, limit + offset, 0)
@@ -108,6 +123,14 @@ class WorkspaceView:
         rows = files if files is not None else self._child_view(child).all_files()
         return [self._prefix_file(child, item) for item in rows]
 
+    def prefixed_file_headers(self, child: dict[str, Any], files: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        rows = files if files is not None else self._child_view(child).file_headers()
+        return [self._prefix_file_header(child, item) for item in rows]
+
+    def prefixed_search_targets(self, child: dict[str, Any], files: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        rows = files if files is not None else self._child_view(child).search_targets()
+        return [self._prefix_search_target(child, item) for item in rows]
+
     def _prefix_file(self, child: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
         prefixed = dict(item)
         prefixed["source_root"] = item.get("source_root", child["root"])
@@ -118,6 +141,23 @@ class WorkspaceView:
             prefixed["parent"] = ""
         prefixed["symbols"] = [self._prefix_symbol_refs(child, symbol) for symbol in prefixed["symbols"]]
         return prefixed
+
+    def _prefix_file_header(self, child: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+        prefixed = dict(item)
+        prefixed["source_root"] = item.get("source_root", child["root"])
+        prefixed["source_path"] = item.get("source_path", item["path"])
+        prefixed["path"] = f"{child['path']}/{item['path']}"
+        prefixed["parent"] = str(Path(prefixed["path"]).parent).replace("\\", "/")
+        if prefixed["parent"] == ".":
+            prefixed["parent"] = ""
+        return prefixed
+
+    def _prefix_search_target(self, child: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "path": f"{child['path']}/{item['path']}",
+            "source_root": item.get("source_root", child["root"]),
+            "source_path": item.get("source_path", item["path"]),
+        }
 
     def _prefixed_symbols(self, child: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prefixed = []
@@ -157,16 +197,25 @@ class WorkspaceView:
         db_path = Path(child["db_path"])
         if not db_path.exists() or not read_index_metadata(db_path):
             raise KeyError(f"child index is not available: {child['path']}")
-        return IndexStore(db_path)
+        key = str(db_path.resolve())
+        if key not in self._child_stores:
+            self._child_stores[key] = IndexStore(db_path)
+        return self._child_stores[key]
 
     def _child_view(self, child: dict[str, Any]) -> "WorkspaceView":
-        return WorkspaceView(self._child_store(child), self.visited_db_paths)
+        key = str(Path(child["db_path"]).resolve())
+        if key not in self._child_views:
+            self._child_views[key] = WorkspaceView(self._child_store(child), self.visited_db_paths)
+        return self._child_views[key]
 
     def _active_child_indexes(self) -> list[dict[str, Any]]:
+        if self._active_children is not None:
+            return self._active_children
         children = []
         for child in self.store.child_indexes():
             db_path = Path(child["db_path"]).resolve()
             if db_path.exists() and db_path not in self.visited_db_paths and read_index_metadata(db_path):
                 children.append(child)
+        self._active_children = children
         return children
 

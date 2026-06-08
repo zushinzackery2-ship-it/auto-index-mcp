@@ -17,7 +17,7 @@
 
 > [!NOTE]
 > **仓库边界**
-> 本仓库只包含独立的 `auto-index-mcp` 服务端，不依赖同级工作区或本机私有项目文件。
+> 本仓库只包含独立的 `auto-index-mcp` 服务端，不依赖同级工作区或本机私有项目文件；当前 `main` 只维护无 LSP 版本，不注册 LSP/clangd 工具面。
 
 ## 功能概览
 
@@ -28,7 +28,7 @@
 | **嵌套工作区** | 父目录发现子目录已有索引库时只挂链接，不重复维护子目录数据。 |
 | **低上下文导航** | 提供 overview、tree、query、get、resolve、diff 等轻量工具。 |
 | **符号索引** | 支持 Python AST 符号，JavaScript/TypeScript/通用文本轻量符号提取。 |
-| **代码搜索** | 优先使用 ripgrep 按索引文件清单搜索；无 ripgrep 时回退 Python。 |
+| **代码搜索** | 优先使用 ripgrep 按轻量索引目标清单搜索；无 ripgrep 时才回退 Python 索引范围搜索。 |
 | **自动刷新** | 使用系统文件变更事件触发，短 debounce 合并连续变更，再做轻量快照比对。 |
 | **兼容工具名** | 保留常用文件查找、摘要、符号体、代码搜索等兼容入口。 |
 | **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
@@ -74,8 +74,8 @@
 | 模块 | 职责 |
 |:-----|:-----|
 | `core/` | 对外服务编排、状态管理、生命周期入口。 |
-| `indexing/` | 扫描、SQLite 存储、增量更新、watcher、轻量快照。 |
-| `workspace/` | 嵌套工作区发现、父子索引聚合、路径安全检查。 |
+| `indexing/` | 扫描、SQLite 存储、child-index 定位、增量更新、watcher、轻量快照。 |
+| `workspace/` | 嵌套工作区发现、父子索引聚合、路径安全检查、搜索上下文读取。 |
 | `languages/` | Python、JavaScript/TypeScript 和通用文本符号提取。 |
 | `search/` | ripgrep/Python fallback 搜索后端。 |
 | `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、兼容入口拆分。 |
@@ -90,9 +90,9 @@
 `auto_index_text_search()` 和兼容入口 `search_code_advanced()` 的正文匹配遵循“索引范围 + 实时文件内容”模型：
 
 - 文件集合来自当前索引，新增、删除、重命名文件需要 watcher 或重建索引后才进入搜索范围。
-- 正文内容优先通过 ripgrep 读取索引文件清单对应的实时文件；不会把项目根目录交给 ripgrep 做递归全树搜索。
+- 正文内容优先通过 ripgrep 读取轻量 SQL search-target 清单对应的实时文件；不会把项目根目录交给 ripgrep 做递归全树搜索，也不会为了正文搜索拉取符号/import 等完整文件详情。
 - 使用 ripgrep 时按 `limit` 流式读取匹配结果，达到限制后终止子进程，避免大仓高频命中把 stdout 全量收进内存。
-- 没有 ripgrep 时回退为 Python 读取索引文件集合。
+- 没有 ripgrep 时回退为 Python 读取索引文件集合；ripgrep timeout/error 会直接返回对应 backend 状态和已收集结果，不再退回 Python 重扫同一批文件。
 - 因此，已索引文件的内容刚被修改后，正文搜索通常能立即命中新内容；结构摘要和符号关系仍以索引刷新后的数据为准。
 
 这个分工让低上下文导航保持稳定范围，同时让代码正文搜索尽量贴近磁盘上的最新内容。
@@ -119,6 +119,7 @@
 | **子索引新增/删除** | 父库执行一次结构重建，挂接或移除子库边界，并自动瘦身重复的子目录记录。 |
 | **子索引内容变化** | 父库只刷新 child link metadata，不重写父库源码记录。 |
 | **SQLite WAL 更新** | 子库指纹同时覆盖 `index.db`、`index.db-wal`、`index.db-shm`，避免漏掉 WAL 模式下的子库提交。 |
+| **自身索引 DB 更新** | 当前项目自己的 `.auto-index-mcp/index.db/-wal/-shm` 事件会被忽略，避免 watcher 自触发 child discovery 或重复扫描。 |
 
 当前 watcher 不是固定每隔几秒扫一次目录，而是由系统文件变更事件触发。默认 debounce 为 0.25 秒，只用于合并连续保存、批量生成、SQLite WAL 写入等事件风暴。更新工作串行执行，一次快照/更新未结束时不会并发启动下一次。
 
@@ -133,20 +134,43 @@ auto-index-mcp/
 |-- .well-known/
 |   `-- mcp.json
 |-- scripts/
-|   `-- smoke_auto_index.py
+|   |-- smoke_auto_index.py
+|   `-- verify_mcp_stdio.py
 |-- src/
 |   `-- auto_index_mcp/
 |       |-- compatibility/
 |       |-- core/
+|       |   |-- index_policy.py
+|       |   |-- pagination.py
+|       |   |-- service.py
+|       |   `-- service_search.py
 |       |-- indexing/
+|       |   |-- build_lock.py
+|       |   |-- locator.py
+|       |   |-- snapshot.py
+|       |   |-- store.py
+|       |   `-- watcher.py
 |       |-- languages/
 |       |-- mcp_api/
 |       |-- search/
 |       |-- workspace/
+|       |   |-- context.py
+|       |   |-- discovery.py
+|       |   |-- safety.py
+|       |   `-- view.py
 |       |-- __main__.py
 |       `-- server.py
 |-- tests/
 |   |-- test_auto_index_service.py
+|   |-- test_build_lock.py
+|   |-- test_child_index_discovery.py
+|   |-- test_index_store.py
+|   |-- test_language_coverage.py
+|   |-- test_search_backend.py
+|   |-- test_server_shutdown.py
+|   |-- test_service_rebuild_reuse.py
+|   |-- test_service_workspace_integration.py
+|   |-- test_watcher_core.py
 |   `-- test_watcher_updates.py
 |-- fastmcp.json
 |-- install_windows.bat

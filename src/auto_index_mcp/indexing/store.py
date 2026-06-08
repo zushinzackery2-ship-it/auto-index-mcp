@@ -20,6 +20,9 @@ class IndexStore:
     def connect(self) -> ContextManager[sqlite3.Connection]:
         return self.database.connect()
 
+    def read_connect(self) -> ContextManager[sqlite3.Connection]:
+        return self.database.connect_readonly()
+
     def initialize(self) -> None:
         with self.connect() as conn:
             initialize_schema(conn, self.set_metadata)
@@ -78,22 +81,32 @@ class IndexStore:
             self.db_path.unlink()
 
     def get_metadata_map(self) -> dict[str, Any]:
-        with self.connect() as conn:
+        with self.read_connect() as conn:
             rows = conn.execute("SELECT key, value FROM metadata").fetchall()
         return {row["key"]: json.loads(row["value"]) for row in rows}
 
     def get_file(self, path: str) -> dict[str, Any] | None:
-        with self.connect() as conn:
+        with self.read_connect() as conn:
             row = conn.execute("SELECT * FROM files WHERE path=?", (path,)).fetchone()
         return self._row_to_dict(row) if row else None
 
     def all_files(self) -> list[dict[str, Any]]:
-        with self.connect() as conn:
+        with self.read_connect() as conn:
             rows = conn.execute("SELECT * FROM files ORDER BY path").fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def file_headers(self) -> list[dict[str, Any]]:
+        with self.read_connect() as conn:
+            rows = conn.execute("SELECT path, name, parent, extension, language, size, mtime_ns, line_count FROM files ORDER BY path").fetchall()
+        return [dict(row) for row in rows]
+
+    def search_targets(self) -> list[dict[str, Any]]:
+        with self.read_connect() as conn:
+            rows = conn.execute("SELECT path FROM files ORDER BY path").fetchall()
+        return [dict(row) for row in rows]
+
     def child_indexes(self) -> list[dict[str, Any]]:
-        with self.connect() as conn:
+        with self.read_connect() as conn:
             rows = conn.execute("SELECT * FROM child_indexes ORDER BY path").fetchall()
         return [dict(row) for row in rows]
 
@@ -114,7 +127,7 @@ class IndexStore:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY symbols.file_path, symbols.line LIMIT ? OFFSET ?"
         params.extend([limit, offset])
-        with self.connect() as conn:
+        with self.read_connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._symbol_row_to_dict(row) for row in rows]
 
@@ -137,7 +150,7 @@ class IndexStore:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY files.path LIMIT ? OFFSET ?"
         params.extend([limit, offset])
-        with self.connect() as conn:
+        with self.read_connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._row_to_dict(row) for row in rows]
 

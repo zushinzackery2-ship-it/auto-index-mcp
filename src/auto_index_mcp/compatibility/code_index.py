@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..core.pagination import PageRequest
 from ..core.service import AutoIndexService
+from ..workspace.context import ContextLoader
 
 
 class CompatService:
@@ -18,7 +20,7 @@ class CompatService:
         else:
             db_existed = self.service._db_path(root).exists()
             result = self.service.enable(str(root), rebuild=False)
-            if db_existed and self._can_reuse_index(root):
+            if db_existed and self.service.can_reuse_index_for(root):
                 # Reuse the existing index and return immediately. Catching up
                 # files changed while offline is the watcher's job: its first
                 # background tick diffs the live tree against the index, so doing
@@ -41,12 +43,6 @@ class CompatService:
             and self.service.root_path == root
             and self.service.store is not None
         )
-
-    def _can_reuse_index(self, root: Path) -> bool:
-        if not self.service.store:
-            return False
-        metadata = self.service.store.get_metadata_map()
-        return metadata.get("root") == str(root) and metadata.get("updated_at") is not None
 
     def find_files(self, pattern: str) -> list[str]:
         self.service._require_store()
@@ -118,25 +114,33 @@ class CompatService:
         max_results: int | None = 10,
     ) -> dict[str, Any]:
         search_pattern = _fuzzy_pattern(pattern) if fuzzy and not regex else pattern
-        page_size = max_results or 10
-        limit = page_size + start_index + 1
+        try:
+            page = PageRequest.from_values(start_index, max_results)
+        except ValueError as exc:
+            message = str(exc).replace("offset", "start_index").replace("limit", "max_results")
+            raise ValueError(message) from exc
         response = self.service.text_search(
             pattern=search_pattern,
             case_sensitive=case_sensitive,
             regex=bool(regex or fuzzy),
-            limit=limit,
+            limit=page.probe_limit,
             file_pattern=file_pattern,
-            context_lines=context_lines,
+            context_lines=0,
         )
-        all_matches = response["items"]
-        page = all_matches[start_index:start_index + page_size]
+        page_result = page.slice(response["items"])
+        matches = page_result.items
+        if context_lines > 0:
+            if self.service.root_path is None:
+                raise RuntimeError("auto-index root is not configured")
+            matches = ContextLoader(self.service.view, self.service.root_path).attach(matches, context_lines)
         return {
             "pattern": pattern,
-            "matches": page,
-            "total_matches": len(all_matches),
+            "matches": matches,
+            "total_matches": page_result.scanned,
+            "scanned_matches": page_result.scanned,
             "start_index": start_index,
             "max_results": max_results,
-            "has_more": len(all_matches) > start_index + page_size,
+            "has_more": page_result.has_more,
             "backend": response["backend"],
         }
 

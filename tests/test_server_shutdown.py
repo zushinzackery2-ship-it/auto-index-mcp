@@ -20,6 +20,9 @@ class DummyService:
         self.started += 1
         return {"running": True}
 
+    def can_start_auto_watch(self, result: dict | None) -> bool:
+        return result is not None and result.get("updated_at") is not None
+
     def stop_watcher(self) -> dict:
         self.stopped += 1
         return {"running": False}
