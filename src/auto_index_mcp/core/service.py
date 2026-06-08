@@ -6,19 +6,19 @@ from typing import Any
 
 from .config import DEFAULT_BUILD_LOCK_WAIT_SECONDS, DEFAULT_WATCH_DEBOUNCE_SECONDS, project_index_root
 from .navigation_format import compact_file, overview_result, tree_result
+from .service_search import ServiceSearchMixin
 from ..workspace.view import WorkspaceView
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.scanner import SourceScanner
 from ..indexing.snapshot import snapshot_from_index, take_watch_snapshot
 from ..indexing.build_lock import BuildLock
-from ..search.backend import search_text
 from ..indexing.store import IndexStore
 from ..indexing.updater import IndexUpdater
 from ..indexing.watcher import FileEventWatcher
 from ..workspace.discovery import child_indexes_to_dicts, discover_child_indexes
 
 
-class AutoIndexService:
+class AutoIndexService(ServiceSearchMixin):
     def __init__(self, index_root: Path | None = None) -> None:
         self.index_root_override = index_root
         self.index_root: Path | None = index_root
@@ -53,6 +53,16 @@ class AutoIndexService:
             return self.rebuild()
         return self.status()
 
+    def enable_reusing_index(self, root_path: str, rebuild: bool = False) -> dict[str, Any]:
+        root = Path(root_path).resolve()
+        if rebuild:
+            return self.enable(str(root), rebuild=True)
+        db_existed = self._db_path(root).exists()
+        result = self.enable(str(root), rebuild=False)
+        if db_existed and self._index_is_fresh():
+            return self.status()
+        return self.rebuild(reuse_if_fresh=True)
+
     def disable(self) -> dict[str, Any]:
         self.stop_watcher()
         self.enabled = False
@@ -63,9 +73,15 @@ class AutoIndexService:
         lock = BuildLock(self.index_root / "index.build.lock")
         acquired = lock.acquire(DEFAULT_BUILD_LOCK_WAIT_SECONDS)
         try:
+            if not acquired:
+                result = self.status()
+                result["status"] = "build-lock-timeout"
+                result["rebuild"] = False
+                result["message"] = "another auto-index process is still rebuilding this project"
+                return result
             # When another process already built a fresh index for this root
             # while we waited for the lock, reuse it instead of scanning again.
-            if reuse_if_fresh and acquired and self._index_is_fresh():
+            if reuse_if_fresh and self._index_is_fresh():
                 return self.status()
             return self._rebuild_now()
         finally:
@@ -184,57 +200,6 @@ class AutoIndexService:
         next_cursor = str(offset + limit) if len(rows) == limit else None
         return {"format": "auto_index_query_indexed", "items": [compact_file(row) for row in rows], "cursor": next_cursor}
 
-    def text_search(
-        self,
-        pattern: str,
-        case_sensitive: bool = True,
-        regex: bool = False,
-        limit: int = 80,
-        file_pattern: str | None = None,
-        context_lines: int = 0,
-    ) -> dict[str, Any]:
-        self._require_ready()
-        if not pattern:
-            raise ValueError("pattern is required")
-        backend, matches = search_text(
-            self.root_path,
-            self.view.all_files(),
-            pattern,
-            case_sensitive,
-            regex,
-            limit,
-            file_pattern,
-        )
-        if context_lines > 0:
-            matches = [self._with_context(match, context_lines) for match in matches]
-        return {"format": "auto_index_text_search_indexed", "backend": backend, "items": matches}
-
-    def symbol_search(self, text: str = "", kind: str = "", limit: int = 80, cursor: str | None = None) -> dict[str, Any]:
-        self._require_store()
-        offset = int(cursor or "0")
-        rows = self.view.query_symbols(text, kind, limit, offset)
-        next_cursor = str(offset + limit) if len(rows) == limit else None
-        return {"format": "auto_index_symbol_search_indexed", "items": rows, "cursor": next_cursor}
-
-    def symbol_body(self, path: str, symbol_name: str) -> dict[str, Any]:
-        self._require_ready()
-        if not path or not symbol_name:
-            raise ValueError("path and symbol_name are required")
-        lookup = self.view.get_file(path)
-        if lookup.item is None:
-            raise KeyError(f"indexed file not found: {path}")
-        matches = [symbol for symbol in lookup.item["symbols"] if symbol["name"] == symbol_name]
-        if not matches:
-            raise KeyError(f"symbol not found: {symbol_name}")
-        if len(matches) > 1:
-            return {"format": "auto_index_symbol_body_ambiguous", "candidates": matches}
-        symbol = matches[0]
-        lines = self.view.read_indexed_text(self.root_path, lookup.item).splitlines()
-        start = max(1, symbol["line"])
-        end = min(len(lines), symbol["end_line"])
-        code = "\n".join(lines[start - 1:end])
-        return {"format": "auto_index_symbol_body_full", "symbol": symbol, "path": path, "code": code}
-
     def file_summary(self, path: str) -> dict[str, Any]:
         self._require_store()
         lookup = self.view.get_file(path)
@@ -287,14 +252,6 @@ class AutoIndexService:
     def all_files(self) -> list[dict[str, Any]]:
         self._require_store()
         return self.view.all_files()
-
-    def _with_context(self, match: dict[str, Any], context_lines: int) -> dict[str, Any]:
-        enriched = dict(match)
-        try:
-            enriched["context"] = self.view.context_for_match(self.root_path, match, context_lines)
-        except UnicodeDecodeError:
-            enriched["context"] = []
-        return enriched
 
     def _db_path(self, root: Path) -> Path:
         index_root = self.index_root_override or project_index_root(root)

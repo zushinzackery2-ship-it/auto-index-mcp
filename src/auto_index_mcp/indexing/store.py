@@ -3,36 +3,22 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, ContextManager
 
 from ..core.models import FileRecord
+from .sqlite import IndexDatabase
 from .store_schema import initialize_schema
 
 
 class IndexStore:
     def __init__(self, db_path: Path) -> None:
-        self.db_path = db_path
+        self.database = IndexDatabase(db_path)
+        self.db_path = self.database.db_path
 
-    @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("PRAGMA foreign_keys=ON")
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+    def connect(self) -> ContextManager[sqlite3.Connection]:
+        return self.database.connect()
 
     def initialize(self) -> None:
         with self.connect() as conn:

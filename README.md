@@ -28,7 +28,7 @@
 | **嵌套工作区** | 父目录发现子目录已有索引库时只挂链接，不重复维护子目录数据。 |
 | **低上下文导航** | 提供 overview、tree、query、get、resolve、diff 等轻量工具。 |
 | **符号索引** | 支持 Python AST 符号，JavaScript/TypeScript/通用文本轻量符号提取。 |
-| **代码搜索** | 优先使用 ripgrep；遇到嵌套数据库时使用索引文件集合回退搜索。 |
+| **代码搜索** | 优先使用 ripgrep 按索引文件清单搜索；无 ripgrep 时回退 Python。 |
 | **自动刷新** | 使用系统文件变更事件触发，短 debounce 合并连续变更，再做轻量快照比对。 |
 | **兼容工具名** | 保留常用文件查找、摘要、符号体、代码搜索等兼容入口。 |
 | **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
@@ -39,7 +39,7 @@
 
 | 分类 | API | 说明 |
 |:-----|:----|:-----|
-| **生命周期** | `auto_index_enable()` | 设置项目根目录，可选择立即重建索引。 |
+| **生命周期** | `auto_index_enable()` | 设置项目根目录，默认复用已有索引，可显式重建。 |
 | **生命周期** | `auto_index_disable()` | 停用当前索引状态并停止自动刷新。 |
 | **生命周期** | `auto_index_status()` | 返回根目录、索引库路径、文件数量、更新时间、最近错误。 |
 | **生命周期** | `auto_index_rebuild()` | 强制全量扫描并重写持久索引。 |
@@ -65,7 +65,7 @@
 
 冗余的历史兼容入口不再注册到 MCP 工具面，例如旧式 temp-directory、settings、watcher 配置和重复 rebuild/search-refresh 包装；请使用上表中的 native API 或保留的常用兼容入口。
 
-`set_project_path()` 的兼容文本会同时报告 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。首次设置或切换到一个已有索引根目录时会复用 `.auto-index-mcp/index.db`，用轻量文件快照补齐离线期间的新增/修改/删除；重复设置当前 active root 时直接返回当前状态，不做同步 catch-up，避免 Agent 高频重复调用时被目录扫描阻塞。需要强制全量刷新时使用 `auto_index_rebuild()`。
+`set_project_path()` 的兼容文本会同时报告 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。首次设置或切换到一个已有索引根目录时会复用 `.auto-index-mcp/index.db`；重复设置当前 active root 时直接返回当前状态，不做同步 catch-up，避免 Agent 高频重复调用时被目录扫描阻塞。`auto_index_enable()` 和 server `--project-path` 也采用复用优先策略；需要强制全量刷新时使用 `auto_index_rebuild()`、`auto_index_enable(rebuild=True)` 或 CLI `--rebuild`。
 
 ---
 
@@ -90,9 +90,9 @@
 `auto_index_text_search()` 和兼容入口 `search_code_advanced()` 的正文匹配遵循“索引范围 + 实时文件内容”模型：
 
 - 文件集合来自当前索引，新增、删除、重命名文件需要 watcher 或重建索引后才进入搜索范围。
-- 正文内容优先通过 ripgrep 读取工作区实时文件；搜索仍受索引文件集合约束，即使文件被 `.gitignore` 覆盖或位于隐藏目录，也会按 auto-index 排除规则处理。
+- 正文内容优先通过 ripgrep 读取索引文件清单对应的实时文件；不会把项目根目录交给 ripgrep 做递归全树搜索。
 - 使用 ripgrep 时按 `limit` 流式读取匹配结果，达到限制后终止子进程，避免大仓高频命中把 stdout 全量收进内存。
-- 没有 ripgrep 或涉及嵌套子索引时回退为 Python 读取索引文件集合。
+- 没有 ripgrep 时回退为 Python 读取索引文件集合。
 - 因此，已索引文件的内容刚被修改后，正文搜索通常能立即命中新内容；结构摘要和符号关系仍以索引刷新后的数据为准。
 
 这个分工让低上下文导航保持稳定范围，同时让代码正文搜索尽量贴近磁盘上的最新内容。

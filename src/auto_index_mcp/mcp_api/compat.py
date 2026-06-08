@@ -14,9 +14,10 @@ def register_compat_tools(mcp: FastMCP, service: AutoIndexService, compat: Compa
         """Compatibility tool: initialize indexing for a project directory."""
         result = compat.set_project_path(path)
         watcher = service.watcher_status()
-        if not watcher.get("running"):
-            service.start_watcher(wait_ready=False)
-        return f"{result} Auto-refresh is running."
+        if not watcher.get("running") and _can_start_auto_watch(compat.last_result):
+            watcher = service.start_watcher(wait_ready=False)
+        refresh = "Auto-refresh is running." if watcher.get("running") else "Auto-refresh is pending until the active build finishes."
+        return f"{result} {refresh}"
 
     @mcp.tool()
     def find_files(pattern: str) -> list[str]:
@@ -55,3 +56,9 @@ def register_compat_tools(mcp: FastMCP, service: AutoIndexService, compat: Compa
             start_index,
             max_results,
         )
+
+
+def _can_start_auto_watch(result: dict[str, Any] | None) -> bool:
+    if result is None:
+        return False
+    return result.get("status") != "build-lock-timeout" and result.get("updated_at") is not None

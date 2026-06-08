@@ -10,11 +10,11 @@ from ..core.service import AutoIndexService
 
 def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
     @mcp.tool()
-    def auto_index_enable(root_path: str, rebuild: bool = True, auto_watch: bool = True) -> dict[str, Any]:
+    def auto_index_enable(root_path: str, rebuild: bool = False, auto_watch: bool = True) -> dict[str, Any]:
         """Enable persistent code auto-indexing and optionally rebuild immediately."""
-        result = service.enable(root_path, rebuild)
-        if auto_watch:
-            result["watcher"] = service.start_watcher()
+        result = service.enable_reusing_index(root_path, rebuild)
+        if auto_watch and _can_start_auto_watch(result):
+            result["watcher"] = service.start_watcher(wait_ready=False)
         return result
 
     @mcp.tool()
@@ -51,3 +51,7 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
     def auto_index_watcher_status() -> dict[str, Any]:
         """Return filesystem-event auto-refresh status."""
         return service.watcher_status()
+
+
+def _can_start_auto_watch(result: dict[str, Any]) -> bool:
+    return result.get("status") != "build-lock-timeout" and result.get("updated_at") is not None

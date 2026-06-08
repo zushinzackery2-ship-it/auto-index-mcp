@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..core.config import DEFAULT_EXCLUDE_DIRS, TEXT_EXTENSIONS
-from ..workspace.discovery import INDEX_DB_NAME, INDEX_DIR_NAME, iter_index_databases
+from ..workspace.discovery import INDEX_DB_NAME, INDEX_DIR_NAME
 
 
 @dataclass(frozen=True)
@@ -83,18 +83,44 @@ def _iter_source_files(root: Path, boundary_roots: list[Path]) -> list[Path]:
 def _child_index_snapshot(root: Path, own_db_path: Path | None, boundary_roots: list[Path]) -> dict[str, tuple[int, ...]]:
     snapshot: dict[str, tuple[int, ...]] = {}
     own_db = own_db_path.resolve() if own_db_path else None
-    for db_path in iter_index_databases(root):
+    for boundary in boundary_roots:
+        direct_db = boundary / INDEX_DIR_NAME / INDEX_DB_NAME
+        if not direct_db.exists():
+            continue
+        try:
+            resolved = direct_db.resolve()
+            if own_db and resolved == own_db:
+                continue
+            rel = resolved.relative_to(root).as_posix()
+        except (OSError, ValueError):
+            continue
+        snapshot[rel] = _database_fingerprint(direct_db)
+    for db_path in _iter_index_databases_outside_boundaries(root, boundary_roots):
         try:
             resolved = db_path.resolve()
             if own_db and resolved == own_db:
-                continue
-            if any(_is_nested_boundary_index(resolved, boundary) for boundary in boundary_roots):
                 continue
             rel = resolved.relative_to(root).as_posix()
         except (OSError, ValueError):
             continue
         snapshot[rel] = _database_fingerprint(db_path)
     return snapshot
+
+
+def _iter_index_databases_outside_boundaries(root: Path, boundary_roots: list[Path]) -> list[Path]:
+    matches: list[Path] = []
+    boundaries = [path.resolve() for path in boundary_roots]
+    for dir_path, dir_names, file_names in os.walk(root):
+        current = Path(dir_path)
+        dir_names[:] = [
+            name
+            for name in dir_names
+            if not _should_skip_index_scan_dir(current / name, boundaries)
+        ]
+        if current.name == INDEX_DIR_NAME and INDEX_DB_NAME in file_names:
+            matches.append(current / INDEX_DB_NAME)
+            dir_names[:] = []
+    return matches
 
 
 def _database_fingerprint(db_path: Path) -> tuple[int, ...]:
@@ -115,9 +141,13 @@ def _should_skip_dir(path: Path, boundary_roots: list[Path]) -> bool:
     return any(part in DEFAULT_EXCLUDE_DIRS for part in resolved.parts)
 
 
-def _is_nested_boundary_index(db_path: Path, boundary: Path) -> bool:
-    direct_index = boundary / INDEX_DIR_NAME / INDEX_DB_NAME
-    return db_path != direct_index.resolve() and _is_relative_to(db_path, boundary)
+def _should_skip_index_scan_dir(path: Path, boundary_roots: list[Path]) -> bool:
+    resolved = path.resolve()
+    if any(_is_relative_to(resolved, root) for root in boundary_roots):
+        return True
+    if resolved.name == INDEX_DIR_NAME:
+        return False
+    return any(part in DEFAULT_EXCLUDE_DIRS for part in resolved.parts)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

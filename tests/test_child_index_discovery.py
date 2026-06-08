@@ -37,6 +37,21 @@ def test_watch_snapshot_child_indexes_prune_excluded_directories(tmp_path: Path)
     assert sorted(snapshot.child_indexes) == ["src/child/.auto-index-mcp/index.db"]
 
 
+def test_watch_snapshot_fingerprints_known_child_without_scanning_inside_it(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    child = project / "child"
+    grandchild = child / "grandchild"
+    grandchild.mkdir(parents=True)
+
+    own_db = _write_empty_index(project)
+    _write_empty_index(child)
+    _write_empty_index(grandchild)
+
+    snapshot = take_watch_snapshot(project, [child], own_db)
+
+    assert sorted(snapshot.child_indexes) == ["child/.auto-index-mcp/index.db"]
+
+
 def _write_empty_index(root: Path) -> Path:
     db_path = root / ".auto-index-mcp" / "index.db"
     store = IndexStore(db_path)

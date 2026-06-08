@@ -14,10 +14,9 @@ class BuildLock:
     happens once and concurrent SQLite writers do not pile up against the busy
     timeout.
 
-    It is intentionally best-effort. A lock left behind by a crashed process is
-    reclaimed once it is older than ``stale_seconds``, and a contended acquire
-    that exceeds ``wait_seconds`` still lets the caller proceed - degrading to
-    the old unsynchronised behaviour rather than dead-locking.
+    A lock left behind by a crashed process is reclaimed once it is older than
+    ``stale_seconds``. A contended acquire that exceeds ``wait_seconds`` returns
+    ``False`` so callers can avoid starting a duplicate full scan.
     """
 
     def __init__(self, path: Path, stale_seconds: float = 120.0, poll_seconds: float = 0.05) -> None:

@@ -9,6 +9,7 @@ from ..core.service import AutoIndexService
 class CompatService:
     def __init__(self, service: AutoIndexService) -> None:
         self.service = service
+        self.last_result: dict[str, Any] | None = None
 
     def set_project_path(self, path: str) -> str:
         root = Path(path).resolve()
@@ -28,6 +29,7 @@ class CompatService:
                 # agents pointing at the same directory into a single rebuild;
                 # losers reuse the index the winner just produced.
                 result = self.service.rebuild(reuse_if_fresh=True)
+        self.last_result = result
         total = result.get("total_file_count", result["file_count"])
         child_count = result.get("child_index_count", 0)
         child_suffix = f" across {child_count} child indexes" if child_count else ""
@@ -116,7 +118,8 @@ class CompatService:
         max_results: int | None = 10,
     ) -> dict[str, Any]:
         search_pattern = _fuzzy_pattern(pattern) if fuzzy and not regex else pattern
-        limit = (max_results or 10) + start_index
+        page_size = max_results or 10
+        limit = page_size + start_index + 1
         response = self.service.text_search(
             pattern=search_pattern,
             case_sensitive=case_sensitive,
@@ -126,14 +129,14 @@ class CompatService:
             context_lines=context_lines,
         )
         all_matches = response["items"]
-        page = all_matches[start_index:start_index + (max_results or 10)]
+        page = all_matches[start_index:start_index + page_size]
         return {
             "pattern": pattern,
             "matches": page,
             "total_matches": len(all_matches),
             "start_index": start_index,
             "max_results": max_results,
-            "has_more": len(all_matches) > start_index + len(page),
+            "has_more": len(all_matches) > start_index + page_size,
             "backend": response["backend"],
         }
 

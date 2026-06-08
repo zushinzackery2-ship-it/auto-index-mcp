@@ -256,6 +256,39 @@ def test_rebuild_reuse_if_fresh_skips_rescan(tmp_path: Path, monkeypatch) -> Non
     assert calls["n"] == 1
 
 
+def test_rebuild_lock_timeout_does_not_rescan(tmp_path: Path, monkeypatch) -> None:
+    from auto_index_mcp.core import service as service_module
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+
+    class ContendedLock:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def acquire(self, wait_seconds: float) -> bool:
+            _ = wait_seconds
+            return False
+
+        def release(self) -> None:
+            pass
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=False)
+    monkeypatch.setattr(service_module, "BuildLock", ContendedLock)
+    monkeypatch.setattr(
+        service,
+        "_rebuild_now",
+        lambda: (_ for _ in ()).throw(AssertionError("lock timeout must not rescan")),
+    )
+
+    result = service.rebuild()
+
+    assert result["status"] == "build-lock-timeout"
+    assert result["rebuild"] is False
+
+
 def test_apply_skips_redundant_write_when_index_already_current(tmp_path: Path) -> None:
     from auto_index_mcp.indexing.snapshot import WatchSnapshot, take_watch_snapshot
     from auto_index_mcp.indexing.updater import IndexUpdater
@@ -342,7 +375,7 @@ def test_nested_child_indexes_recurse_from_each_child_database(tmp_path: Path) -
     assert parent_service.symbol_body("child/grandchild/deep.py", "deep_only")["code"].startswith("def deep_only")
     assert parent_service.file_content("child/grandchild/deep.py").startswith("def deep_only")
     search = parent_service.text_search("deep_only")
-    assert search["backend"] == "indexed-files"
+    assert search["backend"] == "ripgrep-indexed-files"
     assert search["items"][0]["path"] == "child/grandchild/deep.py"
 
     (grandchild / "deep.py").write_text("def deep_only():\n    return False\n", encoding="utf-8")

@@ -11,11 +11,12 @@ class DummyService:
         self.started = 0
         self.stopped = 0
 
-    def enable(self, root_path: str, rebuild: bool = True) -> dict:
+    def enable_reusing_index(self, root_path: str, rebuild: bool = False) -> dict:
         self.enabled.append((root_path, rebuild))
-        return {"root": root_path}
+        return {"root": root_path, "updated_at": 1.0}
 
-    def start_watcher(self) -> dict:
+    def start_watcher(self, wait_ready: bool = True) -> dict:
+        _ = wait_ready
         self.started += 1
         return {"running": True}
 
@@ -47,6 +48,7 @@ def test_main_stops_watcher_when_run_returns(monkeypatch: pytest.MonkeyPatch) ->
         "_parse_args",
         lambda: SimpleNamespace(
             project_path="project",
+            rebuild=False,
             no_rebuild=False,
             no_watch=False,
             transport="stdio",
@@ -56,7 +58,7 @@ def test_main_stops_watcher_when_run_returns(monkeypatch: pytest.MonkeyPatch) ->
 
     server.main()
 
-    assert service.enabled == [("project", True)]
+    assert service.enabled == [("project", False)]
     assert service.started == 1
     assert service.stopped == 1
     assert mcp.runs == ["stdio"]
@@ -73,6 +75,7 @@ def test_main_stops_watcher_when_run_raises(monkeypatch: pytest.MonkeyPatch) -> 
         "_parse_args",
         lambda: SimpleNamespace(
             project_path="project",
+            rebuild=False,
             no_rebuild=True,
             no_watch=False,
             transport="streamable-http",
