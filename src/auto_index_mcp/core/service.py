@@ -6,8 +6,7 @@ from typing import Any
 
 from .config import DEFAULT_BUILD_LOCK_WAIT_SECONDS, DEFAULT_WATCH_DEBOUNCE_SECONDS, project_index_root
 from .index_policy import can_reuse_index, can_start_auto_watch
-from .navigation_format import compact_file, overview_result, tree_result
-from .pagination import PageRequest
+from .service_navigation import ServiceNavigationMixin
 from .service_search import ServiceSearchMixin
 from ..workspace.view import WorkspaceView
 from ..indexing.analysis import resolve_project_callers
@@ -24,7 +23,7 @@ from ..workspace.discovery import child_indexes_to_dicts, discover_child_indexes
 _VIEW_CACHE_TTL_SECONDS = 0.5
 
 
-class AutoIndexService(ServiceSearchMixin):
+class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin):
     def __init__(self, index_root: Path | None = None) -> None:
         self.index_root_override = index_root
         self.index_root: Path | None = index_root
@@ -110,7 +109,10 @@ class AutoIndexService(ServiceSearchMixin):
     def _rebuild_now(self) -> dict[str, Any]:
         root, store = self._ready_context()
         start = time.time()
-        existing = {item["path"]: item for item in store.all_files()}
+        try:
+            existing = {item["path"]: item for item in store.all_files()}
+        except Exception:
+            existing = {}
         children = discover_child_indexes(root, store.db_path)
         boundary_roots = [Path(child.root) for child in children]
         scan = SourceScanner(str(root), existing_records=existing, boundary_roots=boundary_roots).scan()
@@ -214,75 +216,6 @@ class AutoIndexService(ServiceSearchMixin):
         if not self.watcher:
             return {"running": False}
         return self.watcher.status()
-    def overview(self, limit: int = 30) -> dict[str, Any]:
-        self._store_context()
-        files = self.view.all_files()
-        return overview_result(files, limit)
-
-    def tree_get(self, root_path: str = "", depth: int = 2, limit: int = 120) -> dict[str, Any]:
-        self._store_context()
-        files = self.view.all_files()
-        return tree_result(files, root_path, depth, limit)
-
-    def query(self, text: str = "", languages: list[str] | None = None, parent: str = "", limit: int = 80, cursor: str | None = None) -> dict[str, Any]:
-        self._store_context()
-        page = PageRequest.from_cursor(cursor, limit)
-        rows = self.view.query(text, languages or [], parent, page.fetch_limit, page.offset)
-        next_cursor = page.next_cursor if len(rows) > page.limit else None
-        return {"format": "auto_index_query_indexed", "items": [compact_file(row) for row in rows[:page.limit]], "cursor": next_cursor}
-
-    def file_summary(self, path: str) -> dict[str, Any]:
-        self._store_context()
-        lookup = self.view.get_file(path)
-        if lookup.item is None:
-            raise KeyError(f"indexed file not found: {path}")
-        symbols = lookup.item["symbols"]
-        return {
-            "format": "auto_index_file_summary_full",
-            "path": lookup.item["path"],
-            "language": lookup.item["language"],
-            "line_count": lookup.item["line_count"],
-            "imports": lookup.item["imports"],
-            "symbol_count": len(symbols),
-            "symbols": symbols,
-            "total_complexity": sum(symbol.get("complexity", 1) for symbol in symbols),
-            "max_complexity": max((symbol.get("complexity", 1) for symbol in symbols), default=0),
-        }
-
-    def get(self, path: str) -> dict[str, Any]:
-        self._store_context()
-        lookup = self.view.get_file(path)
-        if lookup.item is None:
-            raise KeyError(f"indexed file not found: {path}")
-        return {"format": "auto_index_get_full", "item": lookup.item}
-
-    def file_content(self, path: str) -> str:
-        root, _store = self._ready_context()
-        return self.view.read_text(root, path)
-
-    def resolve_path(self, path: str, limit: int = 20) -> dict[str, Any]:
-        self._store_context()
-        needle = path.lower().replace("\\", "/")
-        matches = []
-        for item in self.view.all_files():
-            candidate = item["path"].lower()
-            if candidate == needle or item["name"].lower() == needle or needle in candidate:
-                matches.append(compact_file(item))
-            if len(matches) >= limit:
-                break
-        return {"format": "auto_index_resolve_indexed", "items": matches}
-
-    def diff_filesystem(self) -> dict[str, Any]:
-        root, _store = self._ready_context()
-        diff = self.view.diff_filesystem(root)
-        added = diff["added"]
-        deleted = diff["deleted"]
-        changed = diff["changed"]
-        return {"format": "auto_index_diff_indexed", "added": added[:100], "deleted": deleted[:100], "changed": changed[:100], "added_count": len(added), "deleted_count": len(deleted), "changed_count": len(changed)}
-
-    def all_files(self) -> list[dict[str, Any]]:
-        self._store_context()
-        return self.view.all_files()
 
     def _db_path(self, root: Path) -> Path:
         index_root = self.index_root_override or project_index_root(root)

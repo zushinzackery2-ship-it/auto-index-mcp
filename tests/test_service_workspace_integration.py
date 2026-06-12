@@ -58,9 +58,14 @@ def test_nested_child_indexes_recurse_from_each_child_database(tmp_path: Path) -
     assert child_result["total_file_count"] == 2
     assert parent_result["file_count"] == 1
     assert parent_result["total_file_count"] == 3
+    assert parent_result["child_index_count"] == 1
 
     files = [item["path"] for item in parent_service.all_files()]
     assert files == ["child/child.py", "child/grandchild/deep.py", "root.py"]
+    headers = [item["path"] for item in parent_service.view.file_headers()]
+    targets = [item["path"] for item in parent_service.view.search_targets()]
+    assert headers == files
+    assert targets == files
     assert parent_service.resolve_path("deep.py")["items"][0]["path"] == "child/grandchild/deep.py"
     assert parent_service.file_summary("child/grandchild/deep.py")["symbols"][0]["name"] == "deep_only"
     assert parent_service.symbol_body("child/grandchild/deep.py", "deep_only")["code"].startswith("def deep_only")

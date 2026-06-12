@@ -25,7 +25,7 @@ class SourceScanner:
         self,
         root: str,
         extra_excludes: list[str] | None = None,
-        max_bytes: int = 2_000_000,
+        max_bytes: int = 2 * 1024 * 1024,
         existing_records: dict[str, dict] | None = None,
         boundary_roots: list[Path] | None = None,
     ) -> None:

@@ -28,17 +28,42 @@ class IndexStore:
             initialize_schema(conn, self.set_metadata)
 
     def replace_all(self, root: str, records: list[FileRecord], child_indexes: list[dict[str, Any]] | None = None) -> None:
-        with self.connect() as conn:
-            conn.execute("DELETE FROM files")
-            conn.execute("DELETE FROM symbols")
-            conn.execute("DELETE FROM file_fts")
-            conn.execute("DELETE FROM child_indexes")
-            self._insert_many(conn, records)
-            self._insert_child_indexes(conn, child_indexes or [])
-            self.set_metadata(conn, "root", root)
-            self.set_metadata(conn, "updated_at", time.time())
-            self.set_metadata(conn, "file_count", len(records))
-            self.set_metadata(conn, "child_index_count", len(child_indexes or []))
+        # Handle corrupted database by deleting and recreating
+        conn_to_close = None
+        try:
+            conn_to_close = sqlite3.connect(self.db_path, timeout=1.0)
+            conn_to_close.execute("PRAGMA busy_timeout=1000")
+            conn_to_close.execute("DELETE FROM files")
+            conn_to_close.execute("DELETE FROM symbols")
+            conn_to_close.execute("DELETE FROM file_fts")
+            conn_to_close.execute("DELETE FROM child_indexes")
+            self._insert_many(conn_to_close, records)
+            self._insert_child_indexes(conn_to_close, child_indexes or [])
+            self.set_metadata(conn_to_close, "root", root)
+            self.set_metadata(conn_to_close, "updated_at", time.time())
+            self.set_metadata(conn_to_close, "file_count", len(records))
+            self.set_metadata(conn_to_close, "child_index_count", len(child_indexes or []))
+            conn_to_close.commit()
+        except Exception:
+            # Database is corrupted, delete and reinitialize
+            if conn_to_close:
+                conn_to_close.close()
+            self.db_path.unlink(missing_ok=True)
+            self.initialize()
+            with self.connect() as conn:
+                conn.execute("DELETE FROM files")
+                conn.execute("DELETE FROM symbols")
+                conn.execute("DELETE FROM file_fts")
+                conn.execute("DELETE FROM child_indexes")
+                self._insert_many(conn, records)
+                self._insert_child_indexes(conn, child_indexes or [])
+                self.set_metadata(conn, "root", root)
+                self.set_metadata(conn, "updated_at", time.time())
+                self.set_metadata(conn, "file_count", len(records))
+                self.set_metadata(conn, "child_index_count", len(child_indexes or []))
+        else:
+            if conn_to_close:
+                conn_to_close.close()
 
     def replace_files(self, records: list[FileRecord]) -> None:
         if not records:

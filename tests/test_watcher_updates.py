@@ -119,7 +119,7 @@ def test_watcher_removes_record_when_file_becomes_unindexable(tmp_path: Path) ->
     service.start_watcher(debounce_seconds=0.1)
 
     try:
-        source.write_text("x = '" + ("a" * 2_000_001) + "'\n", encoding="utf-8")
+        source.write_text("x = " + repr("a" * (2 * 1024 * 1024 + 1)), encoding="utf-8")
 
         assert _wait_until(lambda: not service.resolve_path("large.py")["items"])
         result = service.watcher_status()["last_result"]

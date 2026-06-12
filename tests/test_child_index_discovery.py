@@ -46,6 +46,24 @@ def test_child_index_discovery_prunes_child_source_tree(tmp_path: Path, monkeypa
     assert deep_source not in visited
 
 
+def test_child_index_discovery_returns_non_overlapping_children(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    child = project / "child"
+    grandchild = child / "grandchild"
+    sibling = project / "sibling"
+    grandchild.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+
+    own_db = _write_empty_index(project)
+    _write_empty_index(child)
+    _write_empty_index(grandchild)
+    _write_empty_index(sibling)
+
+    children = discover_child_indexes(project, own_db)
+
+    assert [child.path for child in children] == ["child", "sibling"]
+
+
 def test_watch_snapshot_child_indexes_prune_excluded_directories(tmp_path: Path) -> None:
     project = tmp_path / "project"
     included_child = project / "src" / "child"
