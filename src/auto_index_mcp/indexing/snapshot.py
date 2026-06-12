@@ -211,7 +211,7 @@ def _database_fingerprint(db_path: Path) -> tuple[int, ...]:
 
 def _should_skip_dir(path: Path, boundary_roots: list[Path]) -> bool:
     resolved = path.resolve()
-    if any(_is_relative_to(resolved, root) for root in boundary_roots):
+    if any(is_relative_to(resolved, root) for root in boundary_roots):
         return True
     return any(part in DEFAULT_EXCLUDE_DIRS for part in resolved.parts)
 

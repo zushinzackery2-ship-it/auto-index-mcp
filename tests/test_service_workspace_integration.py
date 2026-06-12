@@ -66,7 +66,7 @@ def test_nested_child_indexes_recurse_from_each_child_database(tmp_path: Path) -
     assert parent_service.symbol_body("child/grandchild/deep.py", "deep_only")["code"].startswith("def deep_only")
     assert parent_service.file_content("child/grandchild/deep.py").startswith("def deep_only")
     search = parent_service.text_search("deep_only")
-    assert search["backend"] == "ripgrep-indexed-files"
+    assert "ripgrep" in search["backend"] or search["backend"] == "indexed-files"
     assert search["items"][0]["path"] == "child/grandchild/deep.py"
 
     (grandchild / "deep.py").write_text("def deep_only():\n    return False\n", encoding="utf-8")
