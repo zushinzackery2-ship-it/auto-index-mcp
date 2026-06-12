@@ -13,6 +13,7 @@ from ..core.config import (
     TEXT_EXTENSIONS,
 )
 from ..core.models import FileRecord, ScanResult, SymbolRecord
+from ..core._utils import is_relative_to
 from .analysis import enrich_symbols
 from ..languages.python import extract_python_symbols
 from ..languages.javascript import extract_javascript_like_symbols
@@ -59,7 +60,7 @@ class SourceScanner:
 
     def _should_skip(self, path: Path) -> bool:
         resolved = path.resolve()
-        if any(self._is_relative_to(resolved, root) for root in self.boundary_roots):
+        if any(is_relative_to(resolved, root) for root in self.boundary_roots):
             return True
         if any(part in DEFAULT_EXCLUDE_DIRS for part in path.parts):
             return True
@@ -85,7 +86,7 @@ class SourceScanner:
 
     def _should_skip_dir(self, path: Path) -> bool:
         resolved = path.resolve()
-        if any(self._is_relative_to(resolved, root) for root in self.boundary_roots):
+        if any(is_relative_to(resolved, root) for root in self.boundary_roots):
             return True
         return any(part in DEFAULT_EXCLUDE_DIRS for part in resolved.parts)
 
@@ -161,10 +162,3 @@ class SourceScanner:
 
     def _relative(self, path: Path) -> str:
         return str(path.resolve().relative_to(self.root)).replace("\\", "/")
-
-    def _is_relative_to(self, path: Path, root: Path) -> bool:
-        try:
-            path.relative_to(root)
-            return True
-        except ValueError:
-            return False

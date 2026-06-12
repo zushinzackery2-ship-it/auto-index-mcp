@@ -4,6 +4,7 @@ import re
 from dataclasses import replace
 
 from ..core.models import FileRecord, SymbolRecord
+from ..core._utils import strip_comments
 
 CALL_RE = re.compile(r"\b([A-Za-z_][\w]*)\s*\(")
 CONTROL_NAMES = {"if", "for", "while", "switch", "return", "raise", "catch", "with"}
@@ -68,20 +69,16 @@ def resolve_project_callers(records: list[FileRecord]) -> list[FileRecord]:
 def _complexity(lines: list[str]) -> int:
     score = 1
     for line in lines:
-        score += len(COMPLEXITY_RE.findall(_strip_comments(line)))
+        score += len(COMPLEXITY_RE.findall(strip_comments(line)))
     return score
 
 
 def _calls(lines: list[str], own_name: str) -> list[str]:
     calls: list[str] = []
     for line in lines:
-        for name in CALL_RE.findall(_strip_comments(line)):
+        for name in CALL_RE.findall(strip_comments(line)):
             if name == own_name or name in CONTROL_NAMES:
                 continue
             if name not in calls:
                 calls.append(name)
     return calls
-
-
-def _strip_comments(line: str) -> str:
-    return line.split("#", 1)[0].split("//", 1)[0]

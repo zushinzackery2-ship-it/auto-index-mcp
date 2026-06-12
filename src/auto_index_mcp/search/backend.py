@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import re
 import shutil
@@ -8,8 +9,16 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 MAX_RG_COMMAND_CHARS = 24_000
+# Maximum number of files to cache for Python fallback search
+_MAX_FILE_CACHE_SIZE = 1000
+
+# LRU cache for file content reads during Python fallback
+_FILE_CONTENT_CACHE: dict[str, tuple[int, list[str]]] = {}
+_CACHE_LOCK = threading.Lock()
+_CACHE_ACCESS_ORDER: list[str] = []
 
 
 @dataclass(frozen=True)
@@ -164,17 +173,19 @@ def _matches_file_pattern(path: str, file_pattern: str) -> bool:
 def _target_batches(base_command: list[str], targets: list[tuple[Path, str]]) -> list[list[tuple[Path, str]]]:
     batches: list[list[tuple[Path, str]]] = []
     current: list[tuple[Path, str]] = []
-    command_size = sum(len(part) + 3 for part in base_command)
-    current_size = command_size
-    for target in targets:
-        rendered = str(target[0])
-        path_size = len(rendered) + 3
-        if current and current_size + path_size > MAX_RG_COMMAND_CHARS:
+    # Use UTF-8 encoded bytes length for accurate shell argument size calculation
+    base_size = sum(len(part.encode("utf-8")) + 3 for part in base_command)
+    current_size = base_size
+    for target, _display_path in targets:
+        rendered = str(target)
+        # Calculate actual bytes needed: quotes + UTF-8 encoded path + quotes + space
+        path_bytes = len(rendered.encode("utf-8")) + 3
+        if current and current_size + path_bytes > MAX_RG_COMMAND_CHARS:
             batches.append(current)
             current = []
-            current_size = command_size
-        current.append(target)
-        current_size += path_size
+            current_size = base_size
+        current.append((target, _display_path))
+        current_size += path_bytes
     if current:
         batches.append(current)
     return batches
@@ -196,7 +207,7 @@ def _python_search(
         if file_pattern and not _matches_file_pattern(item["path"], file_pattern):
             continue
         try:
-            lines = _source_path(root, item).read_text(encoding="utf-8").splitlines()
+            lines = _cached_read_lines(root, item)
         except (OSError, UnicodeDecodeError):
             continue
         for line_number, line in enumerate(lines, start=1):
@@ -205,6 +216,43 @@ def _python_search(
                 if len(matches) >= limit:
                     return matches
     return matches
+
+
+def _cached_read_lines(root: Path, item: dict[str, Any]) -> list[str]:
+    """Read file content with LRU cache to avoid redundant disk I/O."""
+    source_path = _source_path(root, item)
+    key = str(source_path.resolve())
+
+    # Check cache: (mtime_ns, content_lines)
+    with _CACHE_LOCK:
+        cached = _FILE_CONTENT_CACHE.get(key)
+        if cached is not None:
+            try:
+                stat = source_path.stat()
+                if stat.st_mtime_ns == cached[0]:
+                    # Move to end (most recently used)
+                    if key in _CACHE_ACCESS_ORDER:
+                        _CACHE_ACCESS_ORDER.remove(key)
+                    _CACHE_ACCESS_ORDER.append(key)
+                    return cached[1]
+            except OSError:
+                pass
+
+    # Read and cache
+    try:
+        stat = source_path.stat()
+        content = source_path.read_text(encoding="utf-8")
+        lines = content.splitlines()
+        with _CACHE_LOCK:
+            # Evict oldest entries if cache is full
+            while len(_FILE_CONTENT_CACHE) >= _MAX_FILE_CACHE_SIZE:
+                oldest = _CACHE_ACCESS_ORDER.pop(0)
+                _FILE_CONTENT_CACHE.pop(oldest, None)
+            _FILE_CONTENT_CACHE[key] = (stat.st_mtime_ns, lines)
+            _CACHE_ACCESS_ORDER.append(key)
+        return lines
+    except (OSError, UnicodeDecodeError):
+        return []
 
 
 def _source_path(root: Path, item: dict) -> Path:

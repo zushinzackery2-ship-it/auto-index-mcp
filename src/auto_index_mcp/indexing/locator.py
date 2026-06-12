@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from ..core.config import DEFAULT_EXCLUDE_DIRS
+from ..core._utils import is_relative_to
 
 
 INDEX_DB_NAME = "index.db"
@@ -48,12 +49,4 @@ def _should_skip_dir(path: Path, boundary_roots: list[Path]) -> bool:
 
 
 def _is_boundary(path: Path, boundary_roots: list[Path]) -> bool:
-    return any(_is_relative_to(path, boundary) for boundary in boundary_roots)
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
+    return any(is_relative_to(path, boundary) for boundary in boundary_roots)

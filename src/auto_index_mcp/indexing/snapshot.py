@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..core.config import DEFAULT_EXCLUDE_DIRS, TEXT_EXTENSIONS
+from ..core._utils import is_relative_to
 from .locator import INDEX_DB_NAME, INDEX_DIR_NAME, iter_index_databases
 from .metadata_reader import DEFAULT_METADATA_READER
 
@@ -250,17 +251,9 @@ def _is_own_database_path(path: Path, own_db: Path | None) -> bool:
 
 
 def _is_under_boundary(path: Path, boundary_roots: list[Path]) -> bool:
-    return any(_is_relative_to(path, boundary) for boundary in boundary_roots)
+    return any(is_relative_to(path, boundary) for boundary in boundary_roots)
 
 
 def _subtree_had_child_index(previous: WatchSnapshot, rel: str) -> bool:
     prefix = rel.rstrip("/") + "/"
     return any(path == rel or path.startswith(prefix) for path in previous.child_indexes)
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False

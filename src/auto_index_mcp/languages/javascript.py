@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from ..core.models import SymbolRecord
+from ..core._utils import strip_string_literals
 from .generic import extract_symbols
 
 
@@ -39,14 +40,10 @@ def _find_brace_end(lines: list[str], start_index: int) -> int:
     depth = 0
     opened = False
     for index in range(start_index, len(lines)):
-        line = _strip_strings(lines[index])
+        line = strip_string_literals(lines[index])
         depth += line.count("{")
         opened = opened or "{" in line
         depth -= line.count("}")
         if opened and depth <= 0:
             return index + 1
     return min(start_index + 50, len(lines))
-
-
-def _strip_strings(line: str) -> str:
-    return re.sub(r"(['\"`]).*?\1", "", line)

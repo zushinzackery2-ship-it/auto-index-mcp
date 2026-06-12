@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from ..core.models import SymbolRecord
+from ..core._utils import strip_string_literals
 
 SYMBOL_PATTERNS = [
     ("class", re.compile(r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_][\w]*)")),
@@ -80,7 +81,7 @@ def _find_brace_block_end(lines: list[str], start_index: int) -> int:
     depth = 0
     opened = False
     for index in range(start_index, len(lines)):
-        line = _strip_string_literals(lines[index])
+        line = strip_string_literals(lines[index])
         depth += line.count("{")
         if line.count("{"):
             opened = True
@@ -90,7 +91,3 @@ def _find_brace_block_end(lines: list[str], start_index: int) -> int:
         if not opened and index > start_index and lines[index].strip():
             return index
     return min(start_index + 50, len(lines))
-
-
-def _strip_string_literals(line: str) -> str:
-    return re.sub(r"(['\"]).*?\1", "", line)

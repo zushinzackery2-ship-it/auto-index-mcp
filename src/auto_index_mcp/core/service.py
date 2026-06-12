@@ -20,6 +20,10 @@ from ..indexing.watcher import FileEventWatcher
 from ..workspace.discovery import child_indexes_to_dicts, discover_child_indexes
 
 
+# View cache TTL - must be <= WorkspaceView cache TTL for consistency
+_VIEW_CACHE_TTL_SECONDS = 0.5
+
+
 class AutoIndexService(ServiceSearchMixin):
     def __init__(self, index_root: Path | None = None) -> None:
         self.index_root_override = index_root
@@ -29,14 +33,30 @@ class AutoIndexService(ServiceSearchMixin):
         self.last_errors: list[str] = []
         self.store: IndexStore | None = None
         self.watcher: FileEventWatcher | None = None
+        # Use a shared view with TTL-based caching for better incremental update responsiveness
+        self._view: WorkspaceView | None = None
+        self._view_created_at: float = 0.0
 
     @property
     def file_count(self) -> int:
+        """Cached file count from metadata, avoid full all_files() call."""
         self._store_context()
-        return len(self.view.all_files())
+        assert self.store is not None
+        return len(self.store.search_targets())
+
     @property
     def view(self) -> WorkspaceView:
-        return WorkspaceView(self._store_context())
+        """Get WorkspaceView with TTL-based caching."""
+        self._store_context()
+        now = time.time()
+        if self._view is None or (now - self._view_created_at) > _VIEW_CACHE_TTL_SECONDS:
+            self._view = WorkspaceView(self._store_context())
+            self._view_created_at = now
+        return self._view
+
+    def _invalidate_view_cache(self) -> None:
+        """Invalidate the cached view after mutations."""
+        self._view = None
 
     def enable(self, root_path: str, rebuild: bool = True) -> dict[str, Any]:
         root = Path(root_path).resolve()
@@ -49,6 +69,7 @@ class AutoIndexService(ServiceSearchMixin):
         self.index_root = self.index_root_override or project_index_root(root)
         self.store = IndexStore(self._db_path(root))
         self.store.initialize()
+        self._invalidate_view_cache()
         if rebuild:
             return self.rebuild()
         return self.status()
@@ -144,6 +165,7 @@ class AutoIndexService(ServiceSearchMixin):
             self.enabled = False
         else:
             store.clear()
+        self._invalidate_view_cache()
         return self.status()
 
     def start_watcher(self, debounce_seconds: float = DEFAULT_WATCH_DEBOUNCE_SECONDS, wait_ready: bool = True) -> dict[str, Any]:

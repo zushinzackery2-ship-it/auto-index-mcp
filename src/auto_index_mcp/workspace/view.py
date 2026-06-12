@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..indexing.scanner import SourceScanner
 from ..indexing.store import IndexStore
 from .discovery import read_index_metadata
 from .safety import ensure_relative_to
+
+# Cache configuration - short TTL for incremental update responsiveness
+_CACHE_TTL_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -23,27 +28,61 @@ class WorkspaceView:
         self._active_children: list[dict[str, Any]] | None = None
         self._child_stores: dict[str, IndexStore] = {}
         self._child_views: dict[str, WorkspaceView] = {}
+        # Result caches with TTL
+        self._cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+        self._cache_lock = threading.Lock()
 
     def all_files(self) -> list[dict[str, Any]]:
-        files = self.store.all_files()
-        for child in self._active_child_indexes():
-            files.extend(self.prefixed_files(child))
-        return sorted(files, key=lambda item: item["path"].lower())
+        return self._cached_files("all_files", lambda: self._load_all_files())
 
     def child_indexes(self) -> list[dict[str, Any]]:
         return self._active_child_indexes()
 
     def file_headers(self) -> list[dict[str, Any]]:
+        return self._cached_files("file_headers", lambda: self._load_file_headers())
+
+    def search_targets(self) -> list[dict[str, Any]]:
+        return self._cached_files("search_targets", lambda: self._load_search_targets())
+
+    def _cached_files(self, key: str, loader: Callable[[], list[dict[str, Any]]]) -> list[dict[str, Any]]:
+        """Get cached result or load fresh data with TTL-based caching."""
+        now = time.time()
+        with self._cache_lock:
+            cached = self._cache.get(key)
+            if cached is not None and (now - cached[0]) < _CACHE_TTL_SECONDS:
+                return cached[1]
+        # Load fresh data outside lock
+        result = loader()
+        with self._cache_lock:
+            self._cache[key] = (now, result)
+        return result
+
+    def _load_all_files(self) -> list[dict[str, Any]]:
+        """Load all files from store and all child indexes."""
+        files = self.store.all_files()
+        for child in self._active_child_indexes():
+            files.extend(self.prefixed_files(child))
+        return sorted(files, key=lambda item: item["path"].lower())
+
+    def _load_file_headers(self) -> list[dict[str, Any]]:
+        """Load file headers from store and all child indexes."""
         files = self.store.file_headers()
         for child in self._active_child_indexes():
             files.extend(self.prefixed_file_headers(child))
         return sorted(files, key=lambda item: item["path"].lower())
 
-    def search_targets(self) -> list[dict[str, Any]]:
+    def _load_search_targets(self) -> list[dict[str, Any]]:
+        """Load search targets from store and all child indexes."""
         targets = self.store.search_targets()
         for child in self._active_child_indexes():
             targets.extend(self.prefixed_search_targets(child))
         return sorted(targets, key=lambda item: item["path"].lower())
+
+    def invalidate_cache(self) -> None:
+        """Invalidate all caches (call after mutations)."""
+        with self._cache_lock:
+            self._cache.clear()
+            self._active_children = None
 
     def query(self, text: str, languages: list[str], parent: str, limit: int, offset: int) -> list[dict[str, Any]]:
         rows = self.store.query(text, languages, parent, limit + offset, 0)
