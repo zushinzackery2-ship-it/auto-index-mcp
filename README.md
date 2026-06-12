@@ -30,7 +30,7 @@
 | **符号索引** | 支持 Python AST 符号，JavaScript/TypeScript/通用文本轻量符号提取。 |
 | **代码搜索** | 优先使用 ripgrep 按轻量索引目标清单搜索；无 ripgrep 时才回退 Python 索引范围搜索。 |
 | **自动刷新** | 使用系统文件变更事件触发，短 debounce 合并连续变更，再做轻量快照比对。 |
-| **兼容工具名** | 保留常用文件查找、摘要、符号体、代码搜索等兼容入口。 |
+| **质量检查** | 基于持久索引缓存报告嵌套过深、疑似悬空代码和不可达代码。 |
 | **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
 
 ---
@@ -53,19 +53,16 @@
 | **搜索** | `auto_index_text_search()` | 对源码进行 literal 或 regex 搜索。 |
 | **搜索** | `auto_index_symbol_search()` | 按名称、签名、类型搜索符号。 |
 | **搜索** | `auto_index_symbol_body()` | 返回指定符号的源码片段。 |
+| **质量检查** | `auto_index_nesting_check()` | 从 `symbol_nesting` 缓存读取嵌套复杂度问题。 |
+| **质量检查** | `auto_index_dangling_check()` | 从 `quality_findings` 缓存读取疑似悬空代码问题。 |
 | **漂移检查** | `auto_index_diff_filesystem()` | 对比索引与当前文件系统的新增、删除、变化。 |
 | **自动刷新** | `auto_index_watcher_start()` | 启动文件系统事件驱动的自动刷新。 |
 | **自动刷新** | `auto_index_watcher_stop()` | 停止文件系统事件驱动的自动刷新。 |
 | **自动刷新** | `auto_index_watcher_status()` | 查看 watcher 运行状态、触发次数、最近结果。 |
-| **兼容入口** | `set_project_path()` | 用常见项目设置工具名初始化或复用已有索引。 |
-| **兼容入口** | `find_files()` | 按 glob 或文件名查找索引文件。 |
-| **兼容入口** | `get_file_summary()` | 返回单文件 import、符号和复杂度摘要。 |
-| **兼容入口** | `get_symbol_body()` | 按兼容格式返回符号源码体。 |
-| **兼容入口** | `search_code_advanced()` | 支持文件过滤、regex、上下文、分页和 fuzzy 搜索。 |
 
-冗余的历史兼容入口不再注册到 MCP 工具面，例如旧式 temp-directory、settings、watcher 配置和重复 rebuild/search-refresh 包装；请使用上表中的 native API 或保留的常用兼容入口。
+MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容工具。旧的 `set_project_path()`、`find_files()`、`get_file_summary()`、`get_symbol_body()`、`search_code_advanced()` 已移除，请使用上表中的 native API。
 
-`set_project_path()` 的兼容文本会同时报告 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。首次设置或切换到一个已有索引根目录时会复用 `.auto-index-mcp/index.db`；重复设置当前 active root 时直接返回当前状态，不做同步 catch-up，避免 Agent 高频重复调用时被目录扫描阻塞。`auto_index_enable()` 和 server `--project-path` 也采用复用优先策略；需要强制全量刷新时使用 `auto_index_rebuild()`、`auto_index_enable(rebuild=True)` 或 CLI `--rebuild`。
+`auto_index_enable()` 会返回 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。首次设置或切换到一个已有索引根目录时会复用 `.auto-index-mcp/index.db`；需要强制全量刷新时使用 `auto_index_rebuild()`、`auto_index_enable(rebuild=True)` 或 CLI `--rebuild`。
 
 ---
 
@@ -78,8 +75,7 @@
 | `workspace/` | 嵌套工作区发现、父子索引聚合、路径安全检查、搜索上下文读取。 |
 | `languages/` | Python、JavaScript/TypeScript 和通用文本符号提取。 |
 | `search/` | ripgrep/Python fallback 搜索后端。 |
-| `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、兼容入口拆分。 |
-| `compatibility/` | 常见兼容工具名和返回格式适配。 |
+| `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、质量检查拆分。 |
 
 ---
 
@@ -87,7 +83,7 @@
 
 `auto_index_query()`、`auto_index_symbol_search()`、`auto_index_file_summary()` 等结构化导航工具读取 SQLite 中的持久索引数据。
 
-`auto_index_text_search()` 和兼容入口 `search_code_advanced()` 的正文匹配遵循“索引范围 + 实时文件内容”模型：
+`auto_index_text_search()` 的正文匹配遵循“索引范围 + 实时文件内容”模型：
 
 - 文件集合来自当前索引，新增、删除、重命名文件需要 watcher 或重建索引后才进入搜索范围。
 - 正文内容优先通过 ripgrep 读取轻量 SQL search-target 清单对应的实时文件；不会把项目根目录交给 ripgrep 做递归全树搜索，也不会为了正文搜索拉取符号/import 等完整文件详情。
@@ -138,15 +134,18 @@ auto-index-mcp/
 |   `-- verify_mcp_stdio.py
 |-- src/
 |   `-- auto_index_mcp/
-|       |-- compatibility/
 |       |-- core/
 |       |   |-- index_policy.py
 |       |   |-- pagination.py
+|       |   |-- quality_dangling.py
+|       |   |-- quality_nesting.py
 |       |   |-- service.py
+|       |   |-- service_quality.py
 |       |   `-- service_search.py
 |       |-- indexing/
 |       |   |-- build_lock.py
 |       |   |-- locator.py
+|       |   |-- nesting.py
 |       |   |-- snapshot.py
 |       |   |-- store.py
 |       |   `-- watcher.py

@@ -106,6 +106,35 @@ def test_dangling_check_reports_unused_symbol_and_unreachable_code(tmp_path: Pat
     )
 
 
+def test_dangling_check_ignores_protocol_type_helpers(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text(
+        "\n".join(
+            [
+                "from typing import Protocol, cast",
+                "",
+                "class _Service(Protocol):",
+                "    def ready(self) -> bool:",
+                "        ...",
+                "",
+                "class Runner:",
+                "    def run(self) -> bool:",
+                "        service = cast(_Service, self)",
+                "        return service.ready()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+
+    findings = service.dangling_check()["findings"]
+
+    assert not any(finding.get("symbol") == "_Service" for finding in findings)
+
+
 def test_quality_tools_are_registered() -> None:
     class FakeMcp:
         def __init__(self) -> None:

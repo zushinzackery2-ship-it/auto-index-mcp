@@ -105,9 +105,15 @@ def _is_dangling_candidate(item: dict[str, Any], symbol: dict[str, Any]) -> bool
         return False
     if name.startswith("test_") or name.startswith("Test"):
         return False
+    if _is_protocol_symbol(symbol):
+        return False
     if Path(item["path"]).name in {"__init__.py", "__main__.py"}:
         return False
     return not symbol.get("signature", "").startswith("export ")
+
+
+def _is_protocol_symbol(symbol: dict[str, Any]) -> bool:
+    return symbol["kind"] == "class" and "(Protocol" in symbol.get("signature", "")
 
 
 def _unreachable_findings(item: dict[str, Any], text: str) -> list[dict[str, Any]]:

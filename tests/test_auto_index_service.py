@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 
 from auto_index_mcp.core.service import AutoIndexService
-from auto_index_mcp.compatibility.code_index import CompatService
 
 
 def test_rebuild_query_and_get(tmp_path: Path) -> None:
@@ -122,7 +121,7 @@ def test_tree_overview_and_resolve(tmp_path: Path) -> None:
     assert resolved["items"][0]["path"] == "src/app.ts"
 
 
-def test_typescript_symbols_and_compat_search(tmp_path: Path) -> None:
+def test_typescript_symbols_and_text_search(tmp_path: Path) -> None:
     project = tmp_path / "project"
     (project / "src").mkdir(parents=True)
     (project / "src" / "app.ts").write_text(
@@ -136,32 +135,34 @@ def test_typescript_symbols_and_compat_search(tmp_path: Path) -> None:
     )
 
     service = AutoIndexService(index_root=tmp_path / "index")
-    compat = CompatService(service)
-    compat.set_project_path(str(project))
+    service.enable(str(project), rebuild=True)
 
     summary = service.file_summary("src/app.ts")
-    search = compat.search_code_advanced("helper", file_pattern="*.ts", context_lines=1)
+    search = service.text_search("helper", file_pattern="*.ts", context_lines=1)
 
     assert any(symbol["name"] == "App" for symbol in summary["symbols"])
     assert any(symbol["name"] == "start" for symbol in summary["symbols"])
     assert any(symbol["name"] == "helper" for symbol in summary["symbols"])
-    assert search["matches"][0]["path"] == "src/app.ts"
-    assert search["matches"][0]["context"]
+    assert search["items"][0]["path"] == "src/app.ts"
+    assert search["items"][0]["context"]
 
 
-def test_code_index_compatibility_tools(tmp_path: Path) -> None:
+def test_native_navigation_and_search_tools(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     (project / "main.py").write_text("def target():\n    return 'ok'\n", encoding="utf-8")
 
     service = AutoIndexService(index_root=tmp_path / "index")
-    compat = CompatService(service)
+    result = service.enable(str(project), rebuild=True)
 
-    assert "Indexed 1 total files (1 local)" in compat.set_project_path(str(project))
-    assert compat.find_files("*.py") == ["main.py"]
-    assert compat.get_file_summary("main.py")["functions"][0]["name"] == "target"
-    assert compat.get_symbol_body("main.py", "target")["status"] == "success"
-    assert compat.search_code_advanced("target")["matches"][0]["path"] == "main.py"
+    summary = service.file_summary("main.py")
+    symbol_body = service.symbol_body("main.py", "target")
+
+    assert result["total_file_count"] == 1
+    assert service.resolve_path("main.py")["items"][0]["path"] == "main.py"
+    assert summary["symbols"][0]["name"] == "target"
+    assert symbol_body["format"] == "auto_index_symbol_body_full"
+    assert service.text_search("target")["items"][0]["path"] == "main.py"
     assert service.file_content("main.py").startswith("def target")
 
 

@@ -13,7 +13,16 @@ REQUIRED_TOOLS = {
     "auto_index_enable",
     "auto_index_status",
     "auto_index_text_search",
+    "auto_index_symbol_search",
+    "auto_index_nesting_check",
+    "auto_index_dangling_check",
+}
+
+FORBIDDEN_TOOLS = {
     "set_project_path",
+    "find_files",
+    "get_file_summary",
+    "get_symbol_body",
     "search_code_advanced",
 }
 
@@ -38,6 +47,10 @@ async def main() -> int:
     missing = sorted(REQUIRED_TOOLS - names)
     if missing:
         print(f"missing tools: {', '.join(missing)}")
+        return 1
+    forbidden = sorted(FORBIDDEN_TOOLS & names)
+    if forbidden:
+        print(f"legacy tools still registered: {', '.join(forbidden)}")
         return 1
     print(f"mcp stdio ok: {len(names)} tools")
     return 0

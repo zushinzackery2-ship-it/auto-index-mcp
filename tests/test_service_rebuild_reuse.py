@@ -1,24 +1,23 @@
 from pathlib import Path
 
-from auto_index_mcp.compatibility.code_index import CompatService
 from auto_index_mcp.core.service import AutoIndexService
 
 
-def test_set_project_path_reuse_skips_synchronous_catch_up(tmp_path: Path, monkeypatch) -> None:
+def test_enable_reusing_index_skips_synchronous_catch_up(tmp_path: Path, monkeypatch) -> None:
     project = tmp_path / "project"
     project.mkdir()
     (project / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
 
-    CompatService(AutoIndexService(index_root=tmp_path / "index")).set_project_path(str(project))
+    AutoIndexService(index_root=tmp_path / "index").enable_reusing_index(str(project))
     reused = AutoIndexService(index_root=tmp_path / "index")
 
     def _fail_sync(*args: object, **kwargs: object) -> dict:
         raise AssertionError("reuse path must not call sync_index_to_filesystem")
 
     monkeypatch.setattr(reused, "sync_index_to_filesystem", _fail_sync)
-    result = CompatService(reused).set_project_path(str(project))
+    result = reused.enable_reusing_index(str(project))
 
-    assert "Indexed 1 total files" in result
+    assert result["total_file_count"] == 1
     assert "main.py" in [item["path"] for item in reused.all_files()]
 
 
@@ -28,11 +27,9 @@ def test_first_build_result_can_start_auto_watch(tmp_path: Path) -> None:
     (project / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
 
     service = AutoIndexService(index_root=tmp_path / "index")
-    compat = CompatService(service)
+    result = service.enable_reusing_index(str(project))
 
-    compat.set_project_path(str(project))
-
-    assert service.can_start_auto_watch(compat.last_result) is True
+    assert service.can_start_auto_watch(result) is True
 
 
 def test_rebuild_reuse_if_fresh_skips_rescan(tmp_path: Path, monkeypatch) -> None:

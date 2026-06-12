@@ -7,9 +7,7 @@ from types import FrameType
 
 from mcp.server.fastmcp import FastMCP
 
-from ..compatibility.code_index import CompatService
 from ..core.service import AutoIndexService
-from .compat import register_compat_tools
 from .lifecycle import register_lifecycle_tools
 from .navigation import register_navigation_tools
 from .quality import register_quality_tools
@@ -18,14 +16,12 @@ from .search import register_search_tools
 
 mcp = FastMCP("AutoIndexMCP")
 _service = AutoIndexService()
-_compat = CompatService(_service)
 _shutdown_hooks_registered = False
 
 register_lifecycle_tools(mcp, _service)
 register_navigation_tools(mcp, _service)
 register_search_tools(mcp, _service)
 register_quality_tools(mcp, _service)
-register_compat_tools(mcp, _service, _compat)
 
 
 def _parse_args() -> argparse.Namespace:

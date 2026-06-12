@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 
-from auto_index_mcp.compatibility.code_index import CompatService
 from auto_index_mcp.core.service import AutoIndexService
 
 
@@ -18,7 +17,6 @@ def test_parent_workspace_reuses_child_index(tmp_path: Path) -> None:
 
     parent_service = AutoIndexService()
     parent_result = parent_service.enable(str(project), rebuild=True)
-    parent_compat = CompatService(parent_service)
 
     assert child_result["index_path"] == str(child / ".auto-index-mcp" / "index.db")
     assert parent_result["file_count"] == 1
@@ -26,7 +24,10 @@ def test_parent_workspace_reuses_child_index(tmp_path: Path) -> None:
     assert parent_result["child_index_count"] == 1
     assert parent_service.store is not None
     assert parent_service.store.all_files()[0]["path"] == "root.py"
-    assert "Indexed 2 total files (1 local across 1 child indexes)" in parent_compat.set_project_path(str(project))
+    reused_result = parent_service.enable_reusing_index(str(project))
+    assert reused_result["total_file_count"] == 2
+    assert reused_result["file_count"] == 1
+    assert reused_result["child_index_count"] == 1
 
     files = [item["path"] for item in parent_service.all_files()]
     assert files == ["child/child.py", "root.py"]
