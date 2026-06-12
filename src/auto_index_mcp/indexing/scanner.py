@@ -16,10 +16,13 @@ from ..core.config import (
 from ..core.models import FileRecord, ScanResult, SymbolRecord
 from ..core._utils import is_relative_to
 from ..core.quality_dangling import file_quality_findings
+from ..core.text_decode import decode_text
 from .analysis import enrich_symbols
+from ..languages.c_family import extract_c_family_symbols
 from ..languages.python import extract_python_symbols
 from ..languages.javascript import extract_javascript_like_symbols
 from ..languages.generic import extract_symbols
+from ..languages.pascal import extract_pascal_symbols
 
 IMPORT_RE = re.compile(r"^\s*(?:from\s+[\w.]+\s+import|import\s+[\w., ]+|#include\s+[<\"].+[>\"]|using\s+[\w.:]+;)")
 class SourceScanner:
@@ -100,7 +103,7 @@ class SourceScanner:
 
     def _read_record(self, path: Path) -> FileRecord:
         data = path.read_bytes()
-        text = data.decode("utf-8")
+        text = decode_text(data)
         rel = self._relative(path)
         lines = text.splitlines()
         imports = self._extract_matches(lines, IMPORT_RE, whole_line=True)
@@ -126,6 +129,7 @@ class SourceScanner:
             imports=imports[:80],
             symbols=symbols[:120],
             quality_findings=quality_findings,
+            active_source=True,
             snippet="\n".join(lines[:40]),
         )
 
@@ -150,6 +154,7 @@ class SourceScanner:
             imports=existing["imports"],
             symbols=[SymbolRecord(**symbol) for symbol in existing["symbols"]],
             quality_findings=existing.get("quality_findings", []),
+            active_source=existing.get("active_source", True),
             snippet=existing["snippet"],
         )
 
@@ -166,6 +171,10 @@ class SourceScanner:
             return extract_python_symbols(text, lines)
         if language in {"javascript", "typescript"}:
             return extract_javascript_like_symbols(lines)
+        if language in {"c", "cpp"}:
+            return extract_c_family_symbols(lines)
+        if language == "pascal":
+            return extract_pascal_symbols(lines)
         return extract_symbols(lines)
 
     def _relative(self, path: Path) -> str:

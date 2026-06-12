@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..core.text_decode import read_text_file
+
 MAX_RG_COMMAND_CHARS = 24_000
 # Maximum number of files to cache for Python fallback search
 _MAX_FILE_CACHE_SIZE = 1000
@@ -241,7 +243,7 @@ def _cached_read_lines(root: Path, item: dict[str, Any]) -> list[str]:
     # Read and cache
     try:
         stat = source_path.stat()
-        content = source_path.read_text(encoding="utf-8")
+        content = read_text_file(source_path)
         lines = content.splitlines()
         with _CACHE_LOCK:
             # Evict oldest entries if cache is full

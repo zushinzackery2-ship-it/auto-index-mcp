@@ -37,6 +37,7 @@ class FileRecord:
     imports: list[str] = field(default_factory=list)
     symbols: list[SymbolRecord] = field(default_factory=list)
     quality_findings: list[dict[str, Any]] = field(default_factory=list)
+    active_source: bool = True
     snippet: str = ""
 
 

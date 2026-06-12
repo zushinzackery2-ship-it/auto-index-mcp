@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import DEFAULT_BUILD_LOCK_WAIT_SECONDS, DEFAULT_WATCH_DEBOUNCE_SECONDS, project_index_root
+from .config import DEFAULT_BUILD_LOCK_WAIT_SECONDS, DEFAULT_WATCH_DEBOUNCE_SECONDS, INDEX_VERSION, project_index_root
 from .index_policy import can_reuse_index, can_start_auto_watch
 from .quality_dangling import with_project_quality_findings
 from .service_navigation import ServiceNavigationMixin
@@ -12,6 +12,7 @@ from .service_quality import ServiceQualityMixin
 from .service_search import ServiceSearchMixin
 from ..workspace.view import WorkspaceView
 from ..indexing.analysis import resolve_project_callers
+from ..indexing.active_sources import annotate_active_sources
 from ..indexing.scanner import SourceScanner
 from ..indexing.snapshot import snapshot_from_index, take_watch_snapshot, update_watch_snapshot
 from ..indexing.build_lock import BuildLock
@@ -112,13 +113,15 @@ class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin, ServiceQualit
         root, store = self._ready_context()
         start = time.time()
         try:
-            existing = {item["path"]: item for item in store.all_files()}
+            metadata = store.get_metadata_map()
+            existing = {item["path"]: item for item in store.all_files()} if metadata.get("version") == INDEX_VERSION else {}
         except Exception:
             existing = {}
         children = discover_child_indexes(root, store.db_path)
         boundary_roots = [Path(child.root) for child in children]
         scan = SourceScanner(str(root), existing_records=existing, boundary_roots=boundary_roots).scan()
-        records = with_project_quality_findings(resolve_project_callers(scan.records))
+        active_records = annotate_active_sources(root, scan.records)
+        records = with_project_quality_findings(resolve_project_callers(active_records))
         store.replace_all(scan.root, records, child_indexes_to_dicts(children))
         self.last_errors = scan.errors[:50]
         return {

@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 pytest_*.txt
 .smoke-index/
+.tmp-unrealvt-index/
 .code_indexer/
 .auto-index-mcp/
 .ruff_cache/

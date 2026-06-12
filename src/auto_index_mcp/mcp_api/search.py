@@ -16,9 +16,11 @@ def register_search_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         limit: int = 80,
         file_pattern: str | None = None,
         context_lines: int = 0,
+        exclude_paths: list[str] | None = None,
+        active_only: bool = False,
     ) -> dict[str, Any]:
         """Search indexed source text and return compact path/line matches."""
-        return service.text_search(pattern, case_sensitive, regex, limit, file_pattern, context_lines)
+        return service.text_search(pattern, case_sensitive, regex, limit, file_pattern, context_lines, exclude_paths, active_only)
 
     @mcp.tool()
     def auto_index_symbol_search(

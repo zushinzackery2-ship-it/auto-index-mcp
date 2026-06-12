@@ -82,6 +82,8 @@ def _max_block_depth(lines: list[str], symbol: SymbolRecord, language: str) -> i
     body = lines[symbol.line - 1:symbol.end_line]
     if language == "python":
         return _python_block_depth(lines, symbol)
+    if language == "pascal":
+        return _pascal_block_depth(body)
     if language in BRACE_LANGUAGES or any("{" in line or "}" in line for line in body):
         return _brace_block_depth(body)
     return 0
@@ -120,6 +122,21 @@ def _brace_block_depth(lines: list[str]) -> int:
         if opens:
             max_depth = max(max_depth, depth + opens)
         depth += opens
+    return max(0, max_depth - 1)
+
+
+def _pascal_block_depth(lines: list[str]) -> int:
+    depth = 0
+    max_depth = 0
+    for line in lines:
+        text = strip_comments(strip_string_literals(line)).strip().lower()
+        if not text:
+            continue
+        if text.startswith(("end", "until ")):
+            depth = max(0, depth - 1)
+        if text.startswith(("begin", "case ", "try", "repeat")):
+            depth += 1
+            max_depth = max(max_depth, depth)
     return max(0, max_depth - 1)
 
 

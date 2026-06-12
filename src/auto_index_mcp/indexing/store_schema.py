@@ -88,6 +88,7 @@ def ensure_file_columns(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
     additions = {
         "quality_findings": "TEXT NOT NULL DEFAULT '[]'",
+        "active_source": "INTEGER NOT NULL DEFAULT 1",
     }
     for name, definition in additions.items():
         if name not in columns:

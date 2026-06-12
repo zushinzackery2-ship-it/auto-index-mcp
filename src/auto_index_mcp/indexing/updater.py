@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable, Any
 
 from ..core.quality_dangling import with_project_quality_findings
+from .active_sources import annotate_active_sources
 from .analysis import resolve_project_callers
 from .scanner import SourceScanner
 from .snapshot import WatchSnapshot
@@ -72,7 +73,8 @@ class IndexUpdater:
             records.pop(path, None)
         for record in changed_records:
             records[record.path] = record
-        resolved = with_project_quality_findings(resolve_project_callers(sorted(records.values(), key=lambda item: item.path.lower())))
+        active_records = annotate_active_sources(self.root, sorted(records.values(), key=lambda item: item.path.lower()))
+        resolved = with_project_quality_findings(resolve_project_callers(active_records))
         rewritten = self._rewrite_changed_records(stored_records, resolved, deleted + unindexed)
         result = UpdateResult(
             status="incremental",
@@ -137,5 +139,6 @@ def _dict_to_record(item: dict[str, Any]) -> FileRecord:
         imports=item["imports"],
         symbols=[SymbolRecord(**symbol) for symbol in item["symbols"]],
         quality_findings=item.get("quality_findings", []),
+        active_source=item.get("active_source", True),
         snippet=item["snippet"],
     )

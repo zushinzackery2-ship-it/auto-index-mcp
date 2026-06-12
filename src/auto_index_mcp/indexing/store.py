@@ -131,12 +131,12 @@ class IndexStore:
 
     def file_headers(self) -> list[dict[str, Any]]:
         with self.read_connect() as conn:
-            rows = conn.execute("SELECT path, name, parent, extension, language, size, mtime_ns, line_count FROM files ORDER BY path").fetchall()
+            rows = conn.execute("SELECT path, name, parent, extension, language, size, mtime_ns, line_count, active_source FROM files ORDER BY path").fetchall()
         return [dict(row) for row in rows]
 
     def search_targets(self) -> list[dict[str, Any]]:
         with self.read_connect() as conn:
-            rows = conn.execute("SELECT path FROM files ORDER BY path").fetchall()
+            rows = conn.execute("SELECT path, language, active_source FROM files ORDER BY path").fetchall()
         return [dict(row) for row in rows]
 
     def child_indexes(self) -> list[dict[str, Any]]:
@@ -203,11 +203,12 @@ class IndexStore:
                 json.dumps(record.imports),
                 json.dumps([asdict(symbol) for symbol in record.symbols]),
                 json.dumps(record.quality_findings),
+                1 if record.active_source else 0,
                 record.snippet,
             )
             conn.execute(
-                "INSERT INTO files(path, name, parent, extension, language, size, mtime_ns, sha1, line_count, imports, symbols, quality_findings, snippet) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO files(path, name, parent, extension, language, size, mtime_ns, sha1, line_count, imports, symbols, quality_findings, active_source, snippet) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 values,
             )
             for symbol in record.symbols:
@@ -291,6 +292,7 @@ class IndexStore:
         data["imports"] = json.loads(data["imports"])
         data["symbols"] = json.loads(data["symbols"])
         data["quality_findings"] = json.loads(data.get("quality_findings") or "[]")
+        data["active_source"] = bool(data.get("active_source", 1))
         return data
 
     def _symbol_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:

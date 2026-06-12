@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 from .pagination import PageRequest
+from .path_filters import filter_indexed_files
 from ..search.backend import search_text
 from ..workspace.context import ContextLoader
 from ..workspace.view import WorkspaceView
@@ -32,6 +33,8 @@ class ServiceSearchMixin:
         limit: int = 80,
         file_pattern: str | None = None,
         context_lines: int = 0,
+        exclude_paths: list[str] | None = None,
+        active_only: bool = False,
     ) -> dict[str, Any]:
         service = cast(_SearchService, self)
         service._require_ready()
@@ -41,9 +44,10 @@ class ServiceSearchMixin:
             raise ValueError("pattern is required")
         page = PageRequest.from_cursor(None, limit)
         view = service.view
+        targets = filter_indexed_files(view.search_targets(), exclude_paths, active_only)
         backend, matches = search_text(
             service.root_path,
-            view.search_targets(),
+            targets,
             pattern,
             case_sensitive,
             regex,

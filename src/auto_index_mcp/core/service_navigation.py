@@ -5,6 +5,7 @@ from typing import Any, Protocol, cast
 
 from .navigation_format import compact_file, overview_result, tree_result
 from .pagination import PageRequest
+from .path_filters import is_glob_pattern
 from ..indexing.store import IndexStore
 from ..workspace.view import WorkspaceView
 
@@ -94,6 +95,11 @@ class ServiceNavigationMixin:
         matches = []
         for item in service.view.all_files():
             candidate = item["path"].lower()
+            if is_glob_pattern(needle) and (Path(candidate).match(needle) or Path(candidate).name.lower() == needle):
+                matches.append(compact_file(item))
+                if len(matches) >= limit:
+                    break
+                continue
             if candidate == needle or item["name"].lower() == needle or needle in candidate:
                 matches.append(compact_file(item))
                 if len(matches) >= limit:

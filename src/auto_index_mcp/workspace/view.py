@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from ..indexing.scanner import SourceScanner
 from ..indexing.store import IndexStore
+from ..core.text_decode import read_text_file
 from .discovery import read_index_metadata
 from .safety import ensure_relative_to
 
@@ -118,13 +119,13 @@ class WorkspaceView:
         if lookup.item:
             return self.read_indexed_text(root, lookup.item)
         target = ensure_relative_to(root / path, root, path)
-        return target.read_text(encoding="utf-8")
+        return read_text_file(target)
 
     def read_indexed_text(self, root: Path, item: dict[str, Any]) -> str:
         source_root = Path(item.get("source_root") or root).resolve()
         source_path = item.get("source_path", item["path"])
         target = ensure_relative_to(source_root / source_path, source_root, item["path"])
-        return target.read_text(encoding="utf-8")
+        return read_text_file(target)
 
     def context_for_match(self, root: Path, match: dict[str, Any], context_lines: int) -> list[dict[str, Any]]:
         lines = self.read_text(root, match["path"]).splitlines()
@@ -194,6 +195,8 @@ class WorkspaceView:
     def _prefix_search_target(self, child: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
         return {
             "path": f"{child['path']}/{item['path']}",
+            "language": item.get("language", ""),
+            "active_source": item.get("active_source", True),
             "source_root": item.get("source_root", child["root"]),
             "source_path": item.get("source_path", item["path"]),
         }
