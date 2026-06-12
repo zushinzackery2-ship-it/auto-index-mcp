@@ -5,13 +5,14 @@ from dataclasses import replace
 
 from ..core.models import FileRecord, SymbolRecord
 from ..core._utils import strip_comments
+from .nesting import annotate_symbol_nesting
 
 CALL_RE = re.compile(r"\b([A-Za-z_][\w]*)\s*\(")
 CONTROL_NAMES = {"if", "for", "while", "switch", "return", "raise", "catch", "with"}
 COMPLEXITY_RE = re.compile(r"\b(if|elif|else if|for|while|case|catch|except|and|or|\?|&&|\|\|)\b")
 
 
-def enrich_symbols(lines: list[str], symbols: list[SymbolRecord]) -> list[SymbolRecord]:
+def enrich_symbols(lines: list[str], symbols: list[SymbolRecord], language: str = "") -> list[SymbolRecord]:
     enriched = []
     for symbol in symbols:
         body = lines[symbol.line - 1:symbol.end_line]
@@ -27,7 +28,7 @@ def enrich_symbols(lines: list[str], symbols: list[SymbolRecord]) -> list[Symbol
                 called_by=[],
             )
         )
-    return enriched
+    return annotate_symbol_nesting(lines, enriched, language)
 
 
 def resolve_project_callers(records: list[FileRecord]) -> list[FileRecord]:

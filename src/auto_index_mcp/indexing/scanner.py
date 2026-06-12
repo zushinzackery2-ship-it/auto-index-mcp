@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import os
 import re
+from dataclasses import asdict
 from pathlib import Path
 
 from ..core.config import (
@@ -14,6 +15,7 @@ from ..core.config import (
 )
 from ..core.models import FileRecord, ScanResult, SymbolRecord
 from ..core._utils import is_relative_to
+from ..core.quality_dangling import file_quality_findings
 from .analysis import enrich_symbols
 from ..languages.python import extract_python_symbols
 from ..languages.javascript import extract_javascript_like_symbols
@@ -103,7 +105,11 @@ class SourceScanner:
         lines = text.splitlines()
         imports = self._extract_matches(lines, IMPORT_RE, whole_line=True)
         language = LANGUAGE_BY_EXTENSION.get(path.suffix.lower(), "text")
-        symbols = enrich_symbols(lines, self._extract_symbols(language, text, lines))
+        symbols = enrich_symbols(lines, self._extract_symbols(language, text, lines), language)
+        quality_findings = file_quality_findings(
+            {"path": rel, "language": language, "symbols": [asdict(symbol) for symbol in symbols]},
+            text,
+        )
         parent = str(Path(rel).parent).replace("\\", "/")
         if parent == ".":
             parent = ""
@@ -119,6 +125,7 @@ class SourceScanner:
             line_count=len(lines),
             imports=imports[:80],
             symbols=symbols[:120],
+            quality_findings=quality_findings,
             snippet="\n".join(lines[:40]),
         )
 
@@ -142,6 +149,7 @@ class SourceScanner:
             line_count=existing["line_count"],
             imports=existing["imports"],
             symbols=[SymbolRecord(**symbol) for symbol in existing["symbols"]],
+            quality_findings=existing.get("quality_findings", []),
             snippet=existing["snippet"],
         )
 

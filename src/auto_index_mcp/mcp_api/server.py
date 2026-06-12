@@ -12,6 +12,7 @@ from ..core.service import AutoIndexService
 from .compat import register_compat_tools
 from .lifecycle import register_lifecycle_tools
 from .navigation import register_navigation_tools
+from .quality import register_quality_tools
 from .search import register_search_tools
 
 
@@ -23,6 +24,7 @@ _shutdown_hooks_registered = False
 register_lifecycle_tools(mcp, _service)
 register_navigation_tools(mcp, _service)
 register_search_tools(mcp, _service)
+register_quality_tools(mcp, _service)
 register_compat_tools(mcp, _service, _compat)
 
 

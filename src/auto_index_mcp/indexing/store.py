@@ -7,6 +7,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, ContextManager
 
+from ..core.config import INDEX_VERSION
 from ..core.models import FileRecord
 from .sqlite import IndexDatabase
 from .store_schema import initialize_schema
@@ -35,10 +36,12 @@ class IndexStore:
             conn_to_close.execute("PRAGMA busy_timeout=1000")
             conn_to_close.execute("DELETE FROM files")
             conn_to_close.execute("DELETE FROM symbols")
+            conn_to_close.execute("DELETE FROM symbol_nesting")
             conn_to_close.execute("DELETE FROM file_fts")
             conn_to_close.execute("DELETE FROM child_indexes")
             self._insert_many(conn_to_close, records)
             self._insert_child_indexes(conn_to_close, child_indexes or [])
+            self.set_metadata(conn_to_close, "version", INDEX_VERSION)
             self.set_metadata(conn_to_close, "root", root)
             self.set_metadata(conn_to_close, "updated_at", time.time())
             self.set_metadata(conn_to_close, "file_count", len(records))
@@ -53,10 +56,12 @@ class IndexStore:
             with self.connect() as conn:
                 conn.execute("DELETE FROM files")
                 conn.execute("DELETE FROM symbols")
+                conn.execute("DELETE FROM symbol_nesting")
                 conn.execute("DELETE FROM file_fts")
                 conn.execute("DELETE FROM child_indexes")
                 self._insert_many(conn, records)
                 self._insert_child_indexes(conn, child_indexes or [])
+                self.set_metadata(conn, "version", INDEX_VERSION)
                 self.set_metadata(conn, "root", root)
                 self.set_metadata(conn, "updated_at", time.time())
                 self.set_metadata(conn, "file_count", len(records))
@@ -73,6 +78,7 @@ class IndexStore:
                 self._delete_file(conn, record.path)
             self._insert_many(conn, records)
             self._refresh_file_count(conn)
+            self.set_metadata(conn, "version", INDEX_VERSION)
             self.set_metadata(conn, "updated_at", time.time())
 
     def delete_files(self, paths: list[str]) -> None:
@@ -82,6 +88,7 @@ class IndexStore:
             for path in paths:
                 self._delete_file(conn, path)
             self._refresh_file_count(conn)
+            self.set_metadata(conn, "version", INDEX_VERSION)
             self.set_metadata(conn, "updated_at", time.time())
 
     def replace_child_indexes(self, children: list[dict[str, Any]]) -> None:
@@ -95,8 +102,10 @@ class IndexStore:
         with self.connect() as conn:
             conn.execute("DELETE FROM files")
             conn.execute("DELETE FROM symbols")
+            conn.execute("DELETE FROM symbol_nesting")
             conn.execute("DELETE FROM file_fts")
             conn.execute("DELETE FROM child_indexes")
+            self.set_metadata(conn, "version", INDEX_VERSION)
             self.set_metadata(conn, "updated_at", None)
             self.set_metadata(conn, "file_count", 0)
             self.set_metadata(conn, "child_index_count", 0)
@@ -193,9 +202,14 @@ class IndexStore:
                 record.line_count,
                 json.dumps(record.imports),
                 json.dumps([asdict(symbol) for symbol in record.symbols]),
+                json.dumps(record.quality_findings),
                 record.snippet,
             )
-            conn.execute("INSERT INTO files VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values)
+            conn.execute(
+                "INSERT INTO files(path, name, parent, extension, language, size, mtime_ns, sha1, line_count, imports, symbols, quality_findings, snippet) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                values,
+            )
             for symbol in record.symbols:
                 conn.execute(
                     """
@@ -212,6 +226,29 @@ class IndexStore:
                         symbol.complexity,
                         json.dumps(symbol.calls),
                         json.dumps(symbol.called_by),
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO symbol_nesting(
+                        file_path, symbol_name, symbol_kind, line, end_line, parent_name, parent_kind,
+                        depth, nesting_path, children_count, max_child_depth, max_block_depth
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.path,
+                        symbol.name,
+                        symbol.kind,
+                        symbol.line,
+                        symbol.end_line,
+                        symbol.parent_name,
+                        symbol.parent_kind,
+                        symbol.depth,
+                        symbol.nesting_path or symbol.name,
+                        symbol.children_count,
+                        symbol.max_child_depth,
+                        symbol.max_block_depth,
                     ),
                 )
             conn.execute(
@@ -236,6 +273,7 @@ class IndexStore:
     def _delete_file(self, conn: sqlite3.Connection, path: str) -> None:
         conn.execute("DELETE FROM files WHERE path=?", (path,))
         conn.execute("DELETE FROM symbols WHERE file_path=?", (path,))
+        conn.execute("DELETE FROM symbol_nesting WHERE file_path=?", (path,))
         conn.execute("DELETE FROM file_fts WHERE path=?", (path,))
 
     def _refresh_file_count(self, conn: sqlite3.Connection) -> None:
@@ -252,6 +290,7 @@ class IndexStore:
         data = dict(row)
         data["imports"] = json.loads(data["imports"])
         data["symbols"] = json.loads(data["symbols"])
+        data["quality_findings"] = json.loads(data.get("quality_findings") or "[]")
         return data
 
     def _symbol_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:

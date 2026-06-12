@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Any
 
+from ..core.quality_dangling import with_project_quality_findings
 from .analysis import resolve_project_callers
 from .scanner import SourceScanner
 from .snapshot import WatchSnapshot
@@ -71,7 +72,7 @@ class IndexUpdater:
             records.pop(path, None)
         for record in changed_records:
             records[record.path] = record
-        resolved = resolve_project_callers(sorted(records.values(), key=lambda item: item.path.lower()))
+        resolved = with_project_quality_findings(resolve_project_callers(sorted(records.values(), key=lambda item: item.path.lower())))
         rewritten = self._rewrite_changed_records(stored_records, resolved, deleted + unindexed)
         result = UpdateResult(
             status="incremental",
@@ -135,5 +136,6 @@ def _dict_to_record(item: dict[str, Any]) -> FileRecord:
         line_count=item["line_count"],
         imports=item["imports"],
         symbols=[SymbolRecord(**symbol) for symbol in item["symbols"]],
+        quality_findings=item.get("quality_findings", []),
         snippet=item["snippet"],
     )

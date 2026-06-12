@@ -1,0 +1,124 @@
+from pathlib import Path
+import json
+from typing import Any
+
+from auto_index_mcp.core.service import AutoIndexService
+from auto_index_mcp.mcp_api.quality import register_quality_tools
+from auto_index_mcp.workspace.view import WorkspaceView
+
+
+def test_nesting_check_uses_persisted_symbol_nesting(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text(
+        "\n".join(
+            [
+                "class Runner:",
+                "    def run(self):",
+                "        def inner():",
+                "            if True:",
+                "                for item in [1]:",
+                "                    while item:",
+                "                        return item",
+                "        return inner()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+
+    summary = service.file_summary("main.py")
+    inner = next(symbol for symbol in summary["symbols"] if symbol["name"] == "inner")
+    nesting = service.nesting_check(max_depth=1)
+
+    assert inner["parent_name"] == "run"
+    assert inner["parent_kind"] == "method"
+    assert inner["depth"] == 2
+    assert inner["nesting_path"] == "Runner.run.inner"
+    assert inner["max_block_depth"] == 3
+    assert nesting["summary"]["max_symbol_depth"] == 2
+    assert nesting["summary"]["max_block_depth"] == 3
+    assert nesting["summary"]["missing_nesting_symbols"] == 0
+    assert any(finding["symbol"] == "inner" for finding in nesting["findings"])
+
+    assert service.store is not None
+    with service.store.read_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT depth, nesting_path, max_block_depth
+            FROM symbol_nesting
+            WHERE file_path=? AND symbol_name=?
+            """,
+            ("main.py", "inner"),
+        ).fetchone()
+        quality_row = conn.execute(
+            "SELECT quality_findings FROM files WHERE path=?",
+            ("main.py",),
+        ).fetchone()
+
+    assert dict(row) == {"depth": 2, "nesting_path": "Runner.run.inner", "max_block_depth": 3}
+    assert isinstance(json.loads(quality_row["quality_findings"]), list)
+
+
+def test_dangling_check_reports_unused_symbol_and_unreachable_code(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text(
+        "\n".join(
+            [
+                "def used():",
+                "    return 1",
+                "",
+                "def caller():",
+                "    return used()",
+                "",
+                "def unused():",
+                "    value = 1",
+                "    return value",
+                "    value += 1",
+                "",
+                "def main():",
+                "    return caller()",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+
+    def fail_source_read(self: WorkspaceView, root: Path, item: dict[str, Any]) -> str:
+        raise AssertionError("quality tools must use cached index findings")
+
+    monkeypatch.setattr(WorkspaceView, "read_indexed_text", fail_source_read)
+    result = service.dangling_check()
+    findings = result["findings"]
+
+    assert any(finding["kind"] == "unused_symbol" and finding["symbol"] == "unused" for finding in findings)
+    assert not any(finding["kind"] == "unused_symbol" and finding["symbol"] == "used" for finding in findings)
+    assert any(
+        finding["kind"] == "unreachable_statement"
+        and finding["confidence"] == "high"
+        and finding["line"] == 10
+        for finding in findings
+    )
+
+
+def test_quality_tools_are_registered() -> None:
+    class FakeMcp:
+        def __init__(self) -> None:
+            self.names: list[str] = []
+
+        def tool(self) -> Any:
+            def decorate(func: Any) -> Any:
+                self.names.append(func.__name__)
+                return func
+
+            return decorate
+
+    fake = FakeMcp()
+    register_quality_tools(fake, object())  # type: ignore[arg-type]
+
+    assert fake.names == ["auto_index_nesting_check", "auto_index_dangling_check"]

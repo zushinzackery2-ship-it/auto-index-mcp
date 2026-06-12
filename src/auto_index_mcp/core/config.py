@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-INDEX_VERSION = 2
+INDEX_VERSION = 3
 DEFAULT_WATCH_DEBOUNCE_SECONDS = 0.25
 # How long a rebuild waits for a concurrent process to finish building the
 # shared index before it falls back to building unsynchronised itself.

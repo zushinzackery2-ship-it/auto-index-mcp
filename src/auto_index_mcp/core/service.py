@@ -6,7 +6,9 @@ from typing import Any
 
 from .config import DEFAULT_BUILD_LOCK_WAIT_SECONDS, DEFAULT_WATCH_DEBOUNCE_SECONDS, project_index_root
 from .index_policy import can_reuse_index, can_start_auto_watch
+from .quality_dangling import with_project_quality_findings
 from .service_navigation import ServiceNavigationMixin
+from .service_quality import ServiceQualityMixin
 from .service_search import ServiceSearchMixin
 from ..workspace.view import WorkspaceView
 from ..indexing.analysis import resolve_project_callers
@@ -23,7 +25,7 @@ from ..workspace.discovery import child_indexes_to_dicts, discover_child_indexes
 _VIEW_CACHE_TTL_SECONDS = 0.5
 
 
-class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin):
+class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin, ServiceQualityMixin):
     def __init__(self, index_root: Path | None = None) -> None:
         self.index_root_override = index_root
         self.index_root: Path | None = index_root
@@ -116,7 +118,7 @@ class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin):
         children = discover_child_indexes(root, store.db_path)
         boundary_roots = [Path(child.root) for child in children]
         scan = SourceScanner(str(root), existing_records=existing, boundary_roots=boundary_roots).scan()
-        records = resolve_project_callers(scan.records)
+        records = with_project_quality_findings(resolve_project_callers(scan.records))
         store.replace_all(scan.root, records, child_indexes_to_dicts(children))
         self.last_errors = scan.errors[:50]
         return {

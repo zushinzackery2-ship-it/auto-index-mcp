@@ -3,8 +3,6 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from ..core.config import INDEX_VERSION
-
 
 def initialize_schema(conn: sqlite3.Connection, set_metadata: Any) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -26,6 +24,7 @@ def initialize_schema(conn: sqlite3.Connection, set_metadata: Any) -> None:
         )
         """
     )
+    ensure_file_columns(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS symbols (
@@ -48,6 +47,28 @@ def initialize_schema(conn: sqlite3.Connection, set_metadata: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path)")
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS symbol_nesting (
+            id INTEGER PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            symbol_name TEXT NOT NULL,
+            symbol_kind TEXT NOT NULL,
+            line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            parent_name TEXT NOT NULL DEFAULT '',
+            parent_kind TEXT NOT NULL DEFAULT '',
+            depth INTEGER NOT NULL DEFAULT 0,
+            nesting_path TEXT NOT NULL,
+            children_count INTEGER NOT NULL DEFAULT 0,
+            max_child_depth INTEGER NOT NULL DEFAULT 0,
+            max_block_depth INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY(file_path) REFERENCES files(path) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_symbol_nesting_file ON symbol_nesting(file_path)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_symbol_nesting_depth ON symbol_nesting(depth)")
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS child_indexes (
             path TEXT PRIMARY KEY,
             root TEXT NOT NULL,
@@ -61,7 +82,16 @@ def initialize_schema(conn: sqlite3.Connection, set_metadata: Any) -> None:
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(path UNINDEXED, name, parent, language, symbols, imports, snippet)"
     )
-    set_metadata(conn, "version", INDEX_VERSION)
+
+
+def ensure_file_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
+    additions = {
+        "quality_findings": "TEXT NOT NULL DEFAULT '[]'",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            conn.execute(f"ALTER TABLE files ADD COLUMN {name} {definition}")
 
 
 def ensure_symbol_columns(conn: sqlite3.Connection) -> None:
