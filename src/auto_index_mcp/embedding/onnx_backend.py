@@ -82,15 +82,15 @@ class OnnxEmbedder:
         encoded = self._tokenizer.encode_batch(texts)
         input_ids = np.asarray([enc.ids for enc in encoded], dtype=np.int64)
         attention_mask = np.asarray([enc.attention_mask for enc in encoded], dtype=np.int64)
-        input_name = self._session.get_inputs()[0].name
-        attention_name = (
-            self._session.get_inputs()[1].name
-            if len(self._session.get_inputs()) > 1
-            else input_name
-        )
-        feeds: dict[str, Any] = {input_name: input_ids}
-        if len(self._session.get_inputs()) > 1:
-            feeds[attention_name] = attention_mask
+        batch, seq = input_ids.shape
+        feeds: dict[str, Any] = {}
+        for inp in self._session.get_inputs():
+            if inp.name == "input_ids":
+                feeds["input_ids"] = input_ids
+            elif inp.name == "attention_mask":
+                feeds["attention_mask"] = attention_mask
+            elif inp.name == "token_type_ids":
+                feeds["token_type_ids"] = np.zeros((batch, seq), dtype=np.int64)
         outputs = self._session.run(None, feeds)
         token_vectors = np.asarray(outputs[0], dtype=np.float32)
         mask = attention_mask.astype(np.float32)
