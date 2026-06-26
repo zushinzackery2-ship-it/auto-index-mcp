@@ -14,6 +14,12 @@ dependencies = [
     "watchdog>=4.0.0",
 ]
 
+[project.optional-dependencies]
+semantic = [
+    "onnxruntime>=1.16",
+    "tokenizers>=0.15",
+]
+
 [project.scripts]
 auto-index-mcp = "auto_index_mcp.server:main"
 

@@ -12,6 +12,7 @@ from .lifecycle import register_lifecycle_tools
 from .navigation import register_navigation_tools
 from .quality import register_quality_tools
 from .search import register_search_tools
+from .semantic import register_semantic_tools
 
 
 mcp = FastMCP("AutoIndexMCP")
@@ -22,6 +23,7 @@ register_lifecycle_tools(mcp, _service)
 register_navigation_tools(mcp, _service)
 register_search_tools(mcp, _service)
 register_quality_tools(mcp, _service)
+register_semantic_tools(mcp, _service)
 
 
 def _parse_args() -> argparse.Namespace:

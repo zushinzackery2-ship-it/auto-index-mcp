@@ -144,6 +144,14 @@ class IndexStore:
             rows = conn.execute("SELECT * FROM child_indexes ORDER BY path").fetchall()
         return [dict(row) for row in rows]
 
+    def all_symbols(self) -> list[dict[str, Any]]:
+        with self.read_connect() as conn:
+            rows = conn.execute(
+                "SELECT file_path, name, kind, line, end_line, signature, complexity "
+                "FROM symbols ORDER BY file_path, line"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def query_symbols(self, text: str, kind: str, limit: int, offset: int) -> list[dict[str, Any]]:
         where: list[str] = []
         params: list[Any] = []

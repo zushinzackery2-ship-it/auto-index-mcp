@@ -82,6 +82,22 @@ def initialize_schema(conn: sqlite3.Connection, set_metadata: Any) -> None:
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(path UNINDEXED, name, parent, language, symbols, imports, snippet)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS symbol_embeddings (
+            file_path TEXT NOT NULL,
+            symbol_name TEXT NOT NULL,
+            symbol_line INTEGER NOT NULL,
+            model_name TEXT NOT NULL,
+            text_hash TEXT NOT NULL,
+            vector BLOB NOT NULL,
+            PRIMARY KEY (file_path, symbol_name, symbol_line, model_name)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_symbol_embeddings_model ON symbol_embeddings(model_name)"
+    )
 
 
 def ensure_file_columns(conn: sqlite3.Connection) -> None:

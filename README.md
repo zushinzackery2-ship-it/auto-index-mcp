@@ -53,6 +53,8 @@
 | **搜索** | `auto_index_text_search()` | 对源码进行 literal 或 regex 搜索。 |
 | **搜索** | `auto_index_symbol_search()` | 按名称、签名、类型搜索符号。 |
 | **搜索** | `auto_index_symbol_body()` | 返回指定符号的源码片段。 |
+| **语义搜索** | `auto_index_semantic_search()` | 自然语言语义搜索，返回最相似的符号及行范围。需可选 embedding 模型。 |
+| **语义搜索** | `auto_index_embedding_status()` | 报告语义 embedding 后端是否启用及向量数量。 |
 | **质量检查** | `auto_index_nesting_check()` | 从 `symbol_nesting` 缓存读取嵌套复杂度问题。 |
 | **质量检查** | `auto_index_dangling_check()` | 从 `quality_findings` 缓存读取疑似悬空代码问题。 |
 | **漂移检查** | `auto_index_diff_filesystem()` | 对比索引与当前文件系统的新增、删除、变化。 |
@@ -77,7 +79,8 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 | `workspace/` | 嵌套工作区发现、父子索引聚合、路径安全检查、搜索上下文读取。 |
 | `languages/` | Python、JavaScript/TypeScript 和通用文本符号提取。 |
 | `search/` | ripgrep/Python fallback 搜索后端。 |
-| `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、质量检查拆分。 |
+| `embedding/` | 可选语义 embedding 后端（ONNX）、向量存储、符号级增量索引器。 |
+| `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、语义、质量检查拆分。 |
 
 ---
 
@@ -94,6 +97,16 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 - 因此，已索引文件的内容刚被修改后，正文搜索通常能立即命中新内容；结构摘要和符号关系仍以索引刷新后的数据为准。
 
 这个分工让低上下文导航保持稳定范围，同时让代码正文搜索尽量贴近磁盘上的最新内容。
+
+## 语义搜索
+
+`auto_index_semantic_search()` 提供自然语言到符号的语义检索：把查询语句 embed 后，按余弦相似度返回最相关的符号、文件路径和行范围。
+
+- **后端可插拔**：默认通过 `onnxruntime`（纯 CPU 推理，零 torch 依赖）加载本地 ONNX embedding 模型。模型目录由环境变量 `AUTO_INDEX_EMBEDDING_MODEL` 指定，需包含 `model.onnx` 和 `tokenizer.json`（推荐 `all-MiniLM-L6-v2`，约 90MB）。
+- **可选依赖**：安装 `pip install -e ".[semantic]"` 启用 onnxruntime + tokenizers；未安装或未配置模型时 `auto_index_semantic_search()` 明确报告不可用，不做关键词假降级。
+- **符号级 chunking**：embedding 文本由 `kind + signature + 符号体源码` 构成，复用已有符号索引作为精确分块，这是 auto-index 相对“全树喂 AI”方案的架构优势。
+- **增量复用**：每个符号向量带 `text_hash`，rebuild 与 watcher 增量更新时，源码未变的符号直接复用已存向量，只对变更符号重新推理。
+- **向量存储**：float32 向量以 BLOB 存入 SQLite `symbol_embeddings` 表，按 `(file_path, symbol_name, symbol_line, model_name)` 自然键定位，不依赖自增 id，跨 rebuild 稳定。
 
 ## 索引存储
 

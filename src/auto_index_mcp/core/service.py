@@ -10,6 +10,9 @@ from .quality_dangling import with_project_quality_findings
 from .service_navigation import ServiceNavigationMixin
 from .service_quality import ServiceQualityMixin
 from .service_search import ServiceSearchMixin
+from .service_semantic import ServiceSemanticMixin
+from ..embedding.backend import create_embedder
+from ..embedding.indexer import SymbolEmbedder
 from ..workspace.view import WorkspaceView
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.active_sources import annotate_active_sources
@@ -26,7 +29,7 @@ from ..workspace.discovery import child_indexes_to_dicts, discover_child_indexes
 _VIEW_CACHE_TTL_SECONDS = 0.5
 
 
-class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin, ServiceQualityMixin):
+class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin, ServiceQualityMixin, ServiceSemanticMixin):
     def __init__(self, index_root: Path | None = None) -> None:
         self.index_root_override = index_root
         self.index_root: Path | None = index_root
@@ -35,6 +38,7 @@ class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin, ServiceQualit
         self.last_errors: list[str] = []
         self.store: IndexStore | None = None
         self.watcher: FileEventWatcher | None = None
+        self.embedding_indexer: SymbolEmbedder | None = None
         # Use a shared view with TTL-based caching for better incremental update responsiveness
         self._view: WorkspaceView | None = None
         self._view_created_at: float = 0.0
@@ -71,6 +75,7 @@ class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin, ServiceQualit
         self.index_root = self.index_root_override or project_index_root(root)
         self.store = IndexStore(self._db_path(root))
         self.store.initialize()
+        self._refresh_embedder()
         self._invalidate_view_cache()
         if rebuild:
             return self.rebuild()
@@ -124,6 +129,7 @@ class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin, ServiceQualit
         records = with_project_quality_findings(resolve_project_callers(active_records))
         store.replace_all(scan.root, records, child_indexes_to_dicts(children))
         self.last_errors = scan.errors[:50]
+        embedding_meta = self._embed_after_full_rebuild(root)
         return {
             "status": "indexed",
             "root": scan.root,
@@ -136,6 +142,7 @@ class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin, ServiceQualit
             "elapsed_seconds": round(time.time() - start, 3),
             "index_path": str(store.db_path),
             "updated_at": store.get_metadata_map().get("updated_at"),
+            "embedding": embedding_meta,
         }
 
     def _index_is_fresh(self) -> bool:
@@ -196,7 +203,7 @@ class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin, ServiceQualit
             root,
             snapshot,
             update_snapshot,
-            IndexUpdater(root, store, self.rebuild).apply,
+            self._make_watch_updater(root, store),
             debounce_seconds,
             previous,
         )
@@ -221,6 +228,64 @@ class AutoIndexService(ServiceNavigationMixin, ServiceSearchMixin, ServiceQualit
         if not self.watcher:
             return {"running": False}
         return self.watcher.status()
+
+    def _make_watch_updater(self, root: Path, store: IndexStore):
+        updater = IndexUpdater(root, store, self.rebuild)
+
+        def apply(previous, current):
+            result = updater.apply(previous, current)
+            self._embed_after_incremental(root, store, previous, current, result)
+            return result
+
+        return apply
+
+    def _refresh_embedder(self) -> None:
+        store = self.store
+        if store is None:
+            self.embedding_indexer = None
+            return
+        backend = create_embedder()
+        self.embedding_indexer = SymbolEmbedder(backend, store) if backend is not None else None
+
+    def _embed_after_full_rebuild(self, root: Path) -> dict[str, Any] | None:
+        indexer = self.embedding_indexer
+        store = self.store
+        if indexer is None or store is None:
+            return None
+        try:
+            return indexer.embed_project(root, store.all_symbols())
+        except Exception as exc:
+            self.last_errors.append(f"embedding-rebuild: {exc}")
+            return {"error": str(exc)}
+
+    def _embed_after_incremental(self, root: Path, store: IndexStore, previous, current, result: dict[str, Any]) -> None:
+        indexer = self.embedding_indexer
+        if indexer is None:
+            return
+        status = result.get("status")
+        if status in ("structural-rebuild", "indexed", "build-lock-timeout", "shared-index-current"):
+            return
+        if status != "incremental":
+            return
+        added, deleted, modified = current.changed_files(previous)
+        changed = set(added) | set(modified)
+        if changed:
+            symbols = [s for s in store.all_symbols() if s["file_path"] in changed]
+            grouped: dict[str, list[dict[str, Any]]] = {}
+            for symbol in symbols:
+                grouped.setdefault(symbol["file_path"], []).append(symbol)
+            if grouped:
+                try:
+                    indexer.embed_files(root, grouped)
+                except Exception as exc:
+                    self.last_errors.append(f"embedding-incremental: {exc}")
+        if deleted:
+            try:
+                with store.connect() as conn:
+                    for path in deleted:
+                        indexer.store.delete_file(conn, path)
+            except Exception as exc:
+                self.last_errors.append(f"embedding-delete: {exc}")
 
     def _db_path(self, root: Path) -> Path:
         index_root = self.index_root_override or project_index_root(root)

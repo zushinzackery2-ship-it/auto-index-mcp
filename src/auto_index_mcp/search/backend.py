@@ -14,6 +14,9 @@ from typing import Any
 from ..core.text_decode import read_text_file
 
 MAX_RG_COMMAND_CHARS = 24_000
+# Cap each returned match line so a single minified/long line cannot consume
+# disproportionate context tokens. Truncated lines get a visible "..." suffix.
+MAX_MATCH_TEXT_CHARS = 250
 # Maximum number of files to cache for Python fallback search
 _MAX_FILE_CACHE_SIZE = 1000
 
@@ -193,6 +196,14 @@ def _target_batches(base_command: list[str], targets: list[tuple[Path, str]]) ->
     return batches
 
 
+def _truncate_match_text(text: str) -> str:
+    """Strip and cap a matched source line to MAX_MATCH_TEXT_CHARS."""
+    stripped = text.strip()
+    if len(stripped) <= MAX_MATCH_TEXT_CHARS:
+        return stripped
+    return stripped[:MAX_MATCH_TEXT_CHARS] + "..."
+
+
 def _python_search(
     root: Path,
     files: list[dict],
@@ -214,7 +225,7 @@ def _python_search(
             continue
         for line_number, line in enumerate(lines, start=1):
             if compiled.search(line):
-                matches.append({"path": item["path"], "line": line_number, "text": line.strip()})
+                matches.append({"path": item["path"], "line": line_number, "text": _truncate_match_text(line)})
                 if len(matches) >= limit:
                     return matches
     return matches
@@ -293,4 +304,4 @@ def _parse_rg_json_line(root: Path, line: str, path_map: dict[str, str] | None =
             path = source_path.relative_to(root).as_posix()
     except (TypeError, ValueError, OSError):
         return None
-    return {"path": path, "line": line_number, "text": line_text.strip()}
+    return {"path": path, "line": line_number, "text": _truncate_match_text(line_text)}

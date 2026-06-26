@@ -14,6 +14,8 @@ REQUIRED_TOOLS = {
     "auto_index_status",
     "auto_index_text_search",
     "auto_index_symbol_search",
+    "auto_index_semantic_search",
+    "auto_index_embedding_status",
     "auto_index_nesting_check",
     "auto_index_dangling_check",
 }
