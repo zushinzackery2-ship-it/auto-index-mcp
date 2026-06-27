@@ -183,6 +183,11 @@ class IndexStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def symbol_count(self) -> int:
+        with self.read_connect() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()
+        return int(row[0]) if row else 0
+
     def query_symbols(self, text: str, kind: str, limit: int, offset: int) -> list[dict[str, Any]]:
         where: list[str] = []
         params: list[Any] = []

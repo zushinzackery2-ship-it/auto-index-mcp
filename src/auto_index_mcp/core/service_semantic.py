@@ -56,17 +56,19 @@ class ServiceSemanticMixin:
         count = _embedding_vector_count(service, indexer)
         if count <= 0:
             return _building(service.ensure_embedding_background())
-        if _embedding_is_building(service, count):
-            return _building(service.embedding_background.status())
         safe_limit = max(1, min(int(limit), 100))
         hits = indexer.search(service.store, query, safe_limit, min_score)
+        embedding = _partial_embedding_status(service, count)
+        result: dict[str, Any] = {
+            "format": "auto_index_semantic_search",
+            "model": indexer.backend.name,
+            "count": len(hits),
+            "items": hits,
+        }
+        if embedding is not None:
+            result["embedding"] = embedding
         return service._with_index_status(
-            {
-                "format": "auto_index_semantic_search",
-                "model": indexer.backend.name,
-                "count": len(hits),
-                "items": hits,
-            }
+            result
         )
 
     def embedding_status(self) -> dict[str, Any]:
@@ -97,11 +99,19 @@ class ServiceSemanticMixin:
         return result
 
 
-def _embedding_is_building(service: _SemanticService, count: int | None = None) -> bool:
+def _partial_embedding_status(
+    service: _SemanticService,
+    vector_count: int,
+) -> dict[str, Any] | None:
     background = service.embedding_background
     if background is None or not background.is_running() or service.store is None:
-        return False
-    return count is None or count == 0
+        return None
+    return {
+        "status": "partial",
+        "vector_count": vector_count,
+        "total_symbol_count": _symbol_count(service.store),
+        "background": background.status(),
+    }
 
 
 def _embedding_vector_count(service: _SemanticService, indexer: SymbolEmbedder) -> int:
@@ -109,6 +119,13 @@ def _embedding_vector_count(service: _SemanticService, indexer: SymbolEmbedder) 
         return 0
     try:
         return indexer.count(service.store)
+    except Exception:
+        return 0
+
+
+def _symbol_count(store: IndexStore) -> int:
+    try:
+        return store.symbol_count()
     except Exception:
         return 0
 

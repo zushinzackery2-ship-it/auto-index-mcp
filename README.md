@@ -106,7 +106,7 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 - **后端可插拔**：默认通过 `onnxruntime`（纯 CPU 推理，零 torch 依赖）加载本地 ONNX embedding 模型，当前随附模型为 MiniLM ONNX 版本，约 90MB。
 - **可选依赖**：安装 `pip install -e ".[semantic]"` 启用 onnxruntime + tokenizers；依赖缺失或所选模型不可用时 `auto_index_semantic_search()` 明确报告不可用，不做关键词假降级。
 - **符号级 chunking**：embedding 文本由 `kind + signature + 符号体源码` 构成，复用已有符号索引作为精确分块，这是 auto-index 相对“全树喂 AI”方案的架构优势。
-- **后台向量构建**：rebuild 先完成代码索引写库，embedding 向量随后在独立后台任务生成；若复用旧索引但向量缺失，首次语义搜索会派发后台构建并立即返回 building 状态。向量未完成时语义搜索会明确报告仍在构建，不把空结果伪装成未命中。
+- **后台向量构建**：rebuild 先完成代码索引写库，embedding 向量随后在独立后台任务生成；若复用旧索引但向量缺失，首次语义搜索会派发后台构建并立即返回 building 状态。向量部分就绪时会先返回已有向量的检索结果，并附带 `embedding.status="partial"`、`vector_count` 和后台状态。
 - **增量复用**：每个符号向量带 `text_hash`，rebuild 与 watcher 增量更新时，源码未变的符号直接复用已存向量，只对变更符号重新推理。
 - **向量存储**：float32 向量以 BLOB 存入 SQLite `symbol_embeddings` 表，按 `(file_path, symbol_name, symbol_line, model_name)` 自然键定位，不依赖自增 id，跨 rebuild 稳定。
 

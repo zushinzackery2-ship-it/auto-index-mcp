@@ -67,15 +67,17 @@ class SymbolEmbedder:
         embedded = 0
         reused = 0
         files = 0
-        with self.conn_provider.connect() as conn:
-            pending_vectors: list[tuple[str, dict[str, Any], str, str]] = []
-            entries_by_file: dict[str, list[dict[str, Any]]] = {}
+        pending_vectors: list[tuple[str, dict[str, Any], str, str]] = []
+        entries_by_file: dict[str, list[dict[str, Any]]] = {}
+        remaining_by_file: dict[str, int] = {}
+        with self.conn_provider.read_connect() as conn:
             for file_path, symbols in symbols_by_file.items():
                 files += 1
                 existing_hashes = self.store.hashes_for(conn, file_path, model_name)
                 existing_vectors = self.store.vectors_for(conn, file_path, model_name)
                 lines = _read_lines_safe(root, file_path)
                 entries: list[dict[str, Any]] = []
+                pending_for_file = 0
                 for symbol in symbols:
                     text = _symbol_text(symbol, lines)
                     text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -92,22 +94,69 @@ class SymbolEmbedder:
                         reused += 1
                     else:
                         pending_vectors.append((file_path, symbol, text, text_hash))
+                        pending_for_file += 1
                 entries_by_file[file_path] = entries
-            for chunk in _chunks(pending_vectors, EMBED_BATCH_SIZE):
-                vectors = self.backend.embed([item[2] for item in chunk])
-                for (file_path, symbol, _, text_hash), vector in zip(chunk, vectors):
-                    entries_by_file[file_path].append(
-                        {
-                            "symbol_name": symbol["name"],
-                            "symbol_line": symbol["line"],
-                            "text_hash": text_hash,
-                            "vector": vector,
-                        }
-                    )
-                    embedded += 1
-            for file_path, entries in entries_by_file.items():
-                self.store.replace_file(conn, file_path, model_name, entries)
+                remaining_by_file[file_path] = pending_for_file
+        _replace_completed_files(
+            self.conn_provider,
+            self.store,
+            model_name,
+            entries_by_file,
+            remaining_by_file,
+        )
+        for chunk in _chunks(pending_vectors, EMBED_BATCH_SIZE):
+            vectors = self.backend.embed([item[2] for item in chunk])
+            completed: set[str] = set()
+            for (file_path, symbol, _, text_hash), vector in zip(chunk, vectors):
+                entries_by_file[file_path].append(
+                    {
+                        "symbol_name": symbol["name"],
+                        "symbol_line": symbol["line"],
+                        "text_hash": text_hash,
+                        "vector": vector,
+                    }
+                )
+                remaining_by_file[file_path] -= 1
+                if remaining_by_file[file_path] == 0:
+                    completed.add(file_path)
+                embedded += 1
+            _replace_selected_files(
+                self.conn_provider,
+                self.store,
+                model_name,
+                entries_by_file,
+                sorted(completed),
+            )
         return {"embedded": embedded, "reused": reused, "files": files, "model": model_name}
+
+
+def _replace_completed_files(
+    conn_provider: Any,
+    store: SymbolEmbeddingStore,
+    model_name: str,
+    entries_by_file: dict[str, list[dict[str, Any]]],
+    remaining_by_file: dict[str, int],
+) -> None:
+    completed = [
+        file_path
+        for file_path, remaining in remaining_by_file.items()
+        if remaining == 0
+    ]
+    _replace_selected_files(conn_provider, store, model_name, entries_by_file, completed)
+
+
+def _replace_selected_files(
+    conn_provider: Any,
+    store: SymbolEmbeddingStore,
+    model_name: str,
+    entries_by_file: dict[str, list[dict[str, Any]]],
+    file_paths: list[str],
+) -> None:
+    if not file_paths:
+        return
+    with conn_provider.connect() as conn:
+        for file_path in file_paths:
+            store.replace_file(conn, file_path, model_name, entries_by_file[file_path])
 
 
 def _group_symbols_by_file(
