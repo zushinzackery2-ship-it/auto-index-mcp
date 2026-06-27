@@ -39,11 +39,6 @@ def _parse_args() -> argparse.Namespace:
 
 def _shutdown_service() -> None:
     _service.stop_watcher()
-    background = _service.background
-    if background is not None and background.is_running():
-        # Give an in-flight build a brief moment to finish; it is a daemon thread
-        # and safe to abandon (replace_all commits atomically) if it overruns.
-        background.wait(2.0)
 
 
 def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:

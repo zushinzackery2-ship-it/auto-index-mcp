@@ -10,6 +10,7 @@ from .vector_store import SymbolEmbeddingStore
 
 MAX_BODY_LINES = 64
 MAX_BODY_CHARS = 2000
+EMBED_BATCH_SIZE = 8
 
 
 class SymbolEmbedder:
@@ -67,12 +68,13 @@ class SymbolEmbedder:
         reused = 0
         files = 0
         with self.conn_provider.connect() as conn:
+            pending_vectors: list[tuple[str, dict[str, Any], str, str]] = []
+            entries_by_file: dict[str, list[dict[str, Any]]] = {}
             for file_path, symbols in symbols_by_file.items():
                 files += 1
                 existing_hashes = self.store.hashes_for(conn, file_path, model_name)
                 existing_vectors = self.store.vectors_for(conn, file_path, model_name)
                 lines = _read_lines_safe(root, file_path)
-                pending: list[tuple[dict[str, Any], str, str]] = []
                 entries: list[dict[str, Any]] = []
                 for symbol in symbols:
                     text = _symbol_text(symbol, lines)
@@ -89,19 +91,21 @@ class SymbolEmbedder:
                         )
                         reused += 1
                     else:
-                        pending.append((symbol, text, text_hash))
-                if pending:
-                    vectors = self.backend.embed([item[1] for item in pending])
-                    for (symbol, _, text_hash), vector in zip(pending, vectors):
-                        entries.append(
-                            {
-                                "symbol_name": symbol["name"],
-                                "symbol_line": symbol["line"],
-                                "text_hash": text_hash,
-                                "vector": vector,
-                            }
-                        )
-                        embedded += 1
+                        pending_vectors.append((file_path, symbol, text, text_hash))
+                entries_by_file[file_path] = entries
+            for chunk in _chunks(pending_vectors, EMBED_BATCH_SIZE):
+                vectors = self.backend.embed([item[2] for item in chunk])
+                for (file_path, symbol, _, text_hash), vector in zip(chunk, vectors):
+                    entries_by_file[file_path].append(
+                        {
+                            "symbol_name": symbol["name"],
+                            "symbol_line": symbol["line"],
+                            "text_hash": text_hash,
+                            "vector": vector,
+                        }
+                    )
+                    embedded += 1
+            for file_path, entries in entries_by_file.items():
                 self.store.replace_file(conn, file_path, model_name, entries)
         return {"embedded": embedded, "reused": reused, "files": files, "model": model_name}
 
@@ -113,6 +117,14 @@ def _group_symbols_by_file(
     for symbol in symbols:
         grouped.setdefault(symbol["file_path"], []).append(symbol)
     return grouped
+
+
+def _chunks(
+    items: list[tuple[str, dict[str, Any], str, str]],
+    size: int,
+) -> Iterable[list[tuple[str, dict[str, Any], str, str]]]:
+    for index in range(0, len(items), size):
+        yield items[index:index + size]
 
 
 def _read_lines_safe(root: Path, file_path: str) -> list[str]:

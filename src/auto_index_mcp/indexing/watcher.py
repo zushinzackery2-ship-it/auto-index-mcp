@@ -43,7 +43,7 @@ class FileEventWatcher:
         self.change_count = 0
         self.ready = False
 
-    def start(self, wait_ready: bool = True) -> None:
+    def start(self, wait_ready: bool = False) -> None:
         if self.is_running():
             return
         try:

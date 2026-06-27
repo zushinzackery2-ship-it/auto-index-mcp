@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .config import DEFAULT_BUILD_LOCK_WAIT_SECONDS, INDEX_VERSION
+from .config import INDEX_VERSION
 from .background_indexer import (
     BackgroundIndexer,
     PHASE_ANALYZING,
@@ -13,6 +13,7 @@ from .background_indexer import (
     PHASE_WRITING,
 )
 from .index_policy import can_reuse_index, can_start_auto_watch
+from .ignore_rules import ignore_fingerprint
 from .quality_dangling import with_project_quality_findings
 from .rebuild_context import RebuildContext
 from ..indexing.analysis import resolve_project_callers
@@ -50,6 +51,7 @@ class ServiceRebuildMixin:
         def _ready_context(self) -> tuple[Path, IndexStore]: ...
         def status(self) -> dict[str, Any]: ...
         def _background_status(self) -> dict[str, Any]: ...
+        def runtime_ignore_patterns(self) -> list[str]: ...
         def start_watcher(self, debounce_seconds: float = ..., wait_ready: bool = ...) -> dict[str, Any]: ...
         def _embed_after_full_rebuild(
             self,
@@ -57,6 +59,7 @@ class ServiceRebuildMixin:
             store: IndexStore | None = ...,
             indexer: SymbolEmbedder | None = ...,
         ) -> dict[str, Any] | None: ...
+        def _create_embedding_indexer(self, store: IndexStore) -> SymbolEmbedder | None: ...
 
     def rebuild(self, reuse_if_fresh: bool = False) -> dict[str, Any]:
         self._ready_context()
@@ -89,16 +92,16 @@ class ServiceRebuildMixin:
         """Acquire the cross-process BuildLock, then run the rebuild.
 
         Shared by the synchronous path and the background worker so multi-process
-        contention is handled identically: if another process holds the lock past
-        the wait budget, report build-lock-timeout instead of racing a duplicate
-        scan.
+        contention is handled identically: if another process holds the lock,
+        report that an external build is in flight instead of blocking or racing
+        a duplicate scan.
         """
         lock = BuildLock(context.index_root / "index.build.lock")
-        acquired = lock.acquire(DEFAULT_BUILD_LOCK_WAIT_SECONDS)
+        acquired = lock.try_acquire()
         try:
             if not acquired:
                 result = self.status()
-                result["status"] = "build-lock-timeout"
+                result["status"] = "indexing-in-other-process"
                 result["rebuild"] = False
                 result["message"] = "another auto-index process is still rebuilding this project"
                 return result
@@ -123,7 +126,7 @@ class ServiceRebuildMixin:
         )
         self.background = indexer
         self._background_context_key = context.key
-        indexer.start()
+        indexer.start(delay_seconds=0.25)
         return self._background_status()
 
     def _run_rebuild_locked(self, indexer: BackgroundIndexer, context: RebuildContext) -> dict[str, Any]:
@@ -193,26 +196,46 @@ class ServiceRebuildMixin:
             existing = {}
         if indexer is not None:
             indexer.set_phase(PHASE_SCANNING)
-        children = discover_child_indexes(root, store.db_path)
+        ignore_patterns = self.runtime_ignore_patterns()
+        children = discover_child_indexes(
+            root,
+            store.db_path,
+            ignore_patterns=ignore_patterns,
+        )
         boundary_roots = [Path(child.root) for child in children]
-        scan = SourceScanner(str(root), existing_records=existing, boundary_roots=boundary_roots).scan()
+        scan = SourceScanner(
+            str(root),
+            extra_excludes=ignore_patterns,
+            existing_records=existing,
+            boundary_roots=boundary_roots,
+        ).scan()
         if indexer is not None:
             indexer.set_phase(PHASE_ANALYZING)
         active_records = annotate_active_sources(root, scan.records)
         records = with_project_quality_findings(resolve_project_callers(active_records))
         if indexer is not None:
             indexer.set_phase(PHASE_WRITING)
-        store.replace_all(scan.root, records, child_indexes_to_dicts(children))
+        children_dicts = child_indexes_to_dicts(children)
+        total_file_count = len(records) + sum(child.file_count for child in children)
+        store.replace_all(
+            scan.root,
+            records,
+            children_dicts,
+            {"ignore_fingerprint": ignore_fingerprint(root, ignore_patterns)},
+        )
         if self._context_is_current(context):
             self.last_errors = scan.errors[:50]
         if indexer is not None:
             indexer.set_phase(PHASE_EMBEDDING)
-        embedding_meta = self._embed_after_full_rebuild(root, store, context.embedding_indexer)
+        embedding_indexer = context.embedding_indexer or self._create_embedding_indexer(store)
+        if self._context_is_current(context):
+            self.embedding_indexer = embedding_indexer
+        embedding_meta = self._embed_after_full_rebuild(root, store, embedding_indexer)
         return {
             "status": "indexed",
             "root": scan.root,
             "file_count": len(records),
-            "total_file_count": len(records) + sum(child.file_count for child in children),
+            "total_file_count": total_file_count,
             "child_index_count": len(children),
             "skipped": scan.skipped,
             "reused": scan.reused,
@@ -224,10 +247,27 @@ class ServiceRebuildMixin:
         }
 
     def _index_is_fresh(self) -> bool:
-        return can_reuse_index(self.store, self.root_path)
+        if self.root_path is None:
+            return False
+        return can_reuse_index(
+            self.store,
+            self.root_path,
+            ignore_fingerprint(self.root_path, self.runtime_ignore_patterns()),
+        )
 
     def can_reuse_index_for(self, root: Path) -> bool:
-        return can_reuse_index(self.store, root)
+        return can_reuse_index(
+            self.store,
+            root,
+            ignore_fingerprint(root, self.runtime_ignore_patterns()),
+        )
 
     def can_start_auto_watch(self, result: dict[str, Any] | None) -> bool:
-        return can_start_auto_watch(self.store, self.root_path, result)
+        if self.root_path is None:
+            return False
+        return can_start_auto_watch(
+            self.store,
+            self.root_path,
+            result,
+            ignore_fingerprint(self.root_path, self.runtime_ignore_patterns()),
+        )

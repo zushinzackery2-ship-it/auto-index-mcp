@@ -41,32 +41,32 @@
 |:-----|:----|:-----|
 | **生命周期** | `auto_index_enable()` | 设置项目根目录，默认复用已有索引，可显式重建。 |
 | **生命周期** | `auto_index_disable()` | 停用当前索引状态并停止自动刷新。 |
-| **生命周期** | `auto_index_status()` | 返回根目录、索引库路径、文件数量、更新时间、最近错误。 |
-| **生命周期** | `auto_index_rebuild()` | 强制全量扫描并重写持久索引。 |
+| **生命周期** | `auto_index_status()` | 返回根目录、索引库路径、文件数量、更新时间、最近错误，以及 watcher/embedding 运行状态。 |
+| **生命周期** | `auto_index_ignore()` | 查看 `.gitignore`/默认排除/运行期 ignore 规则，或追加、替换、清空运行期 ignore 模式。 |
+| **生命周期** | `auto_index_rebuild()` | 派发后台全量扫描并重写持久索引，请通过 `auto_index_status()` 观察进度。 |
 | **生命周期** | `auto_index_clear()` | 清空索引数据，可选择删除 SQLite 文件。 |
 | **导航** | `auto_index_overview()` | 返回语言分布、目录分布、样例文件等紧凑概览。 |
 | **导航** | `auto_index_tree_get()` | 返回目录级摘要、语言构成和样例文件。 |
 | **导航** | `auto_index_query()` | 按文本、语言、父目录和游标查询索引文件。 |
-| **导航** | `auto_index_file_summary()` | 返回单文件 import、符号和复杂度摘要。 |
-| **导航** | `auto_index_get()` | 返回单个索引文件记录。 |
+| **导航** | `auto_index_file()` | 返回单个索引文件记录，`detail="summary"` 给出 import、符号和复杂度摘要，`detail="full"` 给出完整记录。 |
 | **导航** | `auto_index_resolve_path()` | 按文件名或路径片段解析候选文件。 |
 | **搜索** | `auto_index_text_search()` | 对源码进行 literal 或 regex 搜索。 |
 | **搜索** | `auto_index_symbol_search()` | 按名称、签名、类型搜索符号。 |
 | **搜索** | `auto_index_symbol_body()` | 返回指定符号的源码片段。 |
 | **语义搜索** | `auto_index_semantic_search()` | 自然语言语义搜索，默认使用仓库随附 ONNX 模型，返回最相似的符号及行范围。 |
 | **语义搜索** | `auto_index_embedding_status()` | 报告语义 embedding 后端是否启用及向量数量。 |
-| **质量检查** | `auto_index_nesting_check()` | 从 `symbol_nesting` 缓存读取嵌套复杂度问题。 |
-| **质量检查** | `auto_index_dangling_check()` | 从 `quality_findings` 缓存读取疑似悬空代码问题。 |
+| **质量检查** | `auto_index_quality_check()` | 从持久化缓存报告代码质量问题；`kind="nesting"` 读 `symbol_nesting` 嵌套深度，`kind="dangling"` 读 `quality_findings` 疑似悬空/不可达代码，`kind="all"` 同时返回两者。 |
 | **漂移检查** | `auto_index_diff_filesystem()` | 对比索引与当前文件系统的新增、删除、变化。 |
-| **自动刷新** | `auto_index_watcher_start()` | 启动文件系统事件驱动的自动刷新。 |
+| **自动刷新** | `auto_index_watcher_start()` | 非阻塞启动文件系统事件驱动的自动刷新。 |
 | **自动刷新** | `auto_index_watcher_stop()` | 停止文件系统事件驱动的自动刷新。 |
-| **自动刷新** | `auto_index_watcher_status()` | 查看 watcher 运行状态、触发次数、最近结果。 |
 
 MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容工具。旧的 `set_project_path()`、`find_files()`、`get_file_summary()`、`get_symbol_body()`、`search_code_advanced()` 已移除，请使用上表中的 native API。
 
-`auto_index_enable()` 会返回 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。首次设置或切换到一个已有索引根目录时会复用 `.auto-index-mcp/index.db`；需要强制全量刷新时使用 `auto_index_rebuild()`、`auto_index_enable(rebuild=True)` 或 CLI `--rebuild`。
+`auto_index_enable()` 会返回 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。首次设置或切换到一个已有索引根目录时会复用 `.auto-index-mcp/index.db`；需要强制全量刷新时使用 `auto_index_rebuild()`、`auto_index_enable(rebuild=True)` 或 CLI `--rebuild`，这些入口会派发后台重建并立即返回。若另一个 MCP 进程正在持有构建锁，本进程返回 `indexing-in-other-process`，不会在请求线程等待锁超时。
 
-`auto_index_text_search()`、`auto_index_nesting_check()` 和 `auto_index_dangling_check()` 支持 `exclude_paths`，用于排除 `reference_origin/**`、`dist/**`、`_deps/**` 等目录；质量检查还支持 `active_only`，会基于索引阶段缓存的 Visual Studio `.vcxproj` `ClCompile` 列表过滤 C/C++ 编译源。`auto_index_nesting_check()` 会输出 `nesting_coverage`、`reliable` 和 `warnings`，覆盖率过低时不要把结果当作结构质量结论。
+索引边界默认读取项目根目录 `.gitignore`，并叠加内置排除目录（如 `.venv/`、`third-party/`、`node_modules/`、`.auto-index-mcp/`）和 `auto_index_ignore()` 配置的运行期模式。ignore 规则会同时约束源码扫描、child-index discovery 和 watcher snapshot；`.gitignore` 或运行期 ignore 变化会让旧索引失效，下一次启用会后台重建。
+
+`auto_index_text_search()` 与 `auto_index_quality_check()` 支持 `exclude_paths`，用于排除 `reference_origin/**`、`dist/**`、`_deps/**` 等目录；质量检查还支持 `active_only`，会基于索引阶段缓存的 Visual Studio `.vcxproj` `ClCompile` 列表过滤 C/C++ 编译源。`auto_index_quality_check(kind="nesting")` 会输出 `nesting_coverage`、`reliable` 和 `warnings`，覆盖率过低时不要把结果当作结构质量结论。
 
 ---
 
@@ -86,7 +86,7 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 
 ## 搜索一致性
 
-`auto_index_query()`、`auto_index_symbol_search()`、`auto_index_file_summary()` 等结构化导航工具读取 SQLite 中的持久索引数据。
+`auto_index_query()`、`auto_index_symbol_search()`、`auto_index_file()` 等结构化导航工具读取 SQLite 中的持久索引数据。
 
 `auto_index_text_search()` 的正文匹配遵循“索引范围 + 实时文件内容”模型：
 
@@ -106,6 +106,7 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 - **后端可插拔**：默认通过 `onnxruntime`（纯 CPU 推理，零 torch 依赖）加载本地 ONNX embedding 模型，当前随附模型为 MiniLM ONNX 版本，约 90MB。
 - **可选依赖**：安装 `pip install -e ".[semantic]"` 启用 onnxruntime + tokenizers；依赖缺失或所选模型不可用时 `auto_index_semantic_search()` 明确报告不可用，不做关键词假降级。
 - **符号级 chunking**：embedding 文本由 `kind + signature + 符号体源码` 构成，复用已有符号索引作为精确分块，这是 auto-index 相对“全树喂 AI”方案的架构优势。
+- **后台向量构建**：rebuild 先完成代码索引写库，embedding 向量随后在独立后台任务生成；向量未完成时语义搜索会明确报告仍在构建，不把空结果伪装成未命中。
 - **增量复用**：每个符号向量带 `text_hash`，rebuild 与 watcher 增量更新时，源码未变的符号直接复用已存向量，只对变更符号重新推理。
 - **向量存储**：float32 向量以 BLOB 存入 SQLite `symbol_embeddings` 表，按 `(file_path, symbol_name, symbol_line, model_name)` 自然键定位，不依赖自增 id，跨 rebuild 稳定。
 
@@ -133,7 +134,7 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 | **SQLite WAL 更新** | 子库指纹同时覆盖 `index.db`、`index.db-wal`、`index.db-shm`，避免漏掉 WAL 模式下的子库提交。 |
 | **自身索引 DB 更新** | 当前项目自己的 `.auto-index-mcp/index.db/-wal/-shm` 事件会被忽略，避免 watcher 自触发 child discovery 或重复扫描。 |
 
-当前 watcher 不是固定每隔几秒扫一次目录，而是由系统文件变更事件触发。默认 debounce 为 0.25 秒，只用于合并连续保存、批量生成、SQLite WAL 写入等事件风暴。更新工作串行执行，一次快照/更新未结束时不会并发启动下一次。
+当前 watcher 不是固定每隔几秒扫一次目录，而是由系统文件变更事件触发。`auto_index_watcher_start()` 默认只启动后台线程并立即返回，初始快照是否完成通过 `auto_index_status().watcher.ready` 查看。默认 debounce 为 0.25 秒，只用于合并连续保存、批量生成、SQLite WAL 写入等事件风暴。更新工作串行执行，一次快照/更新未结束时不会并发启动下一次。
 
 服务进程退出时会执行优雅熄火：`mcp.run()` 返回、异常退出、Python 正常退出、SIGINT、SIGTERM 都会调用 watcher 停止逻辑。默认 stdio 模式下 MCP 进程随客户端生命周期结束；HTTP/SSE 长驻模式下也可以通过 `auto_index_watcher_stop()` 或 `auto_index_disable()` 主动停止监听。
 

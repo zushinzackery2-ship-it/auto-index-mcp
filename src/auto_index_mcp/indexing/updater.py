@@ -38,10 +38,17 @@ class UpdateResult:
 
 
 class IndexUpdater:
-    def __init__(self, root: Path, store: IndexStore, rebuild: Callable[[], dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        root: Path,
+        store: IndexStore,
+        rebuild: Callable[[], dict[str, Any]],
+        ignore_patterns: list[str] | None = None,
+    ) -> None:
         self.root = root
         self.store = store
         self.rebuild = rebuild
+        self.ignore_patterns = ignore_patterns or []
 
     def apply(self, previous: WatchSnapshot, current: WatchSnapshot) -> dict[str, Any]:
         start = time.time()
@@ -103,11 +110,15 @@ class IndexUpdater:
         return all(path not in stored_records for path in deleted)
 
     def refresh_child_links(self) -> None:
-        children = discover_child_indexes(self.root, self.store.db_path)
+        children = discover_child_indexes(
+            self.root,
+            self.store.db_path,
+            ignore_patterns=self.ignore_patterns,
+        )
         self.store.replace_child_indexes(child_indexes_to_dicts(children))
 
     def _read_changed_files(self, paths: list[str]) -> tuple[list[FileRecord], list[str]]:
-        scanner = SourceScanner(str(self.root))
+        scanner = SourceScanner(str(self.root), extra_excludes=self.ignore_patterns)
         records = []
         unindexed = []
         for rel in paths:

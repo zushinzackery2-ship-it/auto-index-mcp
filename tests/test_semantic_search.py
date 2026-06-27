@@ -58,6 +58,15 @@ def _install_baghash(monkeypatch, dim: int = 128) -> None:
     )
 
 
+def _wait_embedding(service: AutoIndexService) -> dict:
+    assert service.embedding_background is not None
+    assert service.embedding_background.wait(10.0) is True
+    status = service.embedding_background.status()
+    assert status["state"] == "done"
+    assert status["last_result"] is not None
+    return status["last_result"]
+
+
 @pytest.fixture(autouse=True)
 def _clear_embedder_cache():
     embedding_backend._EMBEDDER_CACHE.clear()
@@ -137,7 +146,8 @@ def test_bundled_model_enables_service_embeddings(monkeypatch, tmp_path: Path) -
 
     assert rebuild["embedding"] is not None
     assert rebuild["embedding"]["model"] == "fake-model"
-    assert rebuild["embedding"]["embedded"] > 0
+    assert rebuild["embedding"]["status"] == "embedding-in-background"
+    assert _wait_embedding(service)["embedded"] > 0
 
 
 def test_vector_roundtrip() -> None:
@@ -180,9 +190,10 @@ def test_semantic_search_end_to_end(monkeypatch, tmp_path: Path) -> None:
     _make_project(tmp_path)
     service = AutoIndexService(index_root=tmp_path / ".idx")
     rebuild = service.enable(str(tmp_path), rebuild=True)
+    embedding = _wait_embedding(service)
 
     assert rebuild["embedding"] is not None
-    assert rebuild["embedding"]["embedded"] > 0
+    assert embedding["embedded"] > 0
 
     status = service.embedding_status()
     assert status["enabled"] is True
@@ -196,17 +207,43 @@ def test_semantic_search_end_to_end(monkeypatch, tmp_path: Path) -> None:
     assert result["items"][0]["score"] >= result["items"][-1]["score"]
 
 
+def test_embedding_batches_pending_symbols_across_files(monkeypatch, tmp_path: Path) -> None:
+    class CountingEmbedder(BagHashEmbedder):
+        def __init__(self) -> None:
+            super().__init__(dim=32)
+            self.batch_sizes: list[int] = []
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            self.batch_sizes.append(len(texts))
+            return super().embed(texts)
+
+    backend = CountingEmbedder()
+    monkeypatch.setattr(
+        "auto_index_mcp.core.service_watcher.create_embedder",
+        lambda env=None: backend,
+    )
+    _make_project(tmp_path)
+    service = AutoIndexService(index_root=tmp_path / ".idx")
+    service.enable(str(tmp_path), rebuild=True)
+    _wait_embedding(service)
+
+    assert backend.batch_sizes == [7]
+
+
 def test_text_hash_reuse_on_rebuild(monkeypatch, tmp_path: Path) -> None:
     _install_baghash(monkeypatch)
     _make_project(tmp_path)
     service = AutoIndexService(index_root=tmp_path / ".idx")
-    first = service.enable(str(tmp_path), rebuild=True)
-    first_embedded = first["embedding"]["embedded"]
-    first_reused = first["embedding"]["reused"]
+    service.enable(str(tmp_path), rebuild=True)
+    first_result = _wait_embedding(service)
+    first_embedded = first_result["embedded"]
+    first_reused = first_result["reused"]
 
     second = service.rebuild_sync()
-    assert second["embedding"]["reused"] == first_embedded + first_reused
-    assert second["embedding"]["embedded"] == 0
+    second_result = _wait_embedding(service)
+    assert second["embedding"]["status"] == "embedding-in-background"
+    assert second_result["reused"] == first_embedded + first_reused
+    assert second_result["embedded"] == 0
 
 
 def test_incremental_embed_files(monkeypatch, tmp_path: Path) -> None:
@@ -214,12 +251,14 @@ def test_incremental_embed_files(monkeypatch, tmp_path: Path) -> None:
     _make_project(tmp_path)
     service = AutoIndexService(index_root=tmp_path / ".idx")
     service.enable(str(tmp_path), rebuild=True)
+    _wait_embedding(service)
     total = service.embedding_status()["vector_count"]
     assert total > 0
 
     new_file = tmp_path / "src" / "token.py"
     _write(new_file, "def issue_access_token(user):\n    return token\n")
     service.rebuild_sync()
+    _wait_embedding(service)
     assert service.embedding_status()["vector_count"] > total
 
 
@@ -228,6 +267,7 @@ def test_search_score_ordering(monkeypatch, tmp_path: Path) -> None:
     _make_project(tmp_path)
     service = AutoIndexService(index_root=tmp_path / ".idx")
     service.enable(str(tmp_path), rebuild=True)
+    _wait_embedding(service)
     result = service.semantic_search("authenticate user login", limit=10, min_score=-1.0)
     scores = [item["score"] for item in result["items"]]
     assert scores == sorted(scores, reverse=True)
@@ -238,5 +278,6 @@ def test_symbol_embedder_rejects_empty_query(monkeypatch, tmp_path: Path) -> Non
     _make_project(tmp_path)
     service = AutoIndexService(index_root=tmp_path / ".idx")
     service.enable(str(tmp_path), rebuild=True)
+    _wait_embedding(service)
     with pytest.raises(ValueError):
         service.semantic_search("   ")

@@ -24,8 +24,8 @@ class BuildLock:
     timeout.
 
     A lock left behind by a crashed process is reclaimed once it is older than
-    ``stale_seconds``. A contended acquire that exceeds ``wait_seconds`` returns
-    ``False`` so callers can avoid starting a duplicate full scan.
+    ``stale_seconds``. Callers can use ``try_acquire`` to avoid waiting in
+    request-facing code while still preventing duplicate full scans.
     """
 
     def __init__(self, path: Path, stale_seconds: float = 120.0, poll_seconds: float = 0.05) -> None:
@@ -48,6 +48,9 @@ class BuildLock:
             if time.monotonic() >= deadline:
                 return False
             time.sleep(self.poll_seconds)
+
+    def try_acquire(self) -> bool:
+        return self.acquire(0.0)
 
     def release(self) -> None:
         self._stop_heartbeat()

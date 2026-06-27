@@ -72,7 +72,7 @@ def test_rebuild_reuse_if_fresh_skips_rescan(tmp_path: Path, monkeypatch) -> Non
     assert calls["n"] == 1
 
 
-def test_rebuild_lock_timeout_does_not_rescan(tmp_path: Path, monkeypatch) -> None:
+def test_rebuild_lock_contention_does_not_wait_or_rescan(tmp_path: Path, monkeypatch) -> None:
     from auto_index_mcp.core import service_rebuild
 
     project = tmp_path / "project"
@@ -85,6 +85,9 @@ def test_rebuild_lock_timeout_does_not_rescan(tmp_path: Path, monkeypatch) -> No
 
         def acquire(self, wait_seconds: float) -> bool:
             _ = wait_seconds
+            return False
+
+        def try_acquire(self) -> bool:
             return False
 
         def release(self) -> None:
@@ -103,7 +106,7 @@ def test_rebuild_lock_timeout_does_not_rescan(tmp_path: Path, monkeypatch) -> No
     assert service.background is not None
     assert service.background.wait(10.0)
     result = service.background.status()["last_result"]
-    assert result["status"] == "build-lock-timeout"
+    assert result["status"] == "indexing-in-other-process"
     assert result["rebuild"] is False
 
 

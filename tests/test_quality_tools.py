@@ -150,4 +150,4 @@ def test_quality_tools_are_registered() -> None:
     fake = FakeMcp()
     register_quality_tools(fake, object())  # type: ignore[arg-type]
 
-    assert fake.names == ["auto_index_nesting_check", "auto_index_dangling_check"]
+    assert fake.names == ["auto_index_quality_check"]

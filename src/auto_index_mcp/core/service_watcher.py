@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .background_indexer import BackgroundIndexer, PHASE_EMBEDDING
 from .config import DEFAULT_WATCH_DEBOUNCE_SECONDS
 from ..embedding.backend import create_embedder
 from ..embedding.indexer import SymbolEmbedder
@@ -25,12 +26,14 @@ class ServiceWatcherMixin:
         store: IndexStore | None
         watcher: FileEventWatcher | None
         embedding_indexer: SymbolEmbedder | None
+        embedding_background: BackgroundIndexer | None
         last_errors: list[str]
 
         def _ready_context(self) -> tuple[Path, IndexStore]: ...
+        def runtime_ignore_patterns(self) -> list[str]: ...
         def rebuild_sync(self, reuse_if_fresh: bool = ...) -> dict[str, Any]: ...
 
-    def start_watcher(self, debounce_seconds: float = DEFAULT_WATCH_DEBOUNCE_SECONDS, wait_ready: bool = True) -> dict[str, Any]:
+    def start_watcher(self, debounce_seconds: float = DEFAULT_WATCH_DEBOUNCE_SECONDS, wait_ready: bool = False) -> dict[str, Any]:
         root, store = self._ready_context()
         if debounce_seconds < 0.05:
             raise ValueError("debounce_seconds must be >= 0.05")
@@ -44,8 +47,16 @@ class ServiceWatcherMixin:
         if self.watcher:
             self.watcher.stop()
         children = lambda: [Path(child["root"]) for child in store.child_indexes()]
-        snapshot = lambda: take_watch_snapshot(root, children(), store.db_path)
-        update_snapshot = lambda previous, paths: update_watch_snapshot(root, previous, paths, children(), store.db_path)
+        ignores = self.runtime_ignore_patterns()
+        snapshot = lambda: take_watch_snapshot(root, children(), store.db_path, ignores)
+        update_snapshot = lambda previous, paths: update_watch_snapshot(
+            root,
+            previous,
+            paths,
+            children(),
+            store.db_path,
+            ignores,
+        )
         previous = snapshot_from_index(root, store.file_headers(), store.child_indexes())
         self.watcher = FileEventWatcher(
             root,
@@ -63,8 +74,9 @@ class ServiceWatcherMixin:
         child_indexes = store.child_indexes()
         child_roots = [Path(child["root"]) for child in child_indexes]
         previous = snapshot_from_index(root, store.file_headers(), child_indexes)
-        current = take_watch_snapshot(root, child_roots, store.db_path)
-        return IndexUpdater(root, store, self.rebuild_sync).apply(previous, current)
+        ignores = self.runtime_ignore_patterns()
+        current = take_watch_snapshot(root, child_roots, store.db_path, ignores)
+        return IndexUpdater(root, store, self.rebuild_sync, ignores).apply(previous, current)
 
     def stop_watcher(self) -> dict[str, Any]:
         if self.watcher:
@@ -81,7 +93,7 @@ class ServiceWatcherMixin:
         # The watcher runs on its own daemon thread, so a structural rebuild it
         # triggers should complete synchronously there rather than dispatching a
         # second background build the watcher would not wait on.
-        updater = IndexUpdater(root, store, self.rebuild_sync)
+        updater = IndexUpdater(root, store, self.rebuild_sync, self.runtime_ignore_patterns())
 
         def apply(previous, current):
             result = updater.apply(previous, current)
@@ -95,8 +107,11 @@ class ServiceWatcherMixin:
         if store is None:
             self.embedding_indexer = None
             return
+        self.embedding_indexer = self._create_embedding_indexer(store)
+
+    def _create_embedding_indexer(self, store: IndexStore) -> SymbolEmbedder | None:
         backend = create_embedder()
-        self.embedding_indexer = SymbolEmbedder(backend, store) if backend is not None else None
+        return SymbolEmbedder(backend, store) if backend is not None else None
 
     def _embed_after_full_rebuild(
         self,
@@ -108,18 +123,36 @@ class ServiceWatcherMixin:
         store = store or self.store
         if indexer is None or store is None:
             return None
+        existing = self.embedding_background
+        if existing is not None and existing.is_running():
+            return {"status": "embedding-in-background", "model": indexer.backend.name}
+        worker = BackgroundIndexer(
+            lambda background: self._run_full_embedding(background, root, store, indexer)
+        )
+        self.embedding_background = worker
+        worker.start()
+        return {"status": "embedding-in-background", "model": indexer.backend.name}
+
+    def _run_full_embedding(
+        self,
+        background: BackgroundIndexer,
+        root: Path,
+        store: IndexStore,
+        indexer: SymbolEmbedder,
+    ) -> dict[str, Any]:
+        background.set_phase(PHASE_EMBEDDING)
         try:
             return indexer.embed_project(root, store.all_symbols())
         except Exception as exc:
             self.last_errors.append(f"embedding-rebuild: {exc}")
-            return {"error": str(exc)}
+            raise
 
     def _embed_after_incremental(self, root: Path, store: IndexStore, previous, current, result: dict[str, Any]) -> None:
         indexer = self.embedding_indexer
         if indexer is None:
             return
         status = result.get("status")
-        if status in ("structural-rebuild", "indexed", "build-lock-timeout", "shared-index-current"):
+        if status in ("structural-rebuild", "indexed", "indexing-in-other-process", "shared-index-current"):
             return
         if status != "incremental":
             return

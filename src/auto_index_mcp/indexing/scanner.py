@@ -8,11 +8,10 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..core.config import (
-    DEFAULT_EXCLUDE_DIRS,
-    DEFAULT_EXCLUDE_FILE_PATTERNS,
     LANGUAGE_BY_EXTENSION,
     TEXT_EXTENSIONS,
 )
+from ..core.ignore_rules import IgnoreRules
 from ..core.models import FileRecord, ScanResult, SymbolRecord
 from ..core._utils import is_relative_to
 from ..core.quality_dangling import file_quality_findings
@@ -39,6 +38,7 @@ class SourceScanner:
         self.max_bytes = max_bytes
         self.existing_records = existing_records or {}
         self.boundary_roots = [path.resolve() for path in boundary_roots or []]
+        self.ignore_rules = IgnoreRules.from_root(self.root, self.extra_excludes)
 
     def scan(self) -> ScanResult:
         records: list[FileRecord] = []
@@ -76,15 +76,17 @@ class SourceScanner:
             return True
         if any(is_relative_to(resolved, root) for root in self.boundary_roots):
             return True
-        if any(part in DEFAULT_EXCLUDE_DIRS for part in path.parts):
-            return True
         rel = self._relative(resolved)
+        if self.ignore_rules.is_ignored_rel(rel, is_dir=False):
+            return True
         if resolved.suffix.lower() not in TEXT_EXTENSIONS:
             return True
         if resolved.stat().st_size > self.max_bytes:
             return True
-        patterns = list(DEFAULT_EXCLUDE_FILE_PATTERNS) + self.extra_excludes
-        return any(fnmatch.fnmatch(resolved.name, pattern) or fnmatch.fnmatch(rel, pattern) for pattern in patterns)
+        return any(
+            fnmatch.fnmatch(resolved.name, pattern) or fnmatch.fnmatch(rel, pattern)
+            for pattern in self.extra_excludes
+        )
 
     def _iter_files(self) -> list[Path]:
         files: list[Path] = []
@@ -107,7 +109,7 @@ class SourceScanner:
             return True
         if any(is_relative_to(resolved, root) for root in self.boundary_roots):
             return True
-        return any(part in DEFAULT_EXCLUDE_DIRS for part in resolved.parts)
+        return self.ignore_rules.should_prune_dir(resolved)
 
     def read_path(self, path: Path) -> FileRecord:
         path = path.resolve(strict=True)

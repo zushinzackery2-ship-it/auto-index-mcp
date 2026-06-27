@@ -11,13 +11,14 @@ from mcp.client.stdio import stdio_client
 
 REQUIRED_TOOLS = {
     "auto_index_enable",
+    "auto_index_ignore",
     "auto_index_status",
     "auto_index_text_search",
     "auto_index_symbol_search",
     "auto_index_semantic_search",
     "auto_index_embedding_status",
-    "auto_index_nesting_check",
-    "auto_index_dangling_check",
+    "auto_index_file",
+    "auto_index_quality_check",
 }
 
 FORBIDDEN_TOOLS = {
@@ -26,6 +27,11 @@ FORBIDDEN_TOOLS = {
     "get_file_summary",
     "get_symbol_body",
     "search_code_advanced",
+    "auto_index_get",
+    "auto_index_file_summary",
+    "auto_index_watcher_status",
+    "auto_index_nesting_check",
+    "auto_index_dangling_check",
 }
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -31,6 +31,21 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         return service.status()
 
     @mcp.tool()
+    def auto_index_ignore(
+        mode: Literal["status", "add", "replace", "clear"] = "status",
+        patterns: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """View or configure runtime ignore patterns.
+
+        ``.gitignore`` is loaded automatically from the active project root.
+        Runtime patterns use gitignore-style syntax and affect the next rebuild
+        or watcher start. ``mode="add"`` appends unique patterns,
+        ``mode="replace"`` overwrites runtime patterns, and ``mode="clear"``
+        removes runtime patterns.
+        """
+        return service.configure_ignore(patterns, mode)
+
+    @mcp.tool()
     def auto_index_rebuild() -> dict[str, Any]:
         """Force a full source tree rebuild into the persisted index."""
         return service.rebuild()
@@ -49,8 +64,3 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
     def auto_index_watcher_stop() -> dict[str, Any]:
         """Stop filesystem-event auto-refresh."""
         return service.stop_watcher()
-
-    @mcp.tool()
-    def auto_index_watcher_status() -> dict[str, Any]:
-        """Return filesystem-event auto-refresh status."""
-        return service.watcher_status()

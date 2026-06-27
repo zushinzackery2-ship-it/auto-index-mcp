@@ -2,11 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-INDEX_VERSION = 5
+INDEX_VERSION = 6
 DEFAULT_WATCH_DEBOUNCE_SECONDS = 0.25
-# How long a rebuild waits for a concurrent process to finish building the
-# shared index before it falls back to building unsynchronised itself.
-DEFAULT_BUILD_LOCK_WAIT_SECONDS = 60.0
 
 DEFAULT_EXCLUDE_DIRS = {
     ".git",
@@ -16,12 +13,14 @@ DEFAULT_EXCLUDE_DIRS = {
     ".pytest_cache",
     ".ruff_cache",
     ".auto-index-mcp",
+    ".claude",
     ".tox",
     ".venv",
     "__pycache__",
     "bin",
     "build",
     "dist",
+    "models",
     "node_modules",
     "obj",
     "target",

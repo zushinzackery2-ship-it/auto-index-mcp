@@ -22,10 +22,16 @@ class FileLookup:
 
 
 class WorkspaceView:
-    def __init__(self, store: IndexStore, visited_db_paths: set[Path] | None = None) -> None:
+    def __init__(
+        self,
+        store: IndexStore,
+        visited_db_paths: set[Path] | None = None,
+        ignore_patterns: list[str] | None = None,
+    ) -> None:
         self.store = store
         self.visited_db_paths = {path.resolve() for path in visited_db_paths or set()}
         self.visited_db_paths.add(store.db_path.resolve())
+        self.ignore_patterns = ignore_patterns or []
         self._active_children: list[dict[str, Any]] | None = None
         self._child_stores: dict[str, IndexStore] = {}
         self._child_views: dict[str, WorkspaceView] = {}
@@ -136,7 +142,11 @@ class WorkspaceView:
 
     def diff_filesystem(self, root: Path) -> dict[str, list[str]]:
         children = self._active_child_indexes()
-        scan = SourceScanner(str(root), boundary_roots=[Path(child["root"]) for child in children]).scan()
+        scan = SourceScanner(
+            str(root),
+            extra_excludes=self.ignore_patterns,
+            boundary_roots=[Path(child["root"]) for child in children],
+        ).scan()
         indexed = {item["path"]: item for item in self.store.all_files()}
         current = {item.path: item for item in scan.records}
         added = list(set(current) - set(indexed))
@@ -247,7 +257,11 @@ class WorkspaceView:
     def _child_view(self, child: dict[str, Any]) -> "WorkspaceView":
         key = str(Path(child["db_path"]).resolve())
         if key not in self._child_views:
-            self._child_views[key] = WorkspaceView(self._child_store(child), self.visited_db_paths)
+            self._child_views[key] = WorkspaceView(
+                self._child_store(child),
+                self.visited_db_paths,
+                self.ignore_patterns,
+            )
         return self._child_views[key]
 
     def _active_child_indexes(self) -> list[dict[str, Any]]:
@@ -260,4 +274,3 @@ class WorkspaceView:
                 children.append(child)
         self._active_children = children
         return children
-

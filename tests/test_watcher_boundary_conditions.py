@@ -12,7 +12,7 @@ def test_watcher_handles_rapid_successive_changes(tmp_path: Path) -> None:
 
     service = AutoIndexService(index_root=tmp_path / "index")
     service.enable(str(project), rebuild=True)
-    service.start_watcher(debounce_seconds=0.05)
+    service.start_watcher(debounce_seconds=0.05, wait_ready=True)
 
     try:
         for i in range(20):
@@ -41,7 +41,7 @@ def test_watcher_file_created_and_deleted_before_ready(tmp_path: Path) -> None:
         ephemeral.write_text("def gone():\n    pass\n", encoding="utf-8")
         ephemeral.unlink()
 
-        assert service.watcher_status()["ready"] is True
+        assert _wait_until(lambda: service.watcher_status()["ready"] is True)
         assert service.resolve_path("ephemeral.py")["items"] == []
     finally:
         service.stop_watcher()

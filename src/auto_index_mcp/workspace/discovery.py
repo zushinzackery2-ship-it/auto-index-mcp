@@ -22,12 +22,17 @@ class ChildIndex:
         return asdict(self)
 
 
-def discover_child_indexes(root: Path, own_db_path: Path, reader: IndexMetadataReader = DEFAULT_METADATA_READER) -> list[ChildIndex]:
+def discover_child_indexes(
+    root: Path,
+    own_db_path: Path,
+    reader: IndexMetadataReader = DEFAULT_METADATA_READER,
+    ignore_patterns: list[str] | None = None,
+) -> list[ChildIndex]:
     root = root.resolve()
     own_db_path = own_db_path.resolve()
     candidates: list[tuple[Path, Path]] = []
     seen_child_roots: set[Path] = set()
-    for db_path in iter_index_databases(root):
+    for db_path in iter_index_databases(root, ignore_patterns=ignore_patterns):
         db_path = db_path.resolve()
         if db_path == own_db_path:
             continue

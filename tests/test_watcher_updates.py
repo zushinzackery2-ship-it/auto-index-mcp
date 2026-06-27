@@ -14,7 +14,7 @@ def test_watcher_incrementally_updates_changed_file_without_rebuild(tmp_path: Pa
 
     service = AutoIndexService(index_root=tmp_path / "index")
     service.enable(str(project), rebuild=True)
-    service.start_watcher(debounce_seconds=0.1)
+    service.start_watcher(debounce_seconds=0.1, wait_ready=True)
 
     try:
         status = service.watcher_status()
@@ -44,7 +44,7 @@ def test_watcher_file_event_does_not_take_full_snapshot(tmp_path: Path, monkeypa
 
     service = AutoIndexService(index_root=tmp_path / "index")
     service.enable(str(project), rebuild=True)
-    service.start_watcher(debounce_seconds=0.1)
+    service.start_watcher(debounce_seconds=0.1, wait_ready=True)
 
     def fail_full_snapshot(*args: object, **kwargs: object) -> object:
         _ = args, kwargs

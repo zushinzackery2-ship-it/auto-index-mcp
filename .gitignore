@@ -7,6 +7,7 @@ __pycache__/
 .tmp-pytest/
 pytest_*.txt
 .smoke-index/
+.tmp-*-index/
 .tmp-unrealvt-index/
 .code_indexer/
 .auto-index-mcp/

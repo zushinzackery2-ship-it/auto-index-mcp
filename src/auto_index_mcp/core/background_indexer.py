@@ -48,7 +48,7 @@ class BackgroundIndexer:
         self._error: str | None = None
         self._last_result: dict[str, Any] | None = None
 
-    def start(self) -> None:
+    def start(self, delay_seconds: float = 0.0) -> None:
         """Spawn the worker thread. Idempotent while a build is already running."""
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -61,11 +61,16 @@ class BackgroundIndexer:
             self._last_result = None
             self._done.clear()
             self._thread = threading.Thread(
-                target=self._run,
+                target=lambda: self._run_after_delay(delay_seconds),
                 name="auto-index-background-indexer",
                 daemon=True,
             )
             self._thread.start()
+
+    def _run_after_delay(self, delay_seconds: float) -> None:
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+        self._run()
 
     def _run(self) -> None:
         result: dict[str, Any] | None = None

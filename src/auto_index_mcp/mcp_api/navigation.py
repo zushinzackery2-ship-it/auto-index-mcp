@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
@@ -35,14 +35,13 @@ def register_navigation_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         return service.query(text, languages, parent, limit, cursor)
 
     @mcp.tool()
-    def auto_index_file_summary(path: str) -> dict[str, Any]:
-        """Return imports, symbols, and lightweight complexity for one indexed file."""
-        return service.file_summary(path)
+    def auto_index_file(path: str, detail: Literal["summary", "full"] = "summary") -> dict[str, Any]:
+        """Return one indexed file record.
 
-    @mcp.tool()
-    def auto_index_get(path: str) -> dict[str, Any]:
-        """Return one indexed file record."""
-        return service.get(path)
+        ``detail="summary"`` (default) returns imports, symbols and lightweight
+        complexity; ``detail="full"`` returns the complete persisted file record.
+        """
+        return service.file_summary(path) if detail == "summary" else service.get(path)
 
     @mcp.tool()
     def auto_index_resolve_path(path: str, limit: int = 20) -> dict[str, Any]:
