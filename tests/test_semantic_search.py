@@ -176,8 +176,12 @@ def test_baghash_shared_tokens_rank_higher() -> None:
     assert dot(auth_a, auth_b) > dot(auth_a, database)
 
 
-def test_semantic_search_unavailable_without_model(tmp_path: Path) -> None:
+def test_semantic_search_unavailable_without_model(monkeypatch, tmp_path: Path) -> None:
     _make_project(tmp_path)
+    monkeypatch.setattr(
+        "auto_index_mcp.core.service_semantic.resolve_embedding_model_path",
+        lambda env=None: None,
+    )
     service = AutoIndexService(index_root=tmp_path / ".idx")
     service.enable(str(tmp_path), rebuild=True)
     result = service.semantic_search("authenticate user")

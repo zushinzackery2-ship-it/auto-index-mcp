@@ -23,7 +23,7 @@ class OnnxEmbedder:
     Produces L2-normalized vectors. Default target is MiniLM-L6-v2 (dim=384).
     """
 
-    def __init__(self, model_dir: Path, max_length: int = 256) -> None:
+    def __init__(self, model_dir: Path, max_length: int = 64) -> None:
         self.model_dir = Path(model_dir)
         self.max_length = max_length
         self._session: Any = None

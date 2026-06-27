@@ -33,6 +33,24 @@ class ServiceWatcherMixin:
         def runtime_ignore_patterns(self) -> list[str]: ...
         def rebuild_sync(self, reuse_if_fresh: bool = ...) -> dict[str, Any]: ...
 
+    def ensure_embedding_background(self) -> dict[str, Any]:
+        root, store = self._ready_context()
+        existing = self.embedding_background
+        if existing is not None and existing.is_running():
+            return existing.status()
+        if self.embedding_indexer is not None:
+            try:
+                if self.embedding_indexer.count(store) > 0:
+                    return {"state": "ready", "model": self.embedding_indexer.backend.name}
+            except Exception:
+                pass
+        worker = BackgroundIndexer(
+            lambda background: self._load_and_embed_project(background, root, store)
+        )
+        self.embedding_background = worker
+        worker.start()
+        return worker.status()
+
     def start_watcher(self, debounce_seconds: float = DEFAULT_WATCH_DEBOUNCE_SECONDS, wait_ready: bool = False) -> dict[str, Any]:
         root, store = self._ready_context()
         if debounce_seconds < 0.05:
@@ -112,6 +130,40 @@ class ServiceWatcherMixin:
     def _create_embedding_indexer(self, store: IndexStore) -> SymbolEmbedder | None:
         backend = create_embedder()
         return SymbolEmbedder(backend, store) if backend is not None else None
+
+    def _load_and_embed_project(
+        self,
+        background: BackgroundIndexer,
+        root: Path,
+        store: IndexStore,
+    ) -> dict[str, Any]:
+        background.set_phase(PHASE_EMBEDDING)
+        indexer = self._create_embedding_indexer(store)
+        if indexer is None:
+            return {
+                "status": "embedding-unavailable",
+                "model": None,
+                "error": (
+                    "embedding model unavailable; install semantic dependencies "
+                    "and keep models/minilm-onnx, or set AUTO_INDEX_EMBEDDING_MODEL"
+                ),
+            }
+        if self.root_path is not None and self.root_path.resolve() == root.resolve() and self.store is store:
+            self.embedding_indexer = indexer
+        try:
+            count = indexer.count(store)
+            if count > 0:
+                return {
+                    "status": "embedding-ready",
+                    "model": indexer.backend.name,
+                    "vector_count": count,
+                }
+            result = indexer.embed_project(root, store.all_symbols())
+            result["status"] = "embedded"
+            return result
+        except Exception as exc:
+            self.last_errors.append(f"embedding-load: {exc}")
+            raise
 
     def _embed_after_full_rebuild(
         self,
