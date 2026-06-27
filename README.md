@@ -53,7 +53,7 @@
 | **搜索** | `auto_index_text_search()` | 对源码进行 literal 或 regex 搜索。 |
 | **搜索** | `auto_index_symbol_search()` | 按名称、签名、类型搜索符号。 |
 | **搜索** | `auto_index_symbol_body()` | 返回指定符号的源码片段。 |
-| **语义搜索** | `auto_index_semantic_search()` | 自然语言语义搜索，返回最相似的符号及行范围。需可选 embedding 模型。 |
+| **语义搜索** | `auto_index_semantic_search()` | 自然语言语义搜索，默认使用仓库随附 ONNX 模型，返回最相似的符号及行范围。 |
 | **语义搜索** | `auto_index_embedding_status()` | 报告语义 embedding 后端是否启用及向量数量。 |
 | **质量检查** | `auto_index_nesting_check()` | 从 `symbol_nesting` 缓存读取嵌套复杂度问题。 |
 | **质量检查** | `auto_index_dangling_check()` | 从 `quality_findings` 缓存读取疑似悬空代码问题。 |
@@ -102,8 +102,9 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 
 `auto_index_semantic_search()` 提供自然语言到符号的语义检索：把查询语句 embed 后，按余弦相似度返回最相关的符号、文件路径和行范围。
 
-- **后端可插拔**：默认通过 `onnxruntime`（纯 CPU 推理，零 torch 依赖）加载本地 ONNX embedding 模型。模型目录由环境变量 `AUTO_INDEX_EMBEDDING_MODEL` 指定，需包含 `model.onnx` 和 `tokenizer.json`（推荐 `all-MiniLM-L6-v2`，约 90MB）。
-- **可选依赖**：安装 `pip install -e ".[semantic]"` 启用 onnxruntime + tokenizers；未安装或未配置模型时 `auto_index_semantic_search()` 明确报告不可用，不做关键词假降级。
+- **模型优先级**：`AUTO_INDEX_EMBEDDING_MODEL` 指定的目录优先，需包含 `model.onnx` 和 `tokenizer.json`；未设置时使用仓库随附 `models/minilm-onnx/`。
+- **后端可插拔**：默认通过 `onnxruntime`（纯 CPU 推理，零 torch 依赖）加载本地 ONNX embedding 模型，当前随附模型为 MiniLM ONNX 版本，约 90MB。
+- **可选依赖**：安装 `pip install -e ".[semantic]"` 启用 onnxruntime + tokenizers；依赖缺失或所选模型不可用时 `auto_index_semantic_search()` 明确报告不可用，不做关键词假降级。
 - **符号级 chunking**：embedding 文本由 `kind + signature + 符号体源码` 构成，复用已有符号索引作为精确分块，这是 auto-index 相对“全树喂 AI”方案的架构优势。
 - **增量复用**：每个符号向量带 `text_hash`，rebuild 与 watcher 增量更新时，源码未变的符号直接复用已存向量，只对变更符号重新推理。
 - **向量存储**：float32 向量以 BLOB 存入 SQLite `symbol_embeddings` 表，按 `(file_path, symbol_name, symbol_line, model_name)` 自然键定位，不依赖自增 id，跨 rebuild 稳定。
@@ -144,6 +145,10 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 auto-index-mcp/
 |-- .well-known/
 |   `-- mcp.json
+|-- models/
+|   `-- minilm-onnx/
+|       |-- model.onnx
+|       `-- tokenizer.json
 |-- scripts/
 |   |-- smoke_auto_index.py
 |   `-- verify_mcp_stdio.py
@@ -157,6 +162,11 @@ auto-index-mcp/
 |       |   |-- service.py
 |       |   |-- service_quality.py
 |       |   `-- service_search.py
+|       |-- embedding/
+|       |   |-- backend.py
+|       |   |-- indexer.py
+|       |   |-- onnx_backend.py
+|       |   `-- vector_store.py
 |       |-- indexing/
 |       |   |-- build_lock.py
 |       |   |-- locator.py
@@ -202,12 +212,18 @@ auto-index-mcp/
 install_windows.bat
 ```
 
-脚本会创建 `.venv`，把当前包安装到虚拟环境，验证 MCP 入口，并生成 `mcp-client-config.windows.json` 配置示例。脚本不会自动修改 MCP 客户端配置，也不需要手动启动后端服务。
+脚本会创建 `.venv`，以 `.[semantic]` 安装当前包和 ONNX 语义依赖，验证 MCP 入口，并生成 `mcp-client-config.windows.json` 配置示例。脚本不会自动修改 MCP 客户端配置，也不需要手动启动后端服务。
 
 ### 手动安装
 
 ```bash
 python -m pip install -e .
+```
+
+语义搜索需要额外安装 ONNX 运行依赖：
+
+```bash
+python -m pip install -e ".[semantic]"
 ```
 
 ---

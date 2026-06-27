@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from auto_index_mcp.core.service import AutoIndexService
+from auto_index_mcp.embedding import backend as embedding_backend
 from auto_index_mcp.embedding.backend import BagHashEmbedder
 from auto_index_mcp.embedding.indexer import SymbolEmbedder
 from auto_index_mcp.embedding.vector_store import decode_vector, encode_vector
@@ -44,11 +45,99 @@ def _make_project(root: Path) -> None:
     _write(root / "src" / "db.py", DB_PY)
 
 
+def _make_model_dir(path: Path) -> Path:
+    _write(path / "model.onnx", "fake model")
+    _write(path / "tokenizer.json", "{}")
+    return path
+
+
 def _install_baghash(monkeypatch, dim: int = 128) -> None:
     monkeypatch.setattr(
         "auto_index_mcp.core.service_watcher.create_embedder",
         lambda env=None: BagHashEmbedder(dim=dim),
     )
+
+
+@pytest.fixture(autouse=True)
+def _clear_embedder_cache():
+    embedding_backend._EMBEDDER_CACHE.clear()
+    yield
+    embedding_backend._EMBEDDER_CACHE.clear()
+
+
+def test_embedding_model_path_uses_bundled_when_env_unset(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bundled = _make_model_dir(tmp_path / "bundled")
+    monkeypatch.setattr(embedding_backend, "_find_bundled_model_dir", lambda: bundled)
+
+    assert embedding_backend.resolve_embedding_model_path({}) == bundled
+
+
+def test_embedding_model_path_env_overrides_bundled(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bundled = _make_model_dir(tmp_path / "bundled")
+    explicit = _make_model_dir(tmp_path / "explicit")
+    monkeypatch.setattr(embedding_backend, "_find_bundled_model_dir", lambda: bundled)
+
+    env = {"AUTO_INDEX_EMBEDDING_MODEL": str(explicit)}
+    assert embedding_backend.resolve_embedding_model_path(env) == explicit
+
+
+def test_embedding_model_path_invalid_env_does_not_fallback(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    bundled = _make_model_dir(tmp_path / "bundled")
+    monkeypatch.setattr(embedding_backend, "_find_bundled_model_dir", lambda: bundled)
+
+    assert (
+        embedding_backend.resolve_embedding_model_path(
+            {"AUTO_INDEX_EMBEDDING_MODEL": str(tmp_path / "missing")}
+        )
+        is None
+    )
+
+
+def test_embedding_model_path_missing_bundled_returns_none(monkeypatch) -> None:
+    monkeypatch.setattr(embedding_backend, "_find_bundled_model_dir", lambda: None)
+
+    assert embedding_backend.resolve_embedding_model_path({}) is None
+
+
+@pytest.mark.allow_default_embedder
+def test_bundled_model_enables_service_embeddings(monkeypatch, tmp_path: Path) -> None:
+    class FakeOnnxEmbedder:
+        def __init__(self, model_dir: Path) -> None:
+            self.model_dir = Path(model_dir)
+            self._backend = BagHashEmbedder(dim=32)
+
+        @property
+        def dim(self) -> int:
+            return 32
+
+        @property
+        def name(self) -> str:
+            return f"fake-{self.model_dir.name}"
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return self._backend.embed(texts)
+
+    model_dir = _make_model_dir(tmp_path / "model")
+    project = tmp_path / "project"
+    _make_project(project)
+    monkeypatch.setattr(embedding_backend, "_find_bundled_model_dir", lambda: model_dir)
+    monkeypatch.setattr("auto_index_mcp.embedding.onnx_backend.OnnxEmbedder", FakeOnnxEmbedder)
+
+    service = AutoIndexService(index_root=tmp_path / ".idx")
+    rebuild = service.enable(str(project), rebuild=True)
+
+    assert rebuild["embedding"] is not None
+    assert rebuild["embedding"]["model"] == "fake-model"
+    assert rebuild["embedding"]["embedded"] > 0
 
 
 def test_vector_roundtrip() -> None:
@@ -83,7 +172,7 @@ def test_semantic_search_unavailable_without_model(tmp_path: Path) -> None:
     service.enable(str(tmp_path), rebuild=True)
     result = service.semantic_search("authenticate user")
     assert result["items"] == []
-    assert "not configured" in result["error"]
+    assert "unavailable" in result["error"]
 
 
 def test_semantic_search_end_to_end(monkeypatch, tmp_path: Path) -> None:

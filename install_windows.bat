@@ -14,8 +14,10 @@ set "PYTHON_CMD="
 if exist "%RESULT_FILE%" del /q "%RESULT_FILE%" >nul 2>nul
 if exist "%LOG_FILE%" del /q "%LOG_FILE%" >nul 2>nul
 
-call :log "auto-index-mcp Windows installer"
-call :log "Project root: %PROJECT_ROOT%"
+echo auto-index-mcp Windows installer
+>> "%LOG_FILE%" echo %DATE% %TIME% auto-index-mcp Windows installer
+echo Project root: %PROJECT_ROOT%
+>> "%LOG_FILE%" echo %DATE% %TIME% Project root: %PROJECT_ROOT%
 
 if not exist "%PROJECT_ROOT%\pyproject.toml" (
     set "FAIL_REASON=pyproject.toml was not found. Run this script from the auto-index-mcp directory."
@@ -35,34 +37,40 @@ if not defined PYTHON_CMD (
     goto fail
 )
 
-call :log "Using Python command: %PYTHON_CMD%"
+echo Using Python command: %PYTHON_CMD%
+>> "%LOG_FILE%" echo %DATE% %TIME% Using Python command: %PYTHON_CMD%
 
 if not exist "%VENV_PY%" (
-    call :log "Creating virtual environment: %VENV_DIR%"
+    echo Creating virtual environment: %VENV_DIR%
+    >> "%LOG_FILE%" echo %DATE% %TIME% Creating virtual environment: %VENV_DIR%
     %PYTHON_CMD% -m venv "%VENV_DIR%" >> "%LOG_FILE%" 2>&1
     if errorlevel 1 (
         set "FAIL_REASON=Failed to create virtual environment."
         goto fail
     )
 ) else (
-    call :log "Using existing virtual environment: %VENV_DIR%"
+    echo Using existing virtual environment: %VENV_DIR%
+    >> "%LOG_FILE%" echo %DATE% %TIME% Using existing virtual environment: %VENV_DIR%
 )
 
-call :log "Upgrading pip, setuptools, and wheel."
+echo Upgrading pip, setuptools, and wheel.
+>> "%LOG_FILE%" echo %DATE% %TIME% Upgrading pip, setuptools, and wheel.
 "%VENV_PY%" -m pip install --upgrade pip setuptools wheel >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
     set "FAIL_REASON=Failed to upgrade installer packages."
     goto fail
 )
 
-call :log "Installing auto-index-mcp into the virtual environment."
-"%VENV_PY%" -m pip install -e "%PROJECT_ROOT%" >> "%LOG_FILE%" 2>&1
+echo Installing auto-index-mcp with semantic dependencies into the virtual environment.
+>> "%LOG_FILE%" echo %DATE% %TIME% Installing auto-index-mcp with semantic dependencies into the virtual environment.
+"%VENV_PY%" -m pip install -e "%PROJECT_ROOT%[semantic]" >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
     set "FAIL_REASON=Failed to install auto-index-mcp."
     goto fail
 )
 
-call :log "Verifying MCP server entrypoint."
+echo Verifying MCP server entrypoint.
+>> "%LOG_FILE%" echo %DATE% %TIME% Verifying MCP server entrypoint.
 "%VENV_PY%" -m auto_index_mcp.server --help >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
     set "FAIL_REASON=MCP server entrypoint verification failed."
@@ -82,7 +90,8 @@ call :write_config
     echo "%VENV_PY%" -m auto_index_mcp.server
 ) > "%RESULT_FILE%"
 
-call :log "Install completed."
+echo Install completed.
+>> "%LOG_FILE%" echo %DATE% %TIME% Install completed.
 echo.
 echo auto-index-mcp install completed.
 echo Config example: %CONFIG_FILE%
@@ -90,7 +99,7 @@ echo Result file: %RESULT_FILE%
 echo Log file: %LOG_FILE%
 echo.
 echo This script does not modify MCP client settings and does not start a backend service.
-exit /b 0
+goto done
 
 :write_config
 set "CONFIG_PY=%VENV_PY:\=\\%"
@@ -109,11 +118,6 @@ set "CONFIG_PY=%VENV_PY:\=\\%"
 ) > "%CONFIG_FILE%"
 exit /b 0
 
-:log
-echo %~1
->> "%LOG_FILE%" echo %DATE% %TIME% %~1
-exit /b 0
-
 :fail
 echo.
 echo ERROR: %FAIL_REASON%
@@ -125,3 +129,6 @@ echo ERROR: %FAIL_REASON%
     echo log=%LOG_FILE%
 ) > "%RESULT_FILE%"
 exit /b 1
+
+:done
+exit /b 0

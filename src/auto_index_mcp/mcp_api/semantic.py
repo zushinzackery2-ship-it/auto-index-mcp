@@ -17,9 +17,10 @@ def register_semantic_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         """Natural-language semantic search over indexed symbols.
 
         Embeds the query and returns the most semantically similar symbols by
-        cosine similarity, with file paths and line ranges. Requires an ONNX
-        embedding model configured via ``AUTO_INDEX_EMBEDDING_MODEL``; without a
-        model it reports unavailable instead of degrading to keyword search.
+        cosine similarity, with file paths and line ranges. Uses the bundled
+        ONNX model or ``AUTO_INDEX_EMBEDDING_MODEL`` when provided; without a
+        usable model it reports unavailable instead of degrading to keyword
+        search.
         """
         return service.semantic_search(query, limit, min_score)
 

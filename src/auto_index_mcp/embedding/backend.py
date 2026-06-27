@@ -9,6 +9,8 @@ from typing import Any, Protocol, runtime_checkable
 
 EMBEDDING_DIM_DEFAULT = 384
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
+_BUNDLED_MODEL_DIR = Path("models") / "minilm-onnx"
+_REQUIRED_MODEL_FILES = ("model.onnx", "tokenizer.json")
 
 
 @runtime_checkable
@@ -69,31 +71,61 @@ class BagHashEmbedder:
         return out
 
 
+_EMBEDDER_CACHE: dict[Path, EmbeddingBackend] = {}
+
+
+def _has_model_files(path: Path) -> bool:
+    return path.is_dir() and all(
+        (path / name).is_file() for name in _REQUIRED_MODEL_FILES
+    )
+
+
+def _find_bundled_model_dir() -> Path | None:
+    for base in Path(__file__).resolve().parents:
+        candidate = base / _BUNDLED_MODEL_DIR
+        if _has_model_files(candidate):
+            return candidate
+    return None
+
+
+def resolve_embedding_model_path(env: dict[str, str] | None = None) -> Path | None:
+    """Resolve the ONNX model directory from explicit config or bundled files."""
+    environment = env if env is not None else os.environ
+    model_path = environment.get("AUTO_INDEX_EMBEDDING_MODEL", "").strip()
+    if model_path:
+        path = Path(model_path)
+        return path if _has_model_files(path) else None
+    return _find_bundled_model_dir()
+
+
 def create_embedder(env: dict[str, str] | None = None) -> EmbeddingBackend | None:
     """Build an embedding backend from configuration.
 
     Resolution order:
       1. ``AUTO_INDEX_EMBEDDING_MODEL`` env var -> ONNX model directory.
-      2. Not set / model missing -> None (semantic search reports unavailable).
+      2. Bundled repo model at ``models/minilm-onnx``.
+      3. Not set / model missing -> None (semantic search reports unavailable).
 
     No silent fallback to a fake embedder in production: callers receive None
     and must surface an explicit error.
     """
-    environment = env if env is not None else os.environ
-    model_path = environment.get("AUTO_INDEX_EMBEDDING_MODEL", "").strip()
-    if not model_path:
+    path = resolve_embedding_model_path(env)
+    if path is None:
         return None
-    path = Path(model_path)
-    if not path.exists():
-        return None
+    cache_key = path.resolve()
+    cached = _EMBEDDER_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         from .onnx_backend import OnnxEmbedder
     except ImportError:
         return None
     try:
-        return OnnxEmbedder(path)
+        backend = OnnxEmbedder(path)
     except Exception:
         return None
+    _EMBEDDER_CACHE[cache_key] = backend
+    return backend
 
 
 def coerce_backend(value: Any) -> EmbeddingBackend:

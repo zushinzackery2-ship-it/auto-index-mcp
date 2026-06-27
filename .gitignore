@@ -4,6 +4,7 @@ code_references/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.tmp-pytest/
 pytest_*.txt
 .smoke-index/
 .tmp-unrealvt-index/
@@ -22,3 +23,10 @@ dist/
 *.db
 *.db-shm
 *.db-wal
+
+# Bundled release embedding model. Keep cache/duplicate weights out of git.
+models/**
+!models/
+!models/minilm-onnx/
+!models/minilm-onnx/model.onnx
+!models/minilm-onnx/tokenizer.json
