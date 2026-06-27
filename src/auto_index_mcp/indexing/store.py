@@ -11,6 +11,7 @@ from ..core.config import INDEX_VERSION
 from ..core.models import FileRecord
 from .sqlite import IndexDatabase
 from .store_schema import initialize_schema
+from .store_rows import file_row_to_dict, symbol_row_to_dict
 
 
 class IndexStore:
@@ -122,12 +123,12 @@ class IndexStore:
     def get_file(self, path: str) -> dict[str, Any] | None:
         with self.read_connect() as conn:
             row = conn.execute("SELECT * FROM files WHERE path=?", (path,)).fetchone()
-        return self._row_to_dict(row) if row else None
+        return file_row_to_dict(row) if row else None
 
     def all_files(self) -> list[dict[str, Any]]:
         with self.read_connect() as conn:
             rows = conn.execute("SELECT * FROM files ORDER BY path").fetchall()
-        return [self._row_to_dict(row) for row in rows]
+        return [file_row_to_dict(row) for row in rows]
 
     def file_headers(self) -> list[dict[str, Any]]:
         with self.read_connect() as conn:
@@ -171,7 +172,7 @@ class IndexStore:
         params.extend([limit, offset])
         with self.read_connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [self._symbol_row_to_dict(row) for row in rows]
+        return [symbol_row_to_dict(row) for row in rows]
 
     def query(self, text: str, languages: list[str], parent: str, limit: int, offset: int) -> list[dict[str, Any]]:
         where: list[str] = []
@@ -194,7 +195,7 @@ class IndexStore:
         params.extend([limit, offset])
         with self.read_connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return [self._row_to_dict(row) for row in rows]
+        return [file_row_to_dict(row) for row in rows]
 
     def _insert_many(self, conn: sqlite3.Connection, records: list[FileRecord]) -> None:
         for record in records:
@@ -294,17 +295,3 @@ class IndexStore:
             "INSERT INTO metadata VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, json.dumps(value)),
         )
-
-    def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
-        data = dict(row)
-        data["imports"] = json.loads(data["imports"])
-        data["symbols"] = json.loads(data["symbols"])
-        data["quality_findings"] = json.loads(data.get("quality_findings") or "[]")
-        data["active_source"] = bool(data.get("active_source", 1))
-        return data
-
-    def _symbol_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
-        data = dict(row)
-        data["calls"] = json.loads(data["calls"] or "[]")
-        data["called_by"] = json.loads(data["called_by"] or "[]")
-        return data

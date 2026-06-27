@@ -2,7 +2,7 @@ from pathlib import Path
 import time
 from typing import Callable
 
-from auto_index_mcp.core import service as service_module
+from auto_index_mcp.core import service_watcher as service_module
 from auto_index_mcp.core.service import AutoIndexService
 
 
@@ -176,7 +176,7 @@ def test_watcher_refreshes_child_link_metadata_without_parent_rebuild(tmp_path: 
 
     try:
         (child / "extra.py").write_text("def extra_only():\n    return True\n", encoding="utf-8")
-        child_service.rebuild()
+        child_service.rebuild_sync()
 
         assert _wait_until(
             lambda: parent_service.status()["total_file_count"] == 3

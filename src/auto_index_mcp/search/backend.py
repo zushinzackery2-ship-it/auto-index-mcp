@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fnmatch
-import hashlib
 import json
 import re
 import shutil
@@ -9,23 +8,13 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-from ..core.text_decode import read_text_file
+from .file_cache import cached_read_lines, source_path
 
 MAX_RG_COMMAND_CHARS = 24_000
 # Cap each returned match line so a single minified/long line cannot consume
 # disproportionate context tokens. Truncated lines get a visible "..." suffix.
 MAX_MATCH_TEXT_CHARS = 250
-# Maximum number of files to cache for Python fallback search
-_MAX_FILE_CACHE_SIZE = 1000
-
-# LRU cache for file content reads during Python fallback
-_FILE_CONTENT_CACHE: dict[str, tuple[int, list[str]]] = {}
-_CACHE_LOCK = threading.Lock()
-_CACHE_ACCESS_ORDER: list[str] = []
-
-
 @dataclass(frozen=True)
 class RipgrepResult:
     status: str
@@ -166,7 +155,7 @@ def _indexed_search_targets(root: Path, files: list[dict], file_pattern: str | N
     for item in files:
         if file_pattern and not _matches_file_pattern(item["path"], file_pattern):
             continue
-        target = _source_path(root, item).resolve()
+        target = source_path(root, item).resolve()
         targets.append((target, item["path"]))
     return targets
 
@@ -220,7 +209,7 @@ def _python_search(
         if file_pattern and not _matches_file_pattern(item["path"], file_pattern):
             continue
         try:
-            lines = _cached_read_lines(root, item)
+            lines = cached_read_lines(root, item)
         except (OSError, UnicodeDecodeError):
             continue
         for line_number, line in enumerate(lines, start=1):
@@ -229,48 +218,6 @@ def _python_search(
                 if len(matches) >= limit:
                     return matches
     return matches
-
-
-def _cached_read_lines(root: Path, item: dict[str, Any]) -> list[str]:
-    """Read file content with LRU cache to avoid redundant disk I/O."""
-    source_path = _source_path(root, item)
-    key = str(source_path.resolve())
-
-    # Check cache: (mtime_ns, content_lines)
-    with _CACHE_LOCK:
-        cached = _FILE_CONTENT_CACHE.get(key)
-        if cached is not None:
-            try:
-                stat = source_path.stat()
-                if stat.st_mtime_ns == cached[0]:
-                    # Move to end (most recently used)
-                    if key in _CACHE_ACCESS_ORDER:
-                        _CACHE_ACCESS_ORDER.remove(key)
-                    _CACHE_ACCESS_ORDER.append(key)
-                    return cached[1]
-            except OSError:
-                pass
-
-    # Read and cache
-    try:
-        stat = source_path.stat()
-        content = read_text_file(source_path)
-        lines = content.splitlines()
-        with _CACHE_LOCK:
-            # Evict oldest entries if cache is full
-            while len(_FILE_CONTENT_CACHE) >= _MAX_FILE_CACHE_SIZE:
-                oldest = _CACHE_ACCESS_ORDER.pop(0)
-                _FILE_CONTENT_CACHE.pop(oldest, None)
-            _FILE_CONTENT_CACHE[key] = (stat.st_mtime_ns, lines)
-            _CACHE_ACCESS_ORDER.append(key)
-        return lines
-    except (OSError, UnicodeDecodeError):
-        return []
-
-
-def _source_path(root: Path, item: dict) -> Path:
-    source_root = Path(item.get("source_root") or root)
-    return source_root / item.get("source_path", item["path"])
 
 
 def _path_map(targets: list[tuple[Path, str]]) -> dict[str, str]:

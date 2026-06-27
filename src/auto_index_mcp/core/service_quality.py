@@ -16,6 +16,12 @@ class _QualityService(Protocol):
     def _require_ready(self) -> None:
         ...
 
+    def _with_index_status(self, result: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    def _not_ready_response(self) -> dict[str, Any] | None:
+        ...
+
 
 class ServiceQualityMixin:
     def nesting_check(
@@ -32,7 +38,7 @@ class ServiceQualityMixin:
         if max_depth < 0:
             raise ValueError("max_depth must be >= 0")
         files = filter_indexed_files(service.view.all_files(), exclude_paths, active_only)
-        return nesting_report(files, max_depth, languages, limit)
+        return service._with_index_status(nesting_report(files, max_depth, languages, limit))
 
     def dangling_check(
         self,
@@ -47,7 +53,7 @@ class ServiceQualityMixin:
         _validate_quality_limit(limit)
         files = filter_indexed_files(service.view.all_files(), exclude_paths, active_only)
         findings = [finding for item in files for finding in item.get("quality_findings", [])]
-        return dangling_report(files, findings, include_low_confidence, include_tests, limit)
+        return service._with_index_status(dangling_report(files, findings, include_low_confidence, include_tests, limit))
 
 
 def _validate_quality_limit(limit: int) -> None:

@@ -10,6 +10,7 @@ class DummyService:
         self.enabled = []
         self.started = 0
         self.stopped = 0
+        self.background = None
 
     def enable_reusing_index(self, root_path: str, rebuild: bool = False) -> dict:
         self.enabled.append((root_path, rebuild))

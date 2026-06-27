@@ -39,6 +39,11 @@ def _parse_args() -> argparse.Namespace:
 
 def _shutdown_service() -> None:
     _service.stop_watcher()
+    background = _service.background
+    if background is not None and background.is_running():
+        # Give an in-flight build a brief moment to finish; it is a daemon thread
+        # and safe to abandon (replace_all commits atomically) if it overruns.
+        background.wait(2.0)
 
 
 def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:
@@ -65,8 +70,11 @@ def main() -> None:
     try:
         if args.project_path:
             result = _service.enable_reusing_index(args.project_path, rebuild=args.rebuild and not args.no_rebuild)
-            if not args.no_watch and _service.can_start_auto_watch(result):
-                _service.start_watcher(wait_ready=False)
+            if not args.no_watch:
+                if _service.can_start_auto_watch(result):
+                    _service.start_watcher(wait_ready=False)
+                elif result.get("status") == "indexing-in-background":
+                    _service.request_auto_watch_after_build()
         if args.transport != "stdio":
             mcp.settings.port = args.port
         mcp.run(transport=args.transport)

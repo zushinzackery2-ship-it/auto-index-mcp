@@ -14,6 +14,9 @@ class _SemanticService(Protocol):
     def _require_ready(self) -> None:
         ...
 
+    def _with_index_status(self, result: dict[str, Any]) -> dict[str, Any]:
+        ...
+
 
 class ServiceSemanticMixin:
     def semantic_search(
@@ -42,12 +45,12 @@ class ServiceSemanticMixin:
             }
         safe_limit = max(1, min(int(limit), 100))
         hits = indexer.search(service.store, query, safe_limit, min_score)
-        return {
+        return service._with_index_status({
             "format": "auto_index_semantic_search",
             "model": indexer.backend.name,
             "count": len(hits),
             "items": hits,
-        }
+        })
 
     def embedding_status(self) -> dict[str, Any]:
         """Report whether a semantic embedding backend is active and its vector count."""

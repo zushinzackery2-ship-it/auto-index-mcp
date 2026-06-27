@@ -124,7 +124,7 @@ def test_repeated_rebuild_no_memory_leak(tmp_path: Path) -> None:
 
     for i in range(20):
         (project / f"file_{i}.py").write_text(f"def f{i}():\n    pass\n", encoding="utf-8")
-        service.rebuild()
+        service.rebuild_sync()
 
     # Should still be functional
     assert service.status()["file_count"] >= 20

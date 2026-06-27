@@ -23,6 +23,12 @@ class _SearchService(Protocol):
     def _require_store(self) -> None:
         ...
 
+    def _with_index_status(self, result: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    def _not_ready_response(self) -> dict[str, Any] | None:
+        ...
+
 
 class ServiceSearchMixin:
     def text_search(
@@ -56,7 +62,9 @@ class ServiceSearchMixin:
         )
         if context_lines > 0:
             matches = ContextLoader(view, service.root_path).attach(matches, context_lines)
-        return {"format": "auto_index_text_search_indexed", "backend": backend, "items": matches}
+        return service._with_index_status(
+            {"format": "auto_index_text_search_indexed", "backend": backend, "items": matches}
+        )
 
     def symbol_search(self, text: str = "", kind: str = "", limit: int = 80, cursor: str | None = None) -> dict[str, Any]:
         service = cast(_SearchService, self)
@@ -64,7 +72,9 @@ class ServiceSearchMixin:
         page = PageRequest.from_cursor(cursor, limit)
         rows = service.view.query_symbols(text, kind, page.fetch_limit, page.offset)
         next_cursor = page.next_cursor if len(rows) > page.limit else None
-        return {"format": "auto_index_symbol_search_indexed", "items": rows[:page.limit], "cursor": next_cursor}
+        return service._with_index_status(
+            {"format": "auto_index_symbol_search_indexed", "items": rows[:page.limit], "cursor": next_cursor}
+        )
 
     def symbol_body(self, path: str, symbol_name: str) -> dict[str, Any]:
         service = cast(_SearchService, self)
@@ -75,15 +85,25 @@ class ServiceSearchMixin:
             raise ValueError("path and symbol_name are required")
         lookup = service.view.get_file(path)
         if lookup.item is None:
+            not_ready = service._not_ready_response()
+            if not_ready is not None:
+                return not_ready
             raise KeyError(f"indexed file not found: {path}")
         matches = [symbol for symbol in lookup.item["symbols"] if symbol["name"] == symbol_name]
         if not matches:
+            not_ready = service._not_ready_response()
+            if not_ready is not None:
+                return not_ready
             raise KeyError(f"symbol not found: {symbol_name}")
         if len(matches) > 1:
-            return {"format": "auto_index_symbol_body_ambiguous", "candidates": matches}
+            return service._with_index_status(
+                {"format": "auto_index_symbol_body_ambiguous", "candidates": matches}
+            )
         symbol = matches[0]
         lines = service.view.read_indexed_text(service.root_path, lookup.item).splitlines()
         start = max(1, symbol["line"])
         end = min(len(lines), symbol["end_line"])
         code = "\n".join(lines[start - 1:end])
-        return {"format": "auto_index_symbol_body_full", "symbol": symbol, "path": path, "code": code}
+        return service._with_index_status(
+            {"format": "auto_index_symbol_body_full", "symbol": symbol, "path": path, "code": code}
+        )

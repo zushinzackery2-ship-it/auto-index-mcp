@@ -46,7 +46,7 @@ def _make_project(root: Path) -> None:
 
 def _install_baghash(monkeypatch, dim: int = 128) -> None:
     monkeypatch.setattr(
-        "auto_index_mcp.core.service.create_embedder",
+        "auto_index_mcp.core.service_watcher.create_embedder",
         lambda env=None: BagHashEmbedder(dim=dim),
     )
 
@@ -115,7 +115,7 @@ def test_text_hash_reuse_on_rebuild(monkeypatch, tmp_path: Path) -> None:
     first_embedded = first["embedding"]["embedded"]
     first_reused = first["embedding"]["reused"]
 
-    second = service.rebuild()
+    second = service.rebuild_sync()
     assert second["embedding"]["reused"] == first_embedded + first_reused
     assert second["embedding"]["embedded"] == 0
 
@@ -130,7 +130,7 @@ def test_incremental_embed_files(monkeypatch, tmp_path: Path) -> None:
 
     new_file = tmp_path / "src" / "token.py"
     _write(new_file, "def issue_access_token(user):\n    return token\n")
-    service.rebuild()
+    service.rebuild_sync()
     assert service.embedding_status()["vector_count"] > total
 
 

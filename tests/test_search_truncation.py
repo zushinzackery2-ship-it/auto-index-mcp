@@ -5,6 +5,7 @@ from typing import Any
 
 from auto_index_mcp.search import backend
 from auto_index_mcp.search.backend import MAX_MATCH_TEXT_CHARS, _truncate_match_text
+from auto_index_mcp.search.file_cache import clear_file_cache
 
 
 class StreamingProcess:
@@ -103,7 +104,7 @@ def test_python_fallback_truncates_long_line(tmp_path: Path) -> None:
     long_text = _long_line("target", MAX_MATCH_TEXT_CHARS + 500)
     source.write_text(long_text + "\n", encoding="utf-8")
 
-    backend._FILE_CONTENT_CACHE.clear()
+    clear_file_cache()
     matches = backend._python_search(
         tmp_path, [{"path": "minified.js"}], "target", True, False, 10, None
     )
@@ -116,7 +117,7 @@ def test_python_fallback_short_line_intact(tmp_path: Path) -> None:
     source = tmp_path / "main.py"
     source.write_text("def target():\n    return None\n", encoding="utf-8")
 
-    backend._FILE_CONTENT_CACHE.clear()
+    clear_file_cache()
     matches = backend._python_search(
         tmp_path, [{"path": "main.py"}], "target", True, False, 10, None
     )
@@ -128,7 +129,7 @@ def test_python_fallback_boundary_exact(tmp_path: Path) -> None:
     text = "target" + "a" * (MAX_MATCH_TEXT_CHARS - len("target"))
     source.write_text(text + "\n", encoding="utf-8")
 
-    backend._FILE_CONTENT_CACHE.clear()
+    clear_file_cache()
     matches = backend._python_search(
         tmp_path, [{"path": "exact.txt"}], "target", True, False, 10, None
     )
@@ -179,7 +180,7 @@ def test_stress_many_long_lines_bounded(tmp_path: Path) -> None:
         source.write_text(lines + "\n", encoding="utf-8")
         files.append({"path": f"gen_{i}.js"})
 
-    backend._FILE_CONTENT_CACHE.clear()
+    clear_file_cache()
     matches = backend._python_search(tmp_path, files, "target0", True, False, 100, None)
 
     assert len(matches) <= 100
@@ -194,7 +195,7 @@ def test_stress_total_output_bounded(tmp_path: Path) -> None:
     mega_line = "target" + "A" * 9_994
     source.write_text("\n".join([mega_line] * 500) + "\n", encoding="utf-8")
 
-    backend._FILE_CONTENT_CACHE.clear()
+    clear_file_cache()
     matches = backend._python_search(
         tmp_path, [{"path": "huge.sql"}], "target", True, False, 50, None
     )

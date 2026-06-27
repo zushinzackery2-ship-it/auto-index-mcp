@@ -226,7 +226,7 @@ def test_corrupted_sqlite_rebuilds_cleanly(tmp_path: Path) -> None:
         f.write(data)
 
     # Rebuild should recover
-    service.rebuild()
+    service.rebuild_sync()
     assert service.status()["file_count"] == 1
     assert service.resolve_path("main.py")["items"]
 

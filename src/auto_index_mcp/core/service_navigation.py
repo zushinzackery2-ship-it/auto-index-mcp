@@ -23,19 +23,25 @@ class _NavigationService(Protocol):
     def _ready_context(self) -> tuple[Path, IndexStore]:
         ...
 
+    def _with_index_status(self, result: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    def _not_ready_response(self) -> dict[str, Any] | None:
+        ...
+
 
 class ServiceNavigationMixin:
     def overview(self, limit: int = 30) -> dict[str, Any]:
         service = cast(_NavigationService, self)
         service._store_context()
         files = service.view.all_files()
-        return overview_result(files, limit)
+        return service._with_index_status(overview_result(files, limit))
 
     def tree_get(self, root_path: str = "", depth: int = 2, limit: int = 120) -> dict[str, Any]:
         service = cast(_NavigationService, self)
         service._store_context()
         files = service.view.all_files()
-        return tree_result(files, root_path, depth, limit)
+        return service._with_index_status(tree_result(files, root_path, depth, limit))
 
     def query(
         self,
@@ -50,20 +56,23 @@ class ServiceNavigationMixin:
         page = PageRequest.from_cursor(cursor, limit)
         rows = service.view.query(text, languages or [], parent, page.fetch_limit, page.offset)
         next_cursor = page.next_cursor if len(rows) > page.limit else None
-        return {
+        return service._with_index_status({
             "format": "auto_index_query_indexed",
             "items": [compact_file(row) for row in rows[:page.limit]],
             "cursor": next_cursor,
-        }
+        })
 
     def file_summary(self, path: str) -> dict[str, Any]:
         service = cast(_NavigationService, self)
         service._store_context()
         lookup = service.view.get_file(path)
         if lookup.item is None:
+            not_ready = service._not_ready_response()
+            if not_ready is not None:
+                return not_ready
             raise KeyError(f"indexed file not found: {path}")
         symbols = lookup.item["symbols"]
-        return {
+        return service._with_index_status({
             "format": "auto_index_file_summary_full",
             "path": lookup.item["path"],
             "language": lookup.item["language"],
@@ -73,15 +82,18 @@ class ServiceNavigationMixin:
             "symbols": symbols,
             "total_complexity": sum(symbol.get("complexity", 1) for symbol in symbols),
             "max_complexity": max((symbol.get("complexity", 1) for symbol in symbols), default=0),
-        }
+        })
 
     def get(self, path: str) -> dict[str, Any]:
         service = cast(_NavigationService, self)
         service._store_context()
         lookup = service.view.get_file(path)
         if lookup.item is None:
+            not_ready = service._not_ready_response()
+            if not_ready is not None:
+                return not_ready
             raise KeyError(f"indexed file not found: {path}")
-        return {"format": "auto_index_get_full", "item": lookup.item}
+        return service._with_index_status({"format": "auto_index_get_full", "item": lookup.item})
 
     def file_content(self, path: str) -> str:
         service = cast(_NavigationService, self)
@@ -111,7 +123,7 @@ class ServiceNavigationMixin:
                 matches.append(compact_file(item))
                 if len(matches) >= limit:
                     break
-        return {"format": "auto_index_resolve_indexed", "items": matches}
+        return service._with_index_status({"format": "auto_index_resolve_indexed", "items": matches})
 
     def diff_filesystem(self) -> dict[str, Any]:
         service = cast(_NavigationService, self)
@@ -120,7 +132,7 @@ class ServiceNavigationMixin:
         added = diff["added"]
         deleted = diff["deleted"]
         changed = diff["changed"]
-        return {
+        return service._with_index_status({
             "format": "auto_index_diff_indexed",
             "added": added[:100],
             "deleted": deleted[:100],
@@ -128,7 +140,7 @@ class ServiceNavigationMixin:
             "added_count": len(added),
             "deleted_count": len(deleted),
             "changed_count": len(changed),
-        }
+        })
 
     def all_files(self) -> list[dict[str, Any]]:
         service = cast(_NavigationService, self)

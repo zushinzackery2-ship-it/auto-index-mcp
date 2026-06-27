@@ -194,7 +194,7 @@ def test_rebuild_prunes_called_by_for_deleted_file(tmp_path: Path) -> None:
     assert "a.py::run" in helper["called_by"]
 
     (project / "a.py").unlink()
-    rebuild = service.rebuild()
+    rebuild = service.rebuild_sync()
 
     # b.py is unchanged on disk so it is reused, yet the reverse reference to the
     # deleted a.py must not survive the reuse path.

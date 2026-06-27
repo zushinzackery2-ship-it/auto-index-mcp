@@ -45,37 +45,46 @@ class SourceScanner:
         errors: list[str] = []
         skipped = 0
         reused = 0
+        seen_targets: set[Path] = set()
 
         for path in self._iter_files():
-            if self._should_skip(path):
-                skipped += 1
-                continue
-            reused_record = self._reuse_record_if_current(path)
-            if reused_record:
-                records.append(reused_record)
-                reused += 1
-                continue
             try:
-                records.append(self._read_record(path))
-            except (OSError, UnicodeDecodeError) as exc:
-                errors.append(f"{self._relative(path)}: {exc}")
+                target = path.resolve(strict=True)
+                if self._should_skip(target):
+                    skipped += 1
+                    continue
+                if target in seen_targets:
+                    skipped += 1
+                    continue
+                seen_targets.add(target)
+                reused_record = self._reuse_record_if_current(target)
+                if reused_record:
+                    records.append(reused_record)
+                    reused += 1
+                    continue
+                records.append(self._read_record(target))
+            except (OSError, UnicodeDecodeError, ValueError) as exc:
+                errors.append(f"{self._display_path(path)}: {exc}")
+                continue
 
         records.sort(key=lambda item: item.path.lower())
         return ScanResult(str(self.root), records, skipped, reused, errors)
 
     def _should_skip(self, path: Path) -> bool:
-        resolved = path.resolve()
+        resolved = path.resolve(strict=True)
+        if not is_relative_to(resolved, self.root):
+            return True
         if any(is_relative_to(resolved, root) for root in self.boundary_roots):
             return True
         if any(part in DEFAULT_EXCLUDE_DIRS for part in path.parts):
             return True
-        rel = self._relative(path)
-        if path.suffix.lower() not in TEXT_EXTENSIONS:
+        rel = self._relative(resolved)
+        if resolved.suffix.lower() not in TEXT_EXTENSIONS:
             return True
-        if path.stat().st_size > self.max_bytes:
+        if resolved.stat().st_size > self.max_bytes:
             return True
         patterns = list(DEFAULT_EXCLUDE_FILE_PATTERNS) + self.extra_excludes
-        return any(fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(rel, pattern) for pattern in patterns)
+        return any(fnmatch.fnmatch(resolved.name, pattern) or fnmatch.fnmatch(rel, pattern) for pattern in patterns)
 
     def _iter_files(self) -> list[Path]:
         files: list[Path] = []
@@ -90,18 +99,24 @@ class SourceScanner:
         return files
 
     def _should_skip_dir(self, path: Path) -> bool:
-        resolved = path.resolve()
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError:
+            return True
+        if not is_relative_to(resolved, self.root):
+            return True
         if any(is_relative_to(resolved, root) for root in self.boundary_roots):
             return True
         return any(part in DEFAULT_EXCLUDE_DIRS for part in resolved.parts)
 
     def read_path(self, path: Path) -> FileRecord:
-        path = path.resolve()
+        path = path.resolve(strict=True)
         if self._should_skip(path):
             raise ValueError(f"path is not indexable: {self._relative(path)}")
         return self._read_record(path)
 
     def _read_record(self, path: Path) -> FileRecord:
+        path = path.resolve(strict=True)
         data = path.read_bytes()
         text = decode_text(data)
         rel = self._relative(path)
@@ -178,4 +193,10 @@ class SourceScanner:
         return extract_symbols(lines)
 
     def _relative(self, path: Path) -> str:
-        return str(path.resolve().relative_to(self.root)).replace("\\", "/")
+        return str(path.resolve(strict=True).relative_to(self.root)).replace("\\", "/")
+
+    def _display_path(self, path: Path) -> str:
+        try:
+            return self._relative(path)
+        except (OSError, ValueError):
+            return str(path)

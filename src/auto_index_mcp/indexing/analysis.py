@@ -36,11 +36,23 @@ def resolve_project_callers(records: list[FileRecord]) -> list[FileRecord]:
     # data of the current record set, never seeded from previously stored called_by.
     # This keeps the reverse-call graph self-healing - references to files that were
     # deleted or renamed simply stop being recomputed instead of lingering forever.
+    symbol_locations = _symbol_locations(records)
+    local_callers, project_callers = _caller_maps(records, symbol_locations)
+    return _apply_callers(records, local_callers, project_callers)
+
+
+def _symbol_locations(records: list[FileRecord]) -> dict[str, list[tuple[int, int]]]:
     symbol_locations: dict[str, list[tuple[int, int]]] = {}
     for record_index, record in enumerate(records):
         for symbol_index, symbol in enumerate(record.symbols):
             symbol_locations.setdefault(symbol.name, []).append((record_index, symbol_index))
+    return symbol_locations
 
+
+def _caller_maps(
+    records: list[FileRecord],
+    symbol_locations: dict[str, list[tuple[int, int]]],
+) -> tuple[dict[tuple[int, int], list[str]], dict[tuple[int, int], list[str]]]:
     local_callers: dict[tuple[int, int], list[str]] = {}
     project_callers: dict[tuple[int, int], list[str]] = {}
     for record_index, record in enumerate(records):
@@ -48,14 +60,42 @@ def resolve_project_callers(records: list[FileRecord]) -> list[FileRecord]:
         for symbol in record.symbols:
             project_caller = f"{record.path}::{symbol.name}"
             for call in symbol.calls:
-                if call in local_names and call != symbol.name:
-                    for location in symbol_locations[call]:
-                        if location[0] == record_index:
-                            local_callers.setdefault(location, []).append(symbol.name)
-                locations = symbol_locations.get(call, [])
-                if len(locations) == 1:
-                    project_callers.setdefault(locations[0], []).append(project_caller)
+                _record_local_call(local_callers, symbol_locations, call, symbol.name, local_names, record_index)
+                _record_project_call(project_callers, symbol_locations, call, project_caller)
+    return local_callers, project_callers
 
+
+def _record_local_call(
+    callers: dict[tuple[int, int], list[str]],
+    locations_by_name: dict[str, list[tuple[int, int]]],
+    call: str,
+    caller_name: str,
+    local_names: set[str],
+    record_index: int,
+) -> None:
+    if call not in local_names or call == caller_name:
+        return
+    for location in locations_by_name[call]:
+        if location[0] == record_index:
+            callers.setdefault(location, []).append(caller_name)
+
+
+def _record_project_call(
+    callers: dict[tuple[int, int], list[str]],
+    locations_by_name: dict[str, list[tuple[int, int]]],
+    call: str,
+    project_caller: str,
+) -> None:
+    locations = locations_by_name.get(call, [])
+    if len(locations) == 1:
+        callers.setdefault(locations[0], []).append(project_caller)
+
+
+def _apply_callers(
+    records: list[FileRecord],
+    local_callers: dict[tuple[int, int], list[str]],
+    project_callers: dict[tuple[int, int], list[str]],
+) -> list[FileRecord]:
     updated_records = []
     for record_index, record in enumerate(records):
         symbols = []

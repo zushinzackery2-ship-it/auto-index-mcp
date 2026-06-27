@@ -13,8 +13,11 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
     def auto_index_enable(root_path: str, rebuild: bool = False, auto_watch: bool = True) -> dict[str, Any]:
         """Enable persistent code auto-indexing and optionally rebuild immediately."""
         result = service.enable_reusing_index(root_path, rebuild)
-        if auto_watch and service.can_start_auto_watch(result):
-            result["watcher"] = service.start_watcher(wait_ready=False)
+        if auto_watch:
+            if service.can_start_auto_watch(result):
+                result["watcher"] = service.start_watcher(wait_ready=False)
+            elif result.get("status") == "indexing-in-background":
+                service.request_auto_watch_after_build()
         return result
 
     @mcp.tool()
