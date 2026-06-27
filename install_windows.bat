@@ -80,6 +80,23 @@ if errorlevel 1 (
     goto fail
 )
 
+echo Configuring AUTO_INDEX_EMBEDDING_MODEL user environment variable.
+>> "%LOG_FILE%" echo %DATE% %TIME% Configuring AUTO_INDEX_EMBEDDING_MODEL=%MODEL_DIR%
+set "AUTO_INDEX_EMBEDDING_MODEL=%MODEL_DIR%"
+setx AUTO_INDEX_EMBEDDING_MODEL "%MODEL_DIR%" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    set "FAIL_REASON=Failed to set AUTO_INDEX_EMBEDDING_MODEL user environment variable."
+    goto fail
+)
+
+echo Verifying embedding model environment.
+>> "%LOG_FILE%" echo %DATE% %TIME% Verifying embedding model environment.
+"%VENV_PY%" -c "import os, sys; from auto_index_mcp.embedding.backend import resolve_embedding_model_path; path = resolve_embedding_model_path(); raise SystemExit(0 if path and str(path) == os.environ.get('AUTO_INDEX_EMBEDDING_MODEL') else 1)" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    set "FAIL_REASON=Embedding model environment verification failed."
+    goto fail
+)
+
 echo Verifying MCP server entrypoint.
 >> "%LOG_FILE%" echo %DATE% %TIME% Verifying MCP server entrypoint.
 "%VENV_PY%" -m auto_index_mcp.server --help >> "%LOG_FILE%" 2>&1
@@ -110,12 +127,13 @@ echo Config example: %CONFIG_FILE%
 echo Result file: %RESULT_FILE%
 echo Log file: %LOG_FILE%
 echo.
+echo This script updates the user AUTO_INDEX_EMBEDDING_MODEL environment variable.
+echo Restart an already-running MCP client so it can inherit the new environment.
 echo This script does not modify MCP client settings and does not start a backend service.
 goto done
 
 :write_config
 set "CONFIG_PY=%VENV_PY:\=\\%"
-set "CONFIG_MODEL=%MODEL_DIR:\=\\%"
 (
     echo {
     echo   "mcpServers": {
@@ -124,10 +142,7 @@ set "CONFIG_MODEL=%MODEL_DIR:\=\\%"
     echo       "args": [
     echo         "-m",
     echo         "auto_index_mcp.server"
-    echo       ],
-    echo       "env": {
-    echo         "AUTO_INDEX_EMBEDDING_MODEL": "%CONFIG_MODEL%"
-    echo       }
+    echo       ]
     echo     }
     echo   }
     echo }

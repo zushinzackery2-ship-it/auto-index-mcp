@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from .background_indexer import BackgroundIndexer, PHASE_EMBEDDING
 from .config import DEFAULT_WATCH_DEBOUNCE_SECONDS
-from ..embedding.backend import create_embedder
+from ..embedding.backend import create_embedder, resolve_embedding_model_path
 from ..embedding.indexer import SymbolEmbedder
 from ..indexing.snapshot import snapshot_from_index, take_watch_snapshot, update_watch_snapshot
 from ..indexing.updater import IndexUpdater
@@ -177,18 +177,18 @@ class ServiceWatcherMixin:
             return None
         existing = self.embedding_background
         if existing is not None and existing.is_running():
-            model = indexer.backend.name if indexer is not None else None
+            model = _embedding_model_name(indexer)
             return {"status": "embedding-in-background", "model": model}
         if indexer is None:
             worker = BackgroundIndexer(
                 lambda background: self._load_and_embed_project(background, root, store)
             )
-            model = None
+            model = _embedding_model_name(None)
         else:
             worker = BackgroundIndexer(
                 lambda background: self._run_full_embedding(background, root, store, indexer)
             )
-            model = indexer.backend.name
+            model = _embedding_model_name(indexer)
         self.embedding_background = worker
         worker.start()
         return {"status": "embedding-in-background", "model": model}
@@ -235,3 +235,10 @@ class ServiceWatcherMixin:
                         indexer.store.delete_file(conn, path)
             except Exception as exc:
                 self.last_errors.append(f"embedding-delete: {exc}")
+
+
+def _embedding_model_name(indexer: SymbolEmbedder | None) -> str | None:
+    if indexer is not None:
+        return indexer.backend.name
+    model_path = resolve_embedding_model_path()
+    return model_path.name if model_path is not None else None

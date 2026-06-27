@@ -68,6 +68,10 @@ def test_enable_wait_window_does_not_wait_for_embedding_model_load(
     project = tmp_path / "project"
     project.mkdir()
     (project / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "model.onnx").write_text("fake", encoding="utf-8")
+    (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
     started = threading.Event()
     release = threading.Event()
 
@@ -81,6 +85,7 @@ def test_enable_wait_window_does_not_wait_for_embedding_model_load(
         "auto_index_mcp.core.service_watcher.create_embedder",
         slow_create_embedder,
     )
+    monkeypatch.setenv("AUTO_INDEX_EMBEDDING_MODEL", str(model_dir))
     service = AutoIndexService(index_root=tmp_path / "index")
 
     try:
@@ -89,7 +94,7 @@ def test_enable_wait_window_does_not_wait_for_embedding_model_load(
         elapsed = time.perf_counter() - start
 
         assert result["status"] == "indexed"
-        assert result["embedding"] == {"status": "embedding-in-background", "model": None}
+        assert result["embedding"] == {"status": "embedding-in-background", "model": "model"}
         assert elapsed < 1.0
         assert started.wait(1.0)
     finally:
