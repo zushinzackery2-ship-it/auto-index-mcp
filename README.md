@@ -213,7 +213,7 @@ auto-index-mcp/
 install_windows.bat
 ```
 
-脚本会创建 `.venv`，以 `.[semantic]` 安装当前包和 ONNX 语义依赖，验证 MCP 入口，并生成 `mcp-client-config.windows.json` 配置示例。脚本不会自动修改 MCP 客户端配置，也不需要手动启动后端服务。
+脚本会创建 `.venv`，以 `.[semantic]` 安装当前包和 ONNX 语义依赖，验证 MCP 入口，并生成 `mcp-client-config.windows.json` 配置示例。配置示例会把 `AUTO_INDEX_EMBEDDING_MODEL` 写入 MCP server 的 `env`，指向仓库随附的 `models/minilm-onnx/`，agent 侧不需要再单独配置模型路径。脚本不会自动修改 MCP 客户端配置，也不需要手动启动后端服务。
 
 ### 手动安装
 

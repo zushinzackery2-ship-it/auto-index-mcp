@@ -7,6 +7,7 @@ set "PROJECT_ROOT=%CD%"
 set "VENV_DIR=%PROJECT_ROOT%\.venv"
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 set "CONFIG_FILE=%PROJECT_ROOT%\mcp-client-config.windows.json"
+set "MODEL_DIR=%PROJECT_ROOT%\models\minilm-onnx"
 set "RESULT_FILE=%PROJECT_ROOT%\install_result.txt"
 set "LOG_FILE=%PROJECT_ROOT%\install_windows.log"
 set "PYTHON_CMD="
@@ -21,6 +22,16 @@ echo Project root: %PROJECT_ROOT%
 
 if not exist "%PROJECT_ROOT%\pyproject.toml" (
     set "FAIL_REASON=pyproject.toml was not found. Run this script from the auto-index-mcp directory."
+    goto fail
+)
+
+if not exist "%MODEL_DIR%\model.onnx" (
+    set "FAIL_REASON=Bundled embedding model was not found: %MODEL_DIR%\model.onnx"
+    goto fail
+)
+
+if not exist "%MODEL_DIR%\tokenizer.json" (
+    set "FAIL_REASON=Bundled embedding tokenizer was not found: %MODEL_DIR%\tokenizer.json"
     goto fail
 )
 
@@ -83,6 +94,7 @@ call :write_config
     echo status=success
     echo project_root=%PROJECT_ROOT%
     echo python=%VENV_PY%
+    echo embedding_model=%MODEL_DIR%
     echo config_example=%CONFIG_FILE%
     echo log=%LOG_FILE%
     echo.
@@ -103,6 +115,7 @@ goto done
 
 :write_config
 set "CONFIG_PY=%VENV_PY:\=\\%"
+set "CONFIG_MODEL=%MODEL_DIR:\=\\%"
 (
     echo {
     echo   "mcpServers": {
@@ -111,7 +124,10 @@ set "CONFIG_PY=%VENV_PY:\=\\%"
     echo       "args": [
     echo         "-m",
     echo         "auto_index_mcp.server"
-    echo       ]
+    echo       ],
+    echo       "env": {
+    echo         "AUTO_INDEX_EMBEDDING_MODEL": "%CONFIG_MODEL%"
+    echo       }
     echo     }
     echo   }
     echo }
