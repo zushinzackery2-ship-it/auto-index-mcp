@@ -173,17 +173,25 @@ class ServiceWatcherMixin:
     ) -> dict[str, Any] | None:
         indexer = indexer or self.embedding_indexer
         store = store or self.store
-        if indexer is None or store is None:
+        if store is None:
             return None
         existing = self.embedding_background
         if existing is not None and existing.is_running():
-            return {"status": "embedding-in-background", "model": indexer.backend.name}
-        worker = BackgroundIndexer(
-            lambda background: self._run_full_embedding(background, root, store, indexer)
-        )
+            model = indexer.backend.name if indexer is not None else None
+            return {"status": "embedding-in-background", "model": model}
+        if indexer is None:
+            worker = BackgroundIndexer(
+                lambda background: self._load_and_embed_project(background, root, store)
+            )
+            model = None
+        else:
+            worker = BackgroundIndexer(
+                lambda background: self._run_full_embedding(background, root, store, indexer)
+            )
+            model = indexer.backend.name
         self.embedding_background = worker
         worker.start()
-        return {"status": "embedding-in-background", "model": indexer.backend.name}
+        return {"status": "embedding-in-background", "model": model}
 
     def _run_full_embedding(
         self,

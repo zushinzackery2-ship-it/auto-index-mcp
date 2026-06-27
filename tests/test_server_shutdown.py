@@ -12,8 +12,13 @@ class DummyService:
         self.stopped = 0
         self.background = None
 
-    def enable_reusing_index(self, root_path: str, rebuild: bool = False) -> dict:
-        self.enabled.append((root_path, rebuild))
+    def enable_reusing_index(
+        self,
+        root_path: str,
+        rebuild: bool = False,
+        wait_seconds: float = 0.0,
+    ) -> dict:
+        self.enabled.append((root_path, rebuild, wait_seconds))
         return {"root": root_path, "updated_at": 1.0}
 
     def start_watcher(self, wait_ready: bool = True) -> dict:
@@ -62,7 +67,7 @@ def test_main_stops_watcher_when_run_returns(monkeypatch: pytest.MonkeyPatch) ->
 
     server.main()
 
-    assert service.enabled == [("project", False)]
+    assert service.enabled == [("project", False, server.DEFAULT_ENABLE_REBUILD_WAIT_SECONDS)]
     assert service.started == 1
     assert service.stopped == 1
     assert mcp.runs == ["stdio"]
@@ -90,7 +95,7 @@ def test_main_stops_watcher_when_run_raises(monkeypatch: pytest.MonkeyPatch) -> 
     with pytest.raises(RuntimeError, match="server stopped"):
         server.main()
 
-    assert service.enabled == [("project", False)]
+    assert service.enabled == [("project", False, server.DEFAULT_ENABLE_REBUILD_WAIT_SECONDS)]
     assert service.started == 1
     assert service.stopped == 1
     assert mcp.settings.port == 9000

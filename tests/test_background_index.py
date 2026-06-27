@@ -9,6 +9,7 @@ from auto_index_mcp.core.background_indexer import (
     STATE_ERROR,
 )
 from auto_index_mcp.core.service import AutoIndexService
+from auto_index_mcp.mcp_api.lifecycle import start_or_defer_auto_watch
 
 
 def test_background_indexer_runs_work_and_reports_done() -> None:
@@ -190,3 +191,56 @@ def test_service_status_exposes_background_index(tmp_path: Path) -> None:
     status = service.status()
     assert "background_index" in status
     assert status["background_index"]["state"] == STATE_DONE
+
+
+def test_auto_watch_race_guard_uses_successful_background_result() -> None:
+    service = _AutoWatchService()
+    background = BackgroundIndexer(lambda indexer: {"status": "indexed", "updated_at": 1.0})
+    background.start()
+    assert background.wait(5.0)
+    service.background = background
+
+    result = start_or_defer_auto_watch(service, {"status": "indexing-in-background"})
+
+    assert result["watcher"] == {"running": True}
+    assert service.started == 1
+    assert service.deferred is False
+
+
+def test_auto_watch_race_guard_does_not_start_after_background_error() -> None:
+    service = _AutoWatchService()
+
+    def fail(indexer: BackgroundIndexer) -> dict:
+        raise RuntimeError("build failed")
+
+    background = BackgroundIndexer(fail)
+    background.start()
+    assert background.wait(5.0)
+    service.background = background
+
+    result = start_or_defer_auto_watch(service, {"status": "indexing-in-background"})
+
+    assert "watcher" not in result
+    assert service.started == 0
+    assert service.deferred is False
+
+
+class _AutoWatchService:
+    def __init__(self) -> None:
+        self.background: BackgroundIndexer | None = None
+        self.started = 0
+        self.deferred = False
+
+    def can_start_auto_watch(self, result: dict | None) -> bool:
+        return result is not None and result.get("updated_at") == 1.0
+
+    def start_watcher(self, wait_ready: bool = False) -> dict:
+        _ = wait_ready
+        self.started += 1
+        return {"running": True}
+
+    def request_auto_watch_after_build(self) -> None:
+        self.deferred = True
+
+    def cancel_auto_watch_after_build(self) -> None:
+        self.deferred = False

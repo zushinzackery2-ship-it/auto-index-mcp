@@ -62,7 +62,7 @@
 
 MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容工具。旧的 `set_project_path()`、`find_files()`、`get_file_summary()`、`get_symbol_body()`、`search_code_advanced()` 已移除，请使用上表中的 native API。
 
-`auto_index_enable()` 会返回 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。首次设置或切换到一个已有索引根目录时会复用 `.auto-index-mcp/index.db`；需要强制全量刷新时使用 `auto_index_rebuild()`、`auto_index_enable(rebuild=True)` 或 CLI `--rebuild`，这些入口会派发后台重建并立即返回。若另一个 MCP 进程正在持有构建锁，本进程返回 `indexing-in-other-process`，不会在请求线程等待锁超时。
+`auto_index_enable()` 会返回 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。首次设置或切换到一个已有索引根目录时会复用 `.auto-index-mcp/index.db`；需要强制全量刷新时使用 `auto_index_rebuild()`、`auto_index_enable(rebuild=True)` 或 CLI `--rebuild`。MCP/CLI enable 会给代码索引 3 秒完成窗口：窗口内完成则直接返回 `status="indexed"`，否则返回 `status="indexing-in-background"` 并继续后台重建。embedding 模型加载和向量生成始终走独立后台任务，不占用这 3 秒窗口。若另一个 MCP 进程正在持有构建锁，本进程返回 `indexing-in-other-process`，不会在请求线程等待锁超时。
 
 索引边界默认读取项目根目录 `.gitignore`，并叠加内置排除目录（如 `.venv/`、`third-party/`、`node_modules/`、`.auto-index-mcp/`）和 `auto_index_ignore()` 配置的运行期模式。ignore 规则会同时约束源码扫描、child-index discovery 和 watcher snapshot；`.gitignore` 或运行期 ignore 变化会让旧索引失效，下一次启用会后台重建。
 

@@ -135,6 +135,35 @@ def test_dangling_check_ignores_protocol_type_helpers(tmp_path: Path) -> None:
     assert not any(finding.get("symbol") == "_Service" for finding in findings)
 
 
+def test_dangling_check_counts_calls_after_hash_inside_string(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text(
+        "\n".join(
+            [
+                "def caller(value):",
+                "    if value.startswith('#') or _helper(value):",
+                "        return True",
+                "    return False",
+                "",
+                "def _helper(value):",
+                "    return bool(value)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+
+    summary = service.file_summary("main.py")
+    helper = next(symbol for symbol in summary["symbols"] if symbol["name"] == "_helper")
+    findings = service.dangling_check()["findings"]
+
+    assert "caller" in helper["called_by"]
+    assert not any(finding.get("symbol") == "_helper" for finding in findings)
+
+
 def test_quality_tools_are_registered() -> None:
     class FakeMcp:
         def __init__(self) -> None:

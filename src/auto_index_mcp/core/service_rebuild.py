@@ -109,16 +109,21 @@ class ServiceRebuildMixin:
         finally:
             lock.release()
 
-    def _start_background_rebuild(self) -> dict[str, Any]:
+    def _start_background_rebuild(self, wait_seconds: float = 0.0) -> dict[str, Any]:
         """Dispatch a full-tree rebuild to the background indexer and return immediately.
 
         If a background rebuild is already running for this service, the call is
         idempotent and returns the in-progress status. This avoids duplicate
         scans when lifecycle code calls both enable_reusing_index and rebuild.
+        A positive wait budget gives small projects a chance to complete on the
+        request thread while larger projects still fall back to background status.
         """
         context = self._rebuild_context()
         existing = self.background
         if existing is not None and existing.is_running() and self._background_context_key == context.key:
+            completed = existing.wait(max(0.0, wait_seconds))
+            if completed:
+                return _completed_background_result(existing) or self._background_status()
             return self._background_status()
         indexer = BackgroundIndexer(
             lambda worker: self._run_rebuild_locked(worker, context),
@@ -126,7 +131,9 @@ class ServiceRebuildMixin:
         )
         self.background = indexer
         self._background_context_key = context.key
-        indexer.start(delay_seconds=0.25)
+        indexer.start()
+        if indexer.wait(max(0.0, wait_seconds)):
+            return _completed_background_result(indexer) or self._background_status()
         return self._background_status()
 
     def _run_rebuild_locked(self, indexer: BackgroundIndexer, context: RebuildContext) -> dict[str, Any]:
@@ -227,10 +234,7 @@ class ServiceRebuildMixin:
             self.last_errors = scan.errors[:50]
         if indexer is not None:
             indexer.set_phase(PHASE_EMBEDDING)
-        embedding_indexer = context.embedding_indexer or self._create_embedding_indexer(store)
-        if self._context_is_current(context):
-            self.embedding_indexer = embedding_indexer
-        embedding_meta = self._embed_after_full_rebuild(root, store, embedding_indexer)
+        embedding_meta = self._embed_after_full_rebuild(root, store, context.embedding_indexer)
         return {
             "status": "indexed",
             "root": scan.root,
@@ -271,3 +275,9 @@ class ServiceRebuildMixin:
             result,
             ignore_fingerprint(self.root_path, self.runtime_ignore_patterns()),
         )
+
+
+def _completed_background_result(indexer: BackgroundIndexer) -> dict[str, Any] | None:
+    status = indexer.status()
+    result = status.get("last_result")
+    return result if isinstance(result, dict) else None

@@ -7,8 +7,9 @@ from types import FrameType
 
 from mcp.server.fastmcp import FastMCP
 
+from ..core.config import DEFAULT_ENABLE_REBUILD_WAIT_SECONDS
 from ..core.service import AutoIndexService
-from .lifecycle import register_lifecycle_tools
+from .lifecycle import register_lifecycle_tools, start_or_defer_auto_watch
 from .navigation import register_navigation_tools
 from .quality import register_quality_tools
 from .search import register_search_tools
@@ -64,12 +65,13 @@ def main() -> None:
     args = _parse_args()
     try:
         if args.project_path:
-            result = _service.enable_reusing_index(args.project_path, rebuild=args.rebuild and not args.no_rebuild)
+            result = _service.enable_reusing_index(
+                args.project_path,
+                rebuild=args.rebuild and not args.no_rebuild,
+                wait_seconds=DEFAULT_ENABLE_REBUILD_WAIT_SECONDS,
+            )
             if not args.no_watch:
-                if _service.can_start_auto_watch(result):
-                    _service.start_watcher(wait_ready=False)
-                elif result.get("status") == "indexing-in-background":
-                    _service.request_auto_watch_after_build()
+                start_or_defer_auto_watch(_service, result)
         if args.transport != "stdio":
             mcp.settings.port = args.port
         mcp.run(transport=args.transport)

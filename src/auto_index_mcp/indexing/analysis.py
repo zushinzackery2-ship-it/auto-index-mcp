@@ -4,7 +4,7 @@ import re
 from dataclasses import replace
 
 from ..core.models import FileRecord, SymbolRecord
-from ..core._utils import strip_comments
+from ..core._utils import strip_comments, strip_string_literals
 from .nesting import annotate_symbol_nesting
 
 CALL_RE = re.compile(r"\b([A-Za-z_][\w]*)\s*\(")
@@ -117,7 +117,8 @@ def _complexity(lines: list[str]) -> int:
 def _calls(lines: list[str], own_name: str) -> list[str]:
     calls: list[str] = []
     for line in lines:
-        for name in CALL_RE.findall(strip_comments(line)):
+        searchable = strip_comments(strip_string_literals(line))
+        for name in CALL_RE.findall(searchable):
             if name == own_name or name in CONTROL_NAMES:
                 continue
             if name not in calls:

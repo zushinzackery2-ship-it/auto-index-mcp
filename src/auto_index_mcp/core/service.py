@@ -113,17 +113,22 @@ class AutoIndexService(
             return self.rebuild_sync()
         return self.status()
 
-    def enable_reusing_index(self, root_path: str, rebuild: bool = False) -> dict[str, Any]:
+    def enable_reusing_index(
+        self,
+        root_path: str,
+        rebuild: bool = False,
+        wait_seconds: float = 0.0,
+    ) -> dict[str, Any]:
         root = Path(root_path).resolve()
         if rebuild:
             # Explicit forced rebuild: dispatch to background thread and return immediately.
             self.enable(str(root), rebuild=False, refresh_embedder=False)
-            return self._start_background_rebuild()
+            return self._start_background_rebuild(wait_seconds=wait_seconds)
         db_existed = self._db_path(root).exists()
         result = self.enable(str(root), rebuild=False, refresh_embedder=False)
         if db_existed and self.can_reuse_index_for(root):
             return self.status()
-        return self._start_background_rebuild()
+        return self._start_background_rebuild(wait_seconds=wait_seconds)
 
     def disable(self) -> dict[str, Any]:
         self.cancel_auto_watch_after_build()

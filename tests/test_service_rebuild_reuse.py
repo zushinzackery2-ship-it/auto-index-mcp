@@ -1,3 +1,5 @@
+import threading
+import time
 from pathlib import Path
 
 from auto_index_mcp.core.service import AutoIndexService
@@ -43,6 +45,89 @@ def test_first_build_dispatches_background_then_allows_watch(tmp_path: Path) -> 
 
     # Once the build finishes the index is reusable and a watcher can start.
     assert service.can_start_auto_watch(service.status()) is True
+
+
+def test_enable_wait_window_returns_indexed_when_build_finishes_quickly(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    result = service.enable_reusing_index(str(project), wait_seconds=3.0)
+
+    assert result["status"] == "indexed"
+    assert result["file_count"] == 1
+    assert service.background is not None
+    assert service.background.status()["state"] == "done"
+
+
+def test_enable_wait_window_does_not_wait_for_embedding_model_load(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_create_embedder(env=None):
+        _ = env
+        started.set()
+        release.wait(5.0)
+        return None
+
+    monkeypatch.setattr(
+        "auto_index_mcp.core.service_watcher.create_embedder",
+        slow_create_embedder,
+    )
+    service = AutoIndexService(index_root=tmp_path / "index")
+
+    try:
+        start = time.perf_counter()
+        result = service.enable_reusing_index(str(project), wait_seconds=1.0)
+        elapsed = time.perf_counter() - start
+
+        assert result["status"] == "indexed"
+        assert result["embedding"] == {"status": "embedding-in-background", "model": None}
+        assert elapsed < 1.0
+        assert started.wait(1.0)
+    finally:
+        release.set()
+    assert service.embedding_background is not None
+    assert service.embedding_background.wait(10.0)
+
+
+def test_enable_wait_window_falls_back_to_background_when_build_is_slow(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    gate = threading.Event()
+    real = service._rebuild_now
+
+    def blocked(indexer=None, context=None):
+        gate.wait(5.0)
+        return real(indexer, context)
+
+    monkeypatch.setattr(service, "_rebuild_now", blocked)
+    wait_seconds = 0.2
+    try:
+        start = time.perf_counter()
+        result = service.enable_reusing_index(str(project), wait_seconds=wait_seconds)
+        elapsed = time.perf_counter() - start
+
+        assert elapsed >= wait_seconds * 0.75
+        assert elapsed < 1.0
+        assert result["status"] == "indexing-in-background"
+    finally:
+        gate.set()
+    assert service.background is not None
+    assert service.background.wait(10.0)
 
 
 def test_rebuild_reuse_if_fresh_skips_rescan(tmp_path: Path, monkeypatch) -> None:
