@@ -77,9 +77,10 @@ def _record_to_item(record: FileRecord) -> dict[str, Any]:
 
 def _unused_symbol_findings(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
     findings = []
+    called_member_parents = _called_member_parent_names(files)
     for item in files:
         for symbol in item["symbols"]:
-            if not _is_dangling_candidate(item, symbol) or symbol.get("called_by"):
+            if not _is_dangling_candidate(item, symbol, called_member_parents) or symbol.get("called_by"):
                 continue
             confidence = "high" if symbol["name"].startswith("_") and not _is_dunder(symbol["name"]) else "medium"
             findings.append(
@@ -97,13 +98,36 @@ def _unused_symbol_findings(files: list[dict[str, Any]]) -> list[dict[str, Any]]
     return findings
 
 
-def _is_dangling_candidate(item: dict[str, Any], symbol: dict[str, Any]) -> bool:
+def _called_member_parent_names(files: list[dict[str, Any]]) -> set[str]:
+    return {
+        symbol["parent_name"]
+        for item in files
+        for symbol in item["symbols"]
+        if symbol.get("parent_name") and _has_external_member_caller(item["path"], symbol)
+    }
+
+
+def _has_external_member_caller(path: str, symbol: dict[str, Any]) -> bool:
+    parent = symbol.get("parent_name")
+    structural_callers = {parent, f"{path}::{parent}"}
+    return any(caller not in structural_callers for caller in symbol.get("called_by", []))
+
+
+def _is_dangling_candidate(
+    item: dict[str, Any],
+    symbol: dict[str, Any],
+    called_member_parents: set[str],
+) -> bool:
     name = symbol["name"]
     if symbol["kind"] not in CALLABLE_KINDS:
         return False
     if _is_dunder(name) or name in ENTRYPOINT_NAMES:
         return False
     if name.startswith("test_") or name.startswith("Test"):
+        return False
+    if symbol["kind"] == "class" and (name.endswith("Mixin") or name in called_member_parents):
+        return False
+    if symbol["kind"] == "function" and name.startswith("register_") and name.endswith("_tools"):
         return False
     if _is_protocol_symbol(symbol):
         return False

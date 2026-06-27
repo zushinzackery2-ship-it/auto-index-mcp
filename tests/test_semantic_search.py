@@ -138,6 +138,7 @@ def test_bundled_model_enables_service_embeddings(monkeypatch, tmp_path: Path) -
     model_dir = _make_model_dir(tmp_path / "model")
     project = tmp_path / "project"
     _make_project(project)
+    monkeypatch.delenv("AUTO_INDEX_EMBEDDING_MODEL", raising=False)
     monkeypatch.setattr(embedding_backend, "_find_bundled_model_dir", lambda: model_dir)
     monkeypatch.setattr("auto_index_mcp.embedding.onnx_backend.OnnxEmbedder", FakeOnnxEmbedder)
 

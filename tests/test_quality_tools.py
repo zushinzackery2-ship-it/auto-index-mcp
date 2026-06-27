@@ -135,6 +135,50 @@ def test_dangling_check_ignores_protocol_type_helpers(tmp_path: Path) -> None:
     assert not any(finding.get("symbol") == "_Service" for finding in findings)
 
 
+def test_dangling_check_ignores_dynamic_wiring_helpers(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text(
+        "\n".join(
+            [
+                "class ServiceMixin:",
+                "    def ready(self):",
+                "        return True",
+                "",
+                "class Factory:",
+                "    @classmethod",
+                "    def create(cls):",
+                "        return cls()",
+                "",
+                "def register_search_tools(mcp, service):",
+                "    return service",
+                "",
+                "def boot():",
+                "    return Factory.create()",
+                "",
+                "class UnusedBox:",
+                "    def method(self):",
+                "        return None",
+                "",
+                "def unused():",
+                "    return None",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+
+    dangling_symbols = {finding.get("symbol") for finding in service.dangling_check()["findings"]}
+
+    assert "ServiceMixin" not in dangling_symbols
+    assert "Factory" not in dangling_symbols
+    assert "register_search_tools" not in dangling_symbols
+    assert "UnusedBox" in dangling_symbols
+    assert "unused" in dangling_symbols
+
+
 def test_dangling_check_counts_calls_after_hash_inside_string(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

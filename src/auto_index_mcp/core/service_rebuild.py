@@ -12,10 +12,11 @@ from .background_indexer import (
     PHASE_SCANNING,
     PHASE_WRITING,
 )
-from .index_policy import can_reuse_index, can_start_auto_watch
+from .index_policy import can_reuse_index, can_start_auto_watch_policy
 from .ignore_rules import ignore_fingerprint
 from .quality_dangling import with_project_quality_findings
 from .rebuild_context import RebuildContext
+from .tree_progress import TreeProgress
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.active_sources import annotate_active_sources
 from ..indexing.scanner import SourceScanner
@@ -42,6 +43,7 @@ class ServiceRebuildMixin:
         background: BackgroundIndexer | None
         embedding_indexer: SymbolEmbedder | None
         watcher: Any
+        tree_progress: TreeProgress
         enabled: bool
         last_errors: list[str]
         _auto_watch_after_build: bool
@@ -204,18 +206,26 @@ class ServiceRebuildMixin:
         if indexer is not None:
             indexer.set_phase(PHASE_SCANNING)
         ignore_patterns = self.runtime_ignore_patterns()
+        progress = TreeProgress()
+        progress.start(root)
+        if self._context_is_current(context):
+            self.tree_progress = progress
         children = discover_child_indexes(
             root,
             store.db_path,
             ignore_patterns=ignore_patterns,
         )
         boundary_roots = [Path(child.root) for child in children]
-        scan = SourceScanner(
-            str(root),
-            extra_excludes=ignore_patterns,
-            existing_records=existing,
-            boundary_roots=boundary_roots,
-        ).scan()
+        try:
+            scan = SourceScanner(
+                str(root),
+                extra_excludes=ignore_patterns,
+                existing_records=existing,
+                boundary_roots=boundary_roots,
+                tree_progress=progress,
+            ).scan()
+        finally:
+            progress.finish()
         if indexer is not None:
             indexer.set_phase(PHASE_ANALYZING)
         active_records = annotate_active_sources(root, scan.records)
@@ -269,7 +279,7 @@ class ServiceRebuildMixin:
     def can_start_auto_watch(self, result: dict[str, Any] | None) -> bool:
         if self.root_path is None:
             return False
-        return can_start_auto_watch(
+        return can_start_auto_watch_policy(
             self.store,
             self.root_path,
             result,

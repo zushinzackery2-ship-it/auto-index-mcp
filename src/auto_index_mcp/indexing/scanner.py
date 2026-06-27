@@ -4,6 +4,7 @@ import fnmatch
 import hashlib
 import os
 import re
+from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from ..core.config import (
 )
 from ..core.ignore_rules import IgnoreRules
 from ..core.models import FileRecord, ScanResult, SymbolRecord
+from ..core.tree_progress import TreeProgress
 from ..core._utils import is_relative_to
 from ..core.quality_dangling import file_quality_findings
 from ..core.text_decode import decode_text
@@ -32,6 +34,7 @@ class SourceScanner:
         max_bytes: int = 2 * 1024 * 1024,
         existing_records: dict[str, dict] | None = None,
         boundary_roots: list[Path] | None = None,
+        tree_progress: TreeProgress | None = None,
     ) -> None:
         self.root = Path(root).resolve()
         self.extra_excludes = extra_excludes or []
@@ -39,6 +42,7 @@ class SourceScanner:
         self.existing_records = existing_records or {}
         self.boundary_roots = [path.resolve() for path in boundary_roots or []]
         self.ignore_rules = IgnoreRules.from_root(self.root, self.extra_excludes)
+        self.tree_progress = tree_progress
 
     def scan(self) -> ScanResult:
         records: list[FileRecord] = []
@@ -60,9 +64,12 @@ class SourceScanner:
                 reused_record = self._reuse_record_if_current(target)
                 if reused_record:
                     records.append(reused_record)
+                    self._note_progress_file(reused_record)
                     reused += 1
                     continue
-                records.append(self._read_record(target))
+                record = self._read_record(target)
+                records.append(record)
+                self._note_progress_file(record)
             except (OSError, UnicodeDecodeError, ValueError) as exc:
                 errors.append(f"{self._display_path(path)}: {exc}")
                 continue
@@ -88,8 +95,7 @@ class SourceScanner:
             for pattern in self.extra_excludes
         )
 
-    def _iter_files(self) -> list[Path]:
-        files: list[Path] = []
+    def _iter_files(self) -> Iterator[Path]:
         for dir_path, dir_names, file_names in os.walk(self.root):
             current = Path(dir_path)
             dir_names[:] = [
@@ -97,8 +103,16 @@ class SourceScanner:
                 for name in dir_names
                 if not self._should_skip_dir(current / name)
             ]
-            files.extend(current / name for name in file_names)
-        return files
+            if self.tree_progress is not None:
+                self.tree_progress.note_directory(current, [current / name for name in dir_names])
+            for name in file_names:
+                yield current / name
+            if self.tree_progress is not None:
+                self.tree_progress.finish_directory(current)
+
+    def _note_progress_file(self, record: FileRecord) -> None:
+        if self.tree_progress is not None:
+            self.tree_progress.note_file(record.path, record.name, record.parent, record.language)
 
     def _should_skip_dir(self, path: Path) -> bool:
         try:

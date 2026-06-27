@@ -27,7 +27,7 @@ def can_reuse_index(
     return metadata.get("ignore_fingerprint") == ignore_fingerprint
 
 
-def can_start_auto_watch(
+def can_start_auto_watch_policy(
     store: IndexStore | None,
     root: Path | None,
     result: dict[str, Any] | None,

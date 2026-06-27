@@ -5,7 +5,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 EMBEDDING_DIM_DEFAULT = 384
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
@@ -126,10 +126,3 @@ def create_embedder(env: dict[str, str] | None = None) -> EmbeddingBackend | Non
         return None
     _EMBEDDER_CACHE[cache_key] = backend
     return backend
-
-
-def coerce_backend(value: Any) -> EmbeddingBackend:
-    """Validate/normalize an externally-supplied backend (used by tests)."""
-    if isinstance(value, EmbeddingBackend):
-        return value
-    raise TypeError("embedding backend must implement the EmbeddingBackend protocol")

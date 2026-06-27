@@ -2,6 +2,7 @@ import threading
 from pathlib import Path
 
 from auto_index_mcp.core.service import AutoIndexService
+from auto_index_mcp.indexing.scanner import SourceScanner
 
 
 def _blocking_rebuild(service: AutoIndexService, gate: threading.Event):
@@ -49,6 +50,50 @@ def test_first_build_search_returns_not_ready(tmp_path: Path, monkeypatch) -> No
     assert res2["format"] == "auto_index_symbol_search_indexed"
     assert "index_status" not in res2
     assert any(r["name"] == "alpha" for r in res2["items"])
+
+
+def test_first_build_tree_returns_partial_progress(tmp_path: Path, monkeypatch) -> None:
+    project = tmp_path / "project"
+    deep = project / "src" / "deep"
+    deep.mkdir(parents=True)
+    (project / "src" / "app.py").write_text("VISIBLE = True\n", encoding="utf-8")
+    (deep / "more.py").write_text("def deeper():\n    return 1\n", encoding="utf-8")
+
+    blocked = threading.Event()
+    release = threading.Event()
+    real_read = SourceScanner._read_record
+
+    def slow_read(self: SourceScanner, path: Path):
+        rel = str(path.resolve().relative_to(self.root)).replace("\\", "/")
+        if rel == "src/deep/more.py":
+            blocked.set()
+            release.wait(5.0)
+        return real_read(self, path)
+
+    monkeypatch.setattr(SourceScanner, "_read_record", slow_read)
+    service = AutoIndexService(index_root=tmp_path / "index")
+    try:
+        service.enable_reusing_index(str(project))
+        assert blocked.wait(2.0)
+
+        tree = service.tree_get(depth=2)
+        folders = {item["folder"]: item for item in tree["folders"]}
+
+        assert tree["format"] == "auto_index_tree_partial"
+        assert tree["index_status"]["ready"] is False
+        assert tree["index_status"]["partial"] is True
+        assert folders["src"]["file_count"] == 1
+        assert folders["src/deep"]["state"] == "indexing"
+        assert folders["src/deep"]["message"] == "inner is indexing"
+        assert service.query(text="VISIBLE")["format"] == "auto_index_not_ready"
+    finally:
+        release.set()
+
+    assert service.background is not None
+    assert service.background.wait(10.0)
+    indexed = service.tree_get(depth=2)
+    assert indexed["format"] == "auto_index_tree_indexed"
+    assert "index_status" not in indexed
 
 
 def test_rebuild_over_existing_index_marks_stale(tmp_path: Path, monkeypatch) -> None:

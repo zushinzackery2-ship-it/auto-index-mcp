@@ -6,12 +6,14 @@ from typing import Any, Protocol, cast
 from .navigation_format import compact_file, overview_result, tree_result
 from .pagination import PageRequest
 from .path_filters import is_glob_pattern
+from .tree_progress import TreeProgress
 from ..indexing.store import IndexStore
 from ..workspace.view import WorkspaceView
 
 
 class _NavigationService(Protocol):
     root_path: Path | None
+    tree_progress: TreeProgress
 
     @property
     def view(self) -> WorkspaceView:
@@ -24,6 +26,9 @@ class _NavigationService(Protocol):
         ...
 
     def _with_index_status(self, result: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    def _index_status(self) -> dict[str, Any] | None:
         ...
 
     def _not_ready_response(self) -> dict[str, Any] | None:
@@ -40,6 +45,12 @@ class ServiceNavigationMixin:
     def tree_get(self, root_path: str = "", depth: int = 2, limit: int = 120) -> dict[str, Any]:
         service = cast(_NavigationService, self)
         service._store_context()
+        status = service._index_status()
+        if status is not None and not status["ready"]:
+            partial = service.tree_progress.snapshot(root_path, depth, limit)
+            if partial is not None:
+                partial["index_status"] = _partial_tree_status(status, partial)
+                return partial
         files = service.view.all_files()
         return service._with_index_status(tree_result(files, root_path, depth, limit))
 
@@ -146,3 +157,13 @@ class ServiceNavigationMixin:
         service = cast(_NavigationService, self)
         service._store_context()
         return service.view.all_files()
+
+
+def _partial_tree_status(status: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(status)
+    merged["partial"] = True
+    merged["tree"] = {
+        "requested_depth": result["requested_depth"],
+        "completed_depth": result["completed_depth"],
+    }
+    return merged

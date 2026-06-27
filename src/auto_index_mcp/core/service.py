@@ -14,6 +14,7 @@ from .service_rebuild import ServiceRebuildMixin
 from .service_search import ServiceSearchMixin
 from .service_semantic import ServiceSemanticMixin
 from .service_watcher import ServiceWatcherMixin
+from .tree_progress import TreeProgress
 from ..embedding.indexer import SymbolEmbedder
 from ..workspace.view import WorkspaceView
 from ..indexing.store import IndexStore
@@ -59,6 +60,7 @@ class AutoIndexService(
         self._auto_watch_context_key: tuple[Path, Path] | None = None
         self._background_context_key: tuple[Path, Path] | None = None
         self._runtime_ignore_patterns: list[str] = []
+        self.tree_progress = TreeProgress()
         # Use a shared view with TTL-based caching for better incremental update responsiveness
         self._view: WorkspaceView | None = None
         self._view_created_at: float = 0.0
@@ -104,6 +106,7 @@ class AutoIndexService(
         self.index_root = self.index_root_override or project_index_root(root)
         self.store = IndexStore(self._db_path(root))
         self.store.initialize()
+        self.tree_progress = TreeProgress()
         if refresh_embedder:
             self._refresh_embedder()
         else:
@@ -133,6 +136,7 @@ class AutoIndexService(
     def disable(self) -> dict[str, Any]:
         self.cancel_auto_watch_after_build()
         self.stop_watcher()
+        self.tree_progress.clear()
         self.enabled = False
         result = self.status()
         if self.background is not None and self.background.is_running():
@@ -221,6 +225,7 @@ class AutoIndexService(
             self.enabled = False
         else:
             store.clear()
+        self.tree_progress.clear()
         self._invalidate_view_cache()
         return self.status()
 
