@@ -48,3 +48,5 @@ class ScanResult:
     skipped: int
     reused: int
     errors: list[str]
+    oversized_paths: list[str] = field(default_factory=list)
+    privileged_paths: list[str] = field(default_factory=list)

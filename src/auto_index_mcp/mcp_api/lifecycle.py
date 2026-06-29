@@ -36,16 +36,18 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
     def auto_index_ignore(
         mode: Literal["status", "add", "replace", "clear"] = "status",
         patterns: list[str] | None = None,
+        target: Literal["ignore", "privileged"] = "ignore",
     ) -> dict[str, Any]:
-        """View or configure runtime ignore patterns.
+        """View or configure runtime ignore and privileged patterns.
 
         ``.gitignore`` is loaded automatically from the active project root.
         Runtime patterns use gitignore-style syntax and affect the next rebuild
         or watcher start. ``mode="add"`` appends unique patterns,
         ``mode="replace"`` overwrites runtime patterns, and ``mode="clear"``
-        removes runtime patterns.
+        removes runtime patterns. ``target="privileged"`` edits the explicit
+        allow-list for oversized source files that should be indexed anyway.
         """
-        return service.configure_ignore(patterns, mode)
+        return service.configure_ignore(patterns, mode, target)
 
     @mcp.tool()
     def auto_index_rebuild() -> dict[str, Any]:
@@ -75,7 +77,7 @@ def start_or_defer_auto_watch(
     if service.can_start_auto_watch(result):
         result["watcher"] = service.start_watcher(wait_ready=False)
         return result
-    if result.get("status") != "indexing-in-background":
+    if result.get("status") not in ("indexing-in-background", "already-running"):
         return result
     service.request_auto_watch_after_build()
     background = service.background

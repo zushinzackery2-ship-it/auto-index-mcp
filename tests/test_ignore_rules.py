@@ -46,6 +46,53 @@ def test_runtime_ignore_patterns_affect_rebuild(tmp_path: Path) -> None:
     assert [item["path"] for item in service.all_files()] == ["main.py"]
 
 
+def test_oversized_source_is_auto_ignored_and_reported(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    _write_oversized_dump(project / "dump.cs")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    result = service.enable(str(project), rebuild=True)
+
+    assert result["file_count"] == 0
+    assert result["auto_ignored_paths"] == ["dump.cs"]
+    assert service.ignore_status()["auto_patterns"] == ["/dump.cs"]
+    assert service.resolve_path("dump.cs")["items"] == []
+
+
+def test_privileged_patterns_index_oversized_dump(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    _write_oversized_dump(project / "dump.cs")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    status = service.configure_ignore(["/dump.cs"], mode="add", target="privileged")
+    result = service.enable(str(project), rebuild=True)
+
+    assert status["privileged_patterns"] == ["/dump.cs"]
+    assert result["file_count"] == 1
+    assert result["privileged_paths"] == ["dump.cs"]
+    assert service.file_summary("dump.cs")["path"] == "dump.cs"
+
+
+def test_privileged_patterns_are_loaded_from_metadata(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    _write_oversized_dump(project / "dump.cs")
+
+    index_root = tmp_path / "index"
+    first = AutoIndexService(index_root=index_root)
+    first.configure_ignore(["/dump.cs"], mode="add", target="privileged")
+    first.enable(str(project), rebuild=True)
+
+    reused = AutoIndexService(index_root=index_root)
+    result = reused.enable_reusing_index(str(project), wait_seconds=3.0)
+
+    assert result["file_count"] == 1
+    assert reused.ignore_status()["privileged_patterns"] == ["/dump.cs"]
+    assert reused.file_summary("dump.cs")["path"] == "dump.cs"
+
+
 def test_gitignore_change_invalidates_reusable_index(tmp_path: Path) -> None:
     project = tmp_path / "project"
     generated = project / "generated"
@@ -94,3 +141,8 @@ def _write_child_index(root: Path) -> None:
     store = IndexStore(root / ".auto-index-mcp" / "index.db")
     store.initialize()
     store.replace_all(str(root.resolve()), [], [])
+
+
+def _write_oversized_dump(path: Path) -> None:
+    padding = "// padding data for oversized source\n" * 70_000
+    path.write_text("class DumpRoot {}\n" + padding, encoding="utf-8")

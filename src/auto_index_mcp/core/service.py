@@ -6,7 +6,8 @@ from typing import Any
 
 from .config import project_index_root
 from .background_indexer import BackgroundIndexer
-from .ignore_rules import IgnoreRules
+from .ignore_config import IgnoreConfig
+from .service_ignore import ServiceIgnoreMixin
 from .service_navigation import ServiceNavigationMixin
 from .service_index_state import ServiceIndexStateMixin
 from .service_quality import ServiceQualityMixin
@@ -28,6 +29,7 @@ _VIEW_CACHE_TTL_SECONDS = 0.5
 class AutoIndexService(
     ServiceNavigationMixin,
     ServiceIndexStateMixin,
+    ServiceIgnoreMixin,
     ServiceSearchMixin,
     ServiceQualityMixin,
     ServiceSemanticMixin,
@@ -59,7 +61,8 @@ class AutoIndexService(
         self._auto_watch_after_build = False
         self._auto_watch_context_key: tuple[Path, Path] | None = None
         self._background_context_key: tuple[Path, Path] | None = None
-        self._runtime_ignore_patterns: list[str] = []
+        self._ignore_config = IgnoreConfig()
+        self._ignore_config_dirty = False
         self.tree_progress = TreeProgress()
         # Use a shared view with TTL-based caching for better incremental update responsiveness
         self._view: WorkspaceView | None = None
@@ -81,6 +84,8 @@ class AutoIndexService(
             self._view = WorkspaceView(
                 self._store_context(),
                 ignore_patterns=self.runtime_ignore_patterns(),
+                auto_ignore_patterns=self.auto_ignore_patterns(),
+                privileged_patterns=self.privileged_ignore_patterns(),
             )
             self._view_created_at = now
         return self._view
@@ -106,6 +111,7 @@ class AutoIndexService(
         self.index_root = self.index_root_override or project_index_root(root)
         self.store = IndexStore(self._db_path(root))
         self.store.initialize()
+        self._load_ignore_config_from_store()
         self.tree_progress = TreeProgress()
         if refresh_embedder:
             self._refresh_embedder()
@@ -123,6 +129,8 @@ class AutoIndexService(
         wait_seconds: float = 0.0,
     ) -> dict[str, Any]:
         root = Path(root_path).resolve()
+        if self._enable_already_running(root):
+            return self._already_running_enable_status()
         if rebuild:
             # Explicit forced rebuild: dispatch to background thread and return immediately.
             self.enable(str(root), rebuild=False, refresh_embedder=False)
@@ -132,6 +140,27 @@ class AutoIndexService(
         if db_existed and self.can_reuse_index_for(root):
             return self.status()
         return self._start_background_rebuild(wait_seconds=wait_seconds)
+
+    def _enable_already_running(self, root: Path) -> bool:
+        background = self.background
+        if background is None or not background.is_running():
+            return False
+        if not self.enabled or self.root_path is None:
+            return False
+        index_root = self.index_root_override or project_index_root(root)
+        key = (root.resolve(), index_root.resolve())
+        return (
+            self.root_path.resolve() == root.resolve()
+            and self.index_root is not None
+            and self.index_root.resolve() == index_root.resolve()
+            and self._background_context_key == key
+        )
+
+    def _already_running_enable_status(self) -> dict[str, Any]:
+        result = self.status()
+        result["status"] = "already-running"
+        result["already_running"] = True
+        return result
 
     def disable(self) -> dict[str, Any]:
         self.cancel_auto_watch_after_build()
@@ -168,42 +197,6 @@ class AutoIndexService(
             result["background_index"] = self.background.status()
         if self.embedding_background is not None:
             result["embedding_background"] = self.embedding_background.status()
-        return result
-
-    def runtime_ignore_patterns(self) -> list[str]:
-        return list(self._runtime_ignore_patterns)
-
-    def ignore_status(self) -> dict[str, Any]:
-        root = self.root_path or Path.cwd()
-        rules = IgnoreRules.from_root(root, self.runtime_ignore_patterns())
-        status = rules.status()
-        status["root"] = str(root)
-        return status
-
-    def configure_ignore(
-        self,
-        patterns: list[str] | None = None,
-        mode: str = "status",
-    ) -> dict[str, Any]:
-        if mode == "status":
-            return self.ignore_status()
-        if mode == "clear":
-            self._runtime_ignore_patterns = []
-        elif mode == "replace":
-            self._runtime_ignore_patterns = _clean_patterns(patterns or [])
-        elif mode == "add":
-            merged = self.runtime_ignore_patterns()
-            for pattern in _clean_patterns(patterns or []):
-                if pattern not in merged:
-                    merged.append(pattern)
-            self._runtime_ignore_patterns = merged
-        else:
-            raise ValueError("mode must be one of: status, add, replace, clear")
-        self._invalidate_view_cache()
-        if self.watcher is not None and self.watcher.is_running():
-            self.stop_watcher()
-        result = self.ignore_status()
-        result["requires_rebuild"] = self.enabled
         return result
 
     def clear(self, delete_file: bool = False) -> dict[str, Any]:
@@ -252,7 +245,3 @@ class AutoIndexService(
         assert self.root_path is not None
         assert self.store is not None
         return self.root_path, self.store
-
-
-def _clean_patterns(patterns: list[str]) -> list[str]:
-    return [pattern.strip() for pattern in patterns if pattern and pattern.strip()]

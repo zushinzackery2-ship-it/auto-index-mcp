@@ -31,6 +31,8 @@ class ServiceWatcherMixin:
 
         def _ready_context(self) -> tuple[Path, IndexStore]: ...
         def runtime_ignore_patterns(self) -> list[str]: ...
+        def auto_ignore_patterns(self) -> list[str]: ...
+        def privileged_ignore_patterns(self) -> list[str]: ...
         def rebuild_sync(self, reuse_if_fresh: bool = ...) -> dict[str, Any]: ...
 
     def ensure_embedding_background(self) -> dict[str, Any]:
@@ -94,7 +96,14 @@ class ServiceWatcherMixin:
         previous = snapshot_from_index(root, store.file_headers(), child_indexes)
         ignores = self.runtime_ignore_patterns()
         current = take_watch_snapshot(root, child_roots, store.db_path, ignores)
-        return IndexUpdater(root, store, self.rebuild_sync, ignores).apply(previous, current)
+        return IndexUpdater(
+            root,
+            store,
+            self.rebuild_sync,
+            ignores,
+            self.auto_ignore_patterns(),
+            self.privileged_ignore_patterns(),
+        ).apply(previous, current)
 
     def stop_watcher(self) -> dict[str, Any]:
         if self.watcher:
@@ -111,7 +120,14 @@ class ServiceWatcherMixin:
         # The watcher runs on its own daemon thread, so a structural rebuild it
         # triggers should complete synchronously there rather than dispatching a
         # second background build the watcher would not wait on.
-        updater = IndexUpdater(root, store, self.rebuild_sync, self.runtime_ignore_patterns())
+        updater = IndexUpdater(
+            root,
+            store,
+            self.rebuild_sync,
+            self.runtime_ignore_patterns(),
+            self.auto_ignore_patterns(),
+            self.privileged_ignore_patterns(),
+        )
 
         def apply(previous, current):
             result = updater.apply(previous, current)

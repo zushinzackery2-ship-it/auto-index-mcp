@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .ignore_config import IgnoreConfig
 from ..embedding.indexer import SymbolEmbedder
 from ..indexing.store import IndexStore
 
@@ -15,6 +16,7 @@ class RebuildContext:
     index_root: Path
     store: IndexStore
     embedding_indexer: SymbolEmbedder | None
+    ignore_config: IgnoreConfig
 
     @property
     def key(self) -> tuple[Path, Path]:

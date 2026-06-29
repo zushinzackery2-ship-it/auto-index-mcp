@@ -159,8 +159,22 @@ def read_gitignore_patterns(root: Path) -> list[str]:
         return []
 
 
-def ignore_fingerprint(root: Path, runtime_patterns: list[str] | None = None) -> str:
-    return IgnoreRules.from_root(root, runtime_patterns).fingerprint()
+def ignore_fingerprint(
+    root: Path,
+    runtime_patterns: list[str] | None = None,
+    auto_patterns: list[str] | None = None,
+    privileged_patterns: list[str] | None = None,
+) -> str:
+    base = IgnoreRules.from_root(root, runtime_patterns).fingerprint()
+    if not auto_patterns and not privileged_patterns:
+        return base
+    digest = hashlib.sha1()
+    digest.update(f"base:{base}\n".encode("utf-8"))
+    for value in auto_patterns or []:
+        digest.update(f"auto:{value}\n".encode("utf-8"))
+    for value in privileged_patterns or []:
+        digest.update(f"privileged:{value}\n".encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _parse_rules(patterns: list[str]) -> list[IgnoreRule]:

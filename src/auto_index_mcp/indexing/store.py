@@ -150,6 +150,11 @@ class IndexStore:
             rows = conn.execute("SELECT key, value FROM metadata").fetchall()
         return {row["key"]: json.loads(row["value"]) for row in rows}
 
+    def update_metadata(self, values: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            for key, value in values.items():
+                self.set_metadata(conn, key, value)
+
     def get_file(self, path: str) -> dict[str, Any] | None:
         with self.read_connect() as conn:
             row = conn.execute("SELECT * FROM files WHERE path=?", (path,)).fetchone()

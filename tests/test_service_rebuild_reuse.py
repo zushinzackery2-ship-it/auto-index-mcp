@@ -135,6 +135,42 @@ def test_enable_wait_window_falls_back_to_background_when_build_is_slow(
     assert service.background.wait(10.0)
 
 
+def test_repeated_enable_returns_already_running_without_reinitializing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    gate = threading.Event()
+    real = service._rebuild_now
+
+    def blocked(indexer=None, context=None):
+        gate.wait(5.0)
+        return real(indexer, context)
+
+    monkeypatch.setattr(service, "_rebuild_now", blocked)
+    first = service.enable_reusing_index(str(project))
+    assert first["status"] == "indexing-in-background"
+
+    def fail_enable(*args: object, **kwargs: object) -> dict:
+        _ = args, kwargs
+        raise AssertionError("already-running enable must not reinitialize")
+
+    monkeypatch.setattr(service, "enable", fail_enable)
+    repeated = service.enable_reusing_index(str(project))
+
+    assert repeated["status"] == "already-running"
+    assert repeated["already_running"] is True
+    assert repeated["background_index"]["state"] == "running"
+
+    gate.set()
+    assert service.background is not None
+    assert service.background.wait(10.0)
+
+
 def test_rebuild_reuse_if_fresh_skips_rescan(tmp_path: Path, monkeypatch) -> None:
     project = tmp_path / "project"
     project.mkdir()

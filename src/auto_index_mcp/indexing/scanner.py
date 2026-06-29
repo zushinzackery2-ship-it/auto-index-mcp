@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import os
 import re
@@ -9,9 +8,11 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..core.config import (
+    DEFAULT_MAX_SOURCE_BYTES,
     LANGUAGE_BY_EXTENSION,
     TEXT_EXTENSIONS,
 )
+from ..core.ignore_config import matches_patterns
 from ..core.ignore_rules import IgnoreRules
 from ..core.models import FileRecord, ScanResult, SymbolRecord
 from ..core.tree_progress import TreeProgress
@@ -31,18 +32,24 @@ class SourceScanner:
         self,
         root: str,
         extra_excludes: list[str] | None = None,
-        max_bytes: int = 2 * 1024 * 1024,
+        auto_excludes: list[str] | None = None,
+        privileged_patterns: list[str] | None = None,
+        max_bytes: int = DEFAULT_MAX_SOURCE_BYTES,
         existing_records: dict[str, dict] | None = None,
         boundary_roots: list[Path] | None = None,
         tree_progress: TreeProgress | None = None,
     ) -> None:
         self.root = Path(root).resolve()
         self.extra_excludes = extra_excludes or []
+        self.auto_excludes = auto_excludes or []
+        self.privileged_patterns = privileged_patterns or []
         self.max_bytes = max_bytes
         self.existing_records = existing_records or {}
         self.boundary_roots = [path.resolve() for path in boundary_roots or []]
         self.ignore_rules = IgnoreRules.from_root(self.root, self.extra_excludes)
         self.tree_progress = tree_progress
+        self.oversized_paths: list[str] = []
+        self.privileged_paths: list[str] = []
 
     def scan(self) -> ScanResult:
         records: list[FileRecord] = []
@@ -75,7 +82,15 @@ class SourceScanner:
                 continue
 
         records.sort(key=lambda item: item.path.lower())
-        return ScanResult(str(self.root), records, skipped, reused, errors)
+        return ScanResult(
+            str(self.root),
+            records,
+            skipped,
+            reused,
+            errors,
+            sorted(set(self.oversized_paths)),
+            sorted(set(self.privileged_paths)),
+        )
 
     def _should_skip(self, path: Path) -> bool:
         resolved = path.resolve(strict=True)
@@ -88,12 +103,12 @@ class SourceScanner:
             return True
         if resolved.suffix.lower() not in TEXT_EXTENSIONS:
             return True
-        if resolved.stat().st_size > self.max_bytes:
+        if matches_patterns(self.auto_excludes, rel) and not self._is_privileged(rel):
             return True
-        return any(
-            fnmatch.fnmatch(resolved.name, pattern) or fnmatch.fnmatch(rel, pattern)
-            for pattern in self.extra_excludes
-        )
+        if resolved.stat().st_size > self.max_bytes and not self._is_privileged(rel):
+            self.oversized_paths.append(rel)
+            return True
+        return False
 
     def _iter_files(self) -> Iterator[Path]:
         for dir_path, dir_names, file_names in os.walk(self.root):
@@ -133,9 +148,11 @@ class SourceScanner:
 
     def _read_record(self, path: Path) -> FileRecord:
         path = path.resolve(strict=True)
+        rel = self._relative(path)
+        if path.stat().st_size > self.max_bytes and self._is_privileged(rel):
+            self.privileged_paths.append(rel)
         data = path.read_bytes()
         text = decode_text(data)
-        rel = self._relative(path)
         lines = text.splitlines()
         imports = self._extract_matches(lines, IMPORT_RE, whole_line=True)
         language = LANGUAGE_BY_EXTENSION.get(path.suffix.lower(), "text")
@@ -210,6 +227,9 @@ class SourceScanner:
 
     def _relative(self, path: Path) -> str:
         return str(path.resolve(strict=True).relative_to(self.root)).replace("\\", "/")
+
+    def _is_privileged(self, rel: str) -> bool:
+        return matches_patterns(self.privileged_patterns, rel)
 
     def _display_path(self, path: Path) -> str:
         try:

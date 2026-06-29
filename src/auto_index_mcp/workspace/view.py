@@ -27,11 +27,15 @@ class WorkspaceView:
         store: IndexStore,
         visited_db_paths: set[Path] | None = None,
         ignore_patterns: list[str] | None = None,
+        auto_ignore_patterns: list[str] | None = None,
+        privileged_patterns: list[str] | None = None,
     ) -> None:
         self.store = store
         self.visited_db_paths = {path.resolve() for path in visited_db_paths or set()}
         self.visited_db_paths.add(store.db_path.resolve())
         self.ignore_patterns = ignore_patterns or []
+        self.auto_ignore_patterns = auto_ignore_patterns or []
+        self.privileged_patterns = privileged_patterns or []
         self._active_children: list[dict[str, Any]] | None = None
         self._child_stores: dict[str, IndexStore] = {}
         self._child_views: dict[str, WorkspaceView] = {}
@@ -145,6 +149,8 @@ class WorkspaceView:
         scan = SourceScanner(
             str(root),
             extra_excludes=self.ignore_patterns,
+            auto_excludes=self.auto_ignore_patterns,
+            privileged_patterns=self.privileged_patterns,
             boundary_roots=[Path(child["root"]) for child in children],
         ).scan()
         indexed = {item["path"]: item for item in self.store.all_files()}
@@ -261,6 +267,8 @@ class WorkspaceView:
                 self._child_store(child),
                 self.visited_db_paths,
                 self.ignore_patterns,
+                self.auto_ignore_patterns,
+                self.privileged_patterns,
             )
         return self._child_views[key]
 

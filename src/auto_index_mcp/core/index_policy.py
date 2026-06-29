@@ -35,6 +35,10 @@ def can_start_auto_watch_policy(
 ) -> bool:
     # A background rebuild has no reusable index yet; the watcher is started by
     # the build's completion hook instead of racing a second full scan here.
-    if result is not None and result.get("status") in ("indexing-in-other-process", "indexing-in-background"):
+    if result is not None and result.get("status") in (
+        "indexing-in-other-process",
+        "indexing-in-background",
+        "already-running",
+    ):
         return False
     return can_reuse_index(store, root, ignore_fingerprint)

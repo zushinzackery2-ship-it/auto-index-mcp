@@ -13,9 +13,10 @@ from .background_indexer import (
     PHASE_WRITING,
 )
 from .index_policy import can_reuse_index, can_start_auto_watch_policy
-from .ignore_rules import ignore_fingerprint
+from .oversized_sources import scan_oversized_sources
 from .quality_dangling import with_project_quality_findings
 from .rebuild_context import RebuildContext
+from .service_rebuild_ignore import config_ignore_metadata, service_ignore_fingerprint
 from .tree_progress import TreeProgress
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.active_sources import annotate_active_sources
@@ -53,7 +54,12 @@ class ServiceRebuildMixin:
         def _ready_context(self) -> tuple[Path, IndexStore]: ...
         def status(self) -> dict[str, Any]: ...
         def _background_status(self) -> dict[str, Any]: ...
+        def ignore_config(self): ...
         def runtime_ignore_patterns(self) -> list[str]: ...
+        def auto_ignore_patterns(self) -> list[str]: ...
+        def privileged_ignore_patterns(self) -> list[str]: ...
+        def replace_ignore_config(self, config, dirty: bool) -> None: ...
+        def _mark_ignore_config_persisted(self) -> None: ...
         def start_watcher(self, debounce_seconds: float = ..., wait_ready: bool = ...) -> dict[str, Any]: ...
         def _embed_after_full_rebuild(
             self,
@@ -66,8 +72,6 @@ class ServiceRebuildMixin:
     def rebuild(self, reuse_if_fresh: bool = False) -> dict[str, Any]:
         self._ready_context()
         assert self.index_root is not None
-        # The fresh check stays synchronous and lock-free: it is a fast metadata
-        # probe and decides whether we can skip the heavy scan entirely.
         if reuse_if_fresh and self._index_is_fresh():
             return self.status()
         return self._start_background_rebuild()
@@ -112,14 +116,6 @@ class ServiceRebuildMixin:
             lock.release()
 
     def _start_background_rebuild(self, wait_seconds: float = 0.0) -> dict[str, Any]:
-        """Dispatch a full-tree rebuild to the background indexer and return immediately.
-
-        If a background rebuild is already running for this service, the call is
-        idempotent and returns the in-progress status. This avoids duplicate
-        scans when lifecycle code calls both enable_reusing_index and rebuild.
-        A positive wait budget gives small projects a chance to complete on the
-        request thread while larger projects still fall back to background status.
-        """
         context = self._rebuild_context()
         existing = self.background
         if existing is not None and existing.is_running() and self._background_context_key == context.key:
@@ -139,20 +135,9 @@ class ServiceRebuildMixin:
         return self._background_status()
 
     def _run_rebuild_locked(self, indexer: BackgroundIndexer, context: RebuildContext) -> dict[str, Any]:
-        """Worker entrypoint for the background indexer.
-
-        Runs on the daemon thread so the BuildLock wait and the heavy scan never
-        block the MCP request thread.
-        """
         return self._rebuild_with_lock(context, indexer)
 
     def request_auto_watch_after_build(self) -> None:
-        """Start the watcher automatically once the current background build ends.
-
-        enable's auto_watch path cannot start a watcher while the first build is
-        still running (the index is not reusable yet), so the intent is recorded
-        here and honoured by the completion hook.
-        """
         self._auto_watch_after_build = True
         self._auto_watch_context_key = self._rebuild_context().key
 
@@ -178,7 +163,7 @@ class ServiceRebuildMixin:
     def _rebuild_context(self) -> RebuildContext:
         root, store = self._ready_context()
         assert self.index_root is not None
-        return RebuildContext(root, self.index_root, store, self.embedding_indexer)
+        return RebuildContext(root, self.index_root, store, self.embedding_indexer, self.ignore_config())
 
     def _context_is_current(self, context: RebuildContext) -> bool:
         return (
@@ -205,7 +190,9 @@ class ServiceRebuildMixin:
             existing = {}
         if indexer is not None:
             indexer.set_phase(PHASE_SCANNING)
-        ignore_patterns = self.runtime_ignore_patterns()
+        ignore_config = context.ignore_config
+        ignore_patterns = ignore_config.patterns
+        privileged_patterns = ignore_config.privileged_patterns
         progress = TreeProgress()
         progress.start(root)
         if self._context_is_current(context):
@@ -216,10 +203,21 @@ class ServiceRebuildMixin:
             ignore_patterns=ignore_patterns,
         )
         boundary_roots = [Path(child.root) for child in children]
+        oversized = scan_oversized_sources(
+            root,
+            ignore_config,
+            boundary_roots,
+        )
+        ignore_config = ignore_config.with_auto_patterns(oversized.auto_patterns)
+        if self._context_is_current(context):
+            self.replace_ignore_config(ignore_config, dirty=True)
+        auto_patterns = ignore_config.auto_patterns
         try:
             scan = SourceScanner(
                 str(root),
                 extra_excludes=ignore_patterns,
+                auto_excludes=auto_patterns,
+                privileged_patterns=privileged_patterns,
                 existing_records=existing,
                 boundary_roots=boundary_roots,
                 tree_progress=progress,
@@ -238,8 +236,10 @@ class ServiceRebuildMixin:
             scan.root,
             records,
             children_dicts,
-            {"ignore_fingerprint": ignore_fingerprint(root, ignore_patterns)},
+            config_ignore_metadata(ignore_config, root),
         )
+        if self._context_is_current(context):
+            self._mark_ignore_config_persisted()
         if self._context_is_current(context):
             self.last_errors = scan.errors[:50]
         if indexer is not None:
@@ -253,6 +253,9 @@ class ServiceRebuildMixin:
             "child_index_count": len(children),
             "skipped": scan.skipped,
             "reused": scan.reused,
+            "auto_ignored_paths": oversized.auto_ignored_paths,
+            "oversized_paths": scan.oversized_paths,
+            "privileged_paths": sorted(set(oversized.privileged_paths + scan.privileged_paths)),
             "error_count": len(scan.errors),
             "elapsed_seconds": round(time.time() - start, 3),
             "index_path": str(store.db_path),
@@ -266,14 +269,14 @@ class ServiceRebuildMixin:
         return can_reuse_index(
             self.store,
             self.root_path,
-            ignore_fingerprint(self.root_path, self.runtime_ignore_patterns()),
+            service_ignore_fingerprint(self, self.root_path),
         )
 
     def can_reuse_index_for(self, root: Path) -> bool:
         return can_reuse_index(
             self.store,
             root,
-            ignore_fingerprint(root, self.runtime_ignore_patterns()),
+            service_ignore_fingerprint(self, root),
         )
 
     def can_start_auto_watch(self, result: dict[str, Any] | None) -> bool:
@@ -283,7 +286,7 @@ class ServiceRebuildMixin:
             self.store,
             self.root_path,
             result,
-            ignore_fingerprint(self.root_path, self.runtime_ignore_patterns()),
+            service_ignore_fingerprint(self, self.root_path),
         )
 
 

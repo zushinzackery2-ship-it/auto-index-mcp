@@ -42,7 +42,7 @@
 | **生命周期** | `auto_index_enable()` | 设置项目根目录，默认复用已有索引，可显式重建。 |
 | **生命周期** | `auto_index_disable()` | 停用当前索引状态并停止自动刷新。 |
 | **生命周期** | `auto_index_status()` | 返回根目录、索引库路径、文件数量、更新时间、最近错误，以及 watcher/embedding 运行状态。 |
-| **生命周期** | `auto_index_ignore()` | 查看 `.gitignore`/默认排除/运行期 ignore 规则，或追加、替换、清空运行期 ignore 模式。 |
+| **生命周期** | `auto_index_ignore()` | 查看或配置运行期 ignore 规则；`target="privileged"` 可维护超大源码特权索引名单。 |
 | **生命周期** | `auto_index_rebuild()` | 派发后台全量扫描并重写持久索引，请通过 `auto_index_status()` 观察进度。 |
 | **生命周期** | `auto_index_clear()` | 清空索引数据，可选择删除 SQLite 文件。 |
 | **导航** | `auto_index_overview()` | 返回语言分布、目录分布、样例文件等紧凑概览。 |
@@ -62,11 +62,11 @@
 
 MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容工具。旧的 `set_project_path()`、`find_files()`、`get_file_summary()`、`get_symbol_body()`、`search_code_advanced()` 已移除，请使用上表中的 native API。
 
-`auto_index_enable()` 会返回 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。首次设置或切换到一个已有索引根目录时会复用 `.auto-index-mcp/index.db`；需要强制全量刷新时使用 `auto_index_rebuild()`、`auto_index_enable(rebuild=True)` 或 CLI `--rebuild`。MCP/CLI enable 会给代码索引 3 秒完成窗口：窗口内完成则直接返回 `status="indexed"`，否则返回 `status="indexing-in-background"` 并继续后台重建。embedding 模型加载和向量生成始终走独立后台任务，不占用这 3 秒窗口。若另一个 MCP 进程正在持有构建锁，本进程返回 `indexing-in-other-process`，不会在请求线程等待锁超时。
+`auto_index_enable()` 会返回 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。首次设置或切换到一个已有索引根目录时会复用 `.auto-index-mcp/index.db`；需要强制全量刷新时使用 `auto_index_rebuild()`、`auto_index_enable(rebuild=True)` 或 CLI `--rebuild`。MCP/CLI enable 会给代码索引 3 秒完成窗口：窗口内完成则直接返回 `status="indexed"`，否则返回 `status="indexing-in-background"` 并继续后台重建；同一 root 已在后台构建时重复 enable 返回 `status="already-running"`，不会重置当前服务状态。embedding 模型加载和向量生成始终走独立后台任务，不占用这 3 秒窗口。若另一个 MCP 进程正在持有构建锁，本进程返回 `indexing-in-other-process`，不会在请求线程等待锁超时。
 
 首建后台索引期间，`auto_index_tree_get()` 会读取轻量目录进度：已完成层级返回真实目录摘要，更深仍在扫描的目录返回 `state="indexing"` 和 `message="inner is indexing"`。主符号/搜索索引仍保持原子发布；`auto_index_query()`、`auto_index_file()`、`auto_index_symbol_search()` 等工具在首建未完成时继续返回 not-ready 语义，不暴露半成品符号结果。已有旧索引时，后台重建期间继续返回旧索引结果并附带 stale/running 状态。
 
-索引边界默认读取项目根目录 `.gitignore`，并叠加内置排除目录（如 `.venv/`、`third-party/`、`node_modules/`、`.auto-index-mcp/`）和 `auto_index_ignore()` 配置的运行期模式。ignore 规则会同时约束源码扫描、child-index discovery 和 watcher snapshot；`.gitignore` 或运行期 ignore 变化会让旧索引失效，下一次启用会后台重建。
+索引边界默认读取项目根目录 `.gitignore`，并叠加内置排除目录（如 `.venv/`、`third-party/`、`node_modules/`、`.auto-index-mcp/`）和 `auto_index_ignore()` 配置的运行期模式。超过 2MB 的源码会自动进入 `auto_patterns` 并跳过，避免静默读入巨大 dump；需要索引 300MB 级 `dump.cs` 时使用 `auto_index_ignore(mode="add", target="privileged", patterns=["/dump.cs"])` 后重建。ignore 配置写入 SQLite metadata，`.gitignore`、运行期 ignore、auto ignore 或 privileged 变化都会让旧索引失效。
 
 `auto_index_text_search()` 与 `auto_index_quality_check()` 支持 `exclude_paths`，用于排除 `reference_origin/**`、`dist/**`、`_deps/**` 等目录；质量检查还支持 `active_only`，会基于索引阶段缓存的 Visual Studio `.vcxproj` `ClCompile` 列表过滤 C/C++ 编译源。`auto_index_quality_check(kind="nesting")` 会输出 `nesting_coverage`、`reliable` 和 `warnings`，覆盖率过低时不要把结果当作结构质量结论。
 

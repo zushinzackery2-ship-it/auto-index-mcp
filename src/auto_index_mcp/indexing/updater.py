@@ -44,11 +44,15 @@ class IndexUpdater:
         store: IndexStore,
         rebuild: Callable[[], dict[str, Any]],
         ignore_patterns: list[str] | None = None,
+        auto_ignore_patterns: list[str] | None = None,
+        privileged_patterns: list[str] | None = None,
     ) -> None:
         self.root = root
         self.store = store
         self.rebuild = rebuild
         self.ignore_patterns = ignore_patterns or []
+        self.auto_ignore_patterns = auto_ignore_patterns or []
+        self.privileged_patterns = privileged_patterns or []
 
     def apply(self, previous: WatchSnapshot, current: WatchSnapshot) -> dict[str, Any]:
         start = time.time()
@@ -118,7 +122,12 @@ class IndexUpdater:
         self.store.replace_child_indexes(child_indexes_to_dicts(children))
 
     def _read_changed_files(self, paths: list[str]) -> tuple[list[FileRecord], list[str]]:
-        scanner = SourceScanner(str(self.root), extra_excludes=self.ignore_patterns)
+        scanner = SourceScanner(
+            str(self.root),
+            extra_excludes=self.ignore_patterns,
+            auto_excludes=self.auto_ignore_patterns,
+            privileged_patterns=self.privileged_patterns,
+        )
         records = []
         unindexed = []
         for rel in paths:
