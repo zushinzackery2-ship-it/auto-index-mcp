@@ -180,3 +180,22 @@ def test_cpp_long_function_end_line_is_not_capped(tmp_path: Path) -> None:
     # The function spans ~124 lines; end_line must reflect the real closing brace,
     # not the old +80 cap that silently truncated large functions.
     assert compute["end_line"] >= 124
+
+
+def test_cpp_unterminated_function_does_not_swallow_file(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    # A function whose closing brace never balances (here, simply missing) must
+    # not extend its end_line to the end of a large file and absorb every
+    # following line's calls/nesting.
+    lines = ["void Broken(int a = 0)", "{", "    int x = 1;"]
+    lines += [f"int filler_{index} = {index};" for index in range(200)]
+    (project / "Broken.cpp").write_text("\n".join(lines), encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+
+    summary = service.file_summary("Broken.cpp")
+    broken = next((symbol for symbol in summary["symbols"] if symbol["name"] == "Broken"), None)
+    if broken is not None:
+        assert broken["end_line"] < 10

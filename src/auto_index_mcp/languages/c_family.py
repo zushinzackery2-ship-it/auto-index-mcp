@@ -114,7 +114,11 @@ def _find_brace_end(lines: list[str], start: int) -> int:
         depth += opens
         if opened and depth <= 0:
             return index + 1
-    return len(lines)
+    # No balanced closing brace anywhere in the file: the start was most likely
+    # mis-detected (macros / comment blocks throw off the brace count). Fall back
+    # to a minimal span so one bad symbol cannot swallow the rest of a large
+    # file's calls and nesting (e.g. an 11k-line file collapsing into one symbol).
+    return min(start + 1, len(lines))
 
 
 def _starts_with_keyword(text: str) -> bool:
