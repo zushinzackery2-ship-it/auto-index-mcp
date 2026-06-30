@@ -41,7 +41,7 @@
 |:-----|:----|:-----|
 | **生命周期** | `auto_index_enable()` | 设置项目根目录，默认复用已有索引，可显式重建。 |
 | **生命周期** | `auto_index_disable()` | 停用当前索引状态并停止自动刷新。 |
-| **生命周期** | `auto_index_status()` | 返回根目录、索引库路径、文件数量、更新时间、最近错误，以及 watcher/embedding 运行状态。 |
+| **生命周期** | `auto_index_status()` | 返回根目录、索引库路径、文件数量、更新时间、最近错误，以及 watcher/embedding 运行状态；`build_timers` 给出索引与语义两条构建链的实时计时（`elapsed_seconds` 运行中实时累加、结束后固定为总耗时）。 |
 | **生命周期** | `auto_index_ignore()` | 查看或配置运行期 ignore 规则；`target="privileged"` 可维护超大源码特权索引名单。 |
 | **生命周期** | `auto_index_rebuild()` | 派发后台全量扫描并重写持久索引，请通过 `auto_index_status()` 观察进度。 |
 | **生命周期** | `auto_index_clear()` | 清空索引数据，可选择删除 SQLite 文件。 |
@@ -54,7 +54,7 @@
 | **搜索** | `auto_index_symbol_search()` | 按名称、签名、类型搜索符号。 |
 | **搜索** | `auto_index_symbol_body()` | 返回指定符号的源码片段。 |
 | **语义搜索** | `auto_index_semantic_search()` | 自然语言语义搜索，默认使用仓库随附 ONNX 模型，返回最相似的符号及行范围。 |
-| **语义搜索** | `auto_index_embedding_status()` | 报告语义 embedding 后端是否启用及向量数量。 |
+| **语义搜索** | `auto_index_embedding_status()` | 报告语义 embedding 后端是否启用及向量数量；`build_timer` 给出语义向量构建的实时计时。 |
 | **质量检查** | `auto_index_quality_check()` | 从持久化缓存报告代码质量问题；`kind="nesting"` 读 `symbol_nesting` 嵌套深度，`kind="dangling"` 读 `quality_findings` 疑似悬空/不可达代码，`kind="all"` 同时返回两者。 |
 | **漂移检查** | `auto_index_diff_filesystem()` | 对比索引与当前文件系统的新增、删除、变化。 |
 | **自动刷新** | `auto_index_watcher_start()` | 非阻塞启动文件系统事件驱动的自动刷新。 |
@@ -81,7 +81,7 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 | `workspace/` | 嵌套工作区发现、父子索引聚合、路径安全检查、搜索上下文读取。 |
 | `languages/` | Python、JavaScript/TypeScript 和通用文本符号提取。 |
 | `search/` | ripgrep/Python fallback 搜索后端。 |
-| `embedding/` | 可选语义 embedding 后端（ONNX）、向量存储、符号级增量索引器。 |
+| `embedding/` | 可选语义 embedding 后端（ONNX）、独立向量库（`embeddings.db`）、符号级增量索引器。 |
 | `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、语义、质量检查拆分。 |
 
 ---
@@ -106,18 +106,20 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 
 - **模型优先级**：`AUTO_INDEX_EMBEDDING_MODEL` 指定的目录优先，需包含 `model.onnx` 和 `tokenizer.json`；未设置时使用仓库随附 `models/minilm-onnx/`。
 - **后端可插拔**：默认通过 `onnxruntime`（纯 CPU 推理，零 torch 依赖）加载本地 ONNX embedding 模型，当前随附模型为 MiniLM ONNX 版本，约 90MB。
+- **CPU 线程**：embedding 推理默认用 `min(3, 核数-1)` 个 ONNX intra-op 线程（后台索引时给前台留核），小模型在该区间已基本吃满吞吐；可用 `AUTO_INDEX_EMBEDDING_THREADS` 显式覆盖（设为 ≥1 的线程数即按设定值生效）。
 - **可选依赖**：安装 `pip install -e ".[semantic]"` 启用 onnxruntime + tokenizers；依赖缺失或所选模型不可用时 `auto_index_semantic_search()` 明确报告不可用，不做关键词假降级。
 - **符号级 chunking**：embedding 文本由 `kind + signature + 符号体源码` 构成，复用已有符号索引作为精确分块，这是 auto-index 相对“全树喂 AI”方案的架构优势。
-- **后台向量构建**：rebuild 先完成代码索引写库，embedding 向量随后在独立后台任务生成；若复用旧索引但向量缺失，首次语义搜索会派发后台构建并立即返回 building 状态。向量部分就绪时会先返回已有向量的检索结果，并附带 `embedding.status="partial"`、`vector_count` 和后台状态。
+- **后台向量构建**：rebuild 先完成代码索引写库，embedding 向量随后在独立后台任务生成；复用旧索引时只要向量缺失也会在 enable 完成后**自动派发**后台构建（无需等首次查询触发）。向量部分就绪时会先返回已有向量的检索结果，并附带 `embedding.status="partial"`、`vector_count` 和后台状态。
 - **增量复用**：每个符号向量带 `text_hash`，rebuild 与 watcher 增量更新时，源码未变的符号直接复用已存向量，只对变更符号重新推理。
-- **向量存储**：float32 向量以 BLOB 存入 SQLite `symbol_embeddings` 表，按 `(file_path, symbol_name, symbol_line, model_name)` 自然键定位，不依赖自增 id，跨 rebuild 稳定。
+- **独立向量库**：float32 向量以 BLOB 存入**独立的 `embeddings.db`**（与 `index.db` 同目录但分文件），表 `symbol_embeddings` 按 `(file_path, symbol_name, symbol_line, model_name)` 自然键定位，跨 rebuild 稳定。检索所需的符号元数据（`kind/end_line/signature/complexity`）随向量**反规范化**冗余存储，因此语义检索只读向量库、不与 `index.db` 的 `symbols` 表跨库 JOIN——向量库可独立重建/清空/换模型而不动代码索引。
 
 ## 索引存储
 
 每个项目的 SQLite 索引默认放在项目根目录内：
 
 ```text
-<project>/.auto-index-mcp/index.db
+<project>/.auto-index-mcp/index.db        # 代码索引（文件、符号、调用图、FTS）
+<project>/.auto-index-mcp/embeddings.db   # 语义向量（独立库，缺失时自动后台构建）
 ```
 
 `.auto-index-mcp` 会被扫描器排除，也已经写入 `.gitignore`。
@@ -169,6 +171,7 @@ auto-index-mcp/
 |       |   `-- tree_progress.py
 |       |-- embedding/
 |       |   |-- backend.py
+|       |   |-- embedding_store.py
 |       |   |-- indexer.py
 |       |   |-- onnx_backend.py
 |       |   `-- vector_store.py

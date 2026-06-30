@@ -193,6 +193,66 @@ def test_service_status_exposes_background_index(tmp_path: Path) -> None:
     assert status["background_index"]["state"] == STATE_DONE
 
 
+def test_status_build_timers_track_background_index(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable_reusing_index(str(project))
+    assert service.background is not None
+    assert service.background.wait(10.0)
+
+    timers = service.status()["build_timers"]
+    index_timer = timers["index"]
+    assert index_timer["state"] == STATE_DONE
+    assert index_timer["running"] is False
+    assert index_timer["elapsed_seconds"] is not None
+    # Embedding never ran in this minimal env: timer stays idle, not absent.
+    assert timers["embedding"]["running"] is False
+
+
+def test_build_timer_elapsed_ticks_while_running() -> None:
+    release = threading.Event()
+
+    def work(indexer: BackgroundIndexer) -> dict:
+        release.wait(5.0)
+        return {"status": "indexed"}
+
+    bg = BackgroundIndexer(work)
+    bg.start()
+    try:
+        first = bg.timer()
+        assert first["running"] is True
+        assert first["elapsed_seconds"] is not None
+        time.sleep(0.05)
+        second = bg.timer()
+        assert second["elapsed_seconds"] >= first["elapsed_seconds"]
+    finally:
+        release.set()
+    assert bg.wait(5.0)
+    done = bg.timer()
+    assert done["running"] is False
+    assert done["finished_at"] is not None
+
+
+def test_build_timers_record_synchronous_rebuild(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    # enable(rebuild=True) takes the synchronous path: no BackgroundIndexer handle.
+    service.enable(str(project), rebuild=True)
+    assert service.background is None
+
+    index_timer = service.status()["build_timers"]["index"]
+    assert index_timer["state"] == STATE_DONE
+    assert index_timer["elapsed_seconds"] is not None
+    assert index_timer["started_at"] is not None
+    assert index_timer["finished_at"] is not None
+
+
 def test_auto_watch_race_guard_uses_successful_background_result() -> None:
     service = _AutoWatchService()
     background = BackgroundIndexer(lambda indexer: {"status": "indexed", "updated_at": 1.0})

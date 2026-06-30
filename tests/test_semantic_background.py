@@ -33,11 +33,13 @@ def test_embedding_status_does_not_load_model(monkeypatch, tmp_path: Path) -> No
         lambda env=None: (_ for _ in ()).throw(AssertionError("status must not load model")),
     )
 
-    assert service.embedding_status() == {
-        "enabled": False,
-        "model": None,
-        "vector_count": 0,
-    }
+    status = service.embedding_status()
+    assert status["enabled"] is False
+    assert status["model"] is None
+    assert status["vector_count"] == 0
+    # A build timer is always reported; idle before any embedding build runs.
+    assert status["build_timer"]["running"] is False
+    assert status["build_timer"]["elapsed_seconds"] is None
 
 
 def test_semantic_search_starts_background_embedding_without_blocking(

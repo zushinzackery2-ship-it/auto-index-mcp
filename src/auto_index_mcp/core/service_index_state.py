@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .background_indexer import BackgroundIndexer, STATE_ERROR, STATE_RUNNING
+from .background_indexer import (
+    BackgroundIndexer,
+    STATE_ERROR,
+    STATE_RUNNING,
+    timer_or_idle,
+)
 from ..indexing.store import IndexStore
 
 
@@ -14,6 +19,21 @@ class ServiceIndexStateMixin:
         root_path: Path | None
         store: IndexStore | None
         background: BackgroundIndexer | None
+        embedding_background: BackgroundIndexer | None
+        _last_index_build: dict[str, Any] | None
+
+    def build_timers(self) -> dict[str, Any]:
+        """Live build timers for both pipelines.
+
+        Each entry carries a real-time ``elapsed_seconds`` that ticks while the
+        build runs and holds the final duration afterwards. The index timer
+        falls back to the most recent synchronous rebuild (watcher-driven builds
+        bypass the background runner) so build time is never lost.
+        """
+        return {
+            "index": timer_or_idle(self.background, self._last_index_build),
+            "embedding": timer_or_idle(self.embedding_background, None),
+        }
 
     def _background_status(self) -> dict[str, Any]:
         indexer = self.background
@@ -21,10 +41,12 @@ class ServiceIndexStateMixin:
             return {
                 "status": "idle",
                 "background_index": None,
+                "build_timers": self.build_timers(),
             }
         return {
             "status": "indexing-in-background",
             "background_index": indexer.status(),
+            "build_timers": self.build_timers(),
         }
 
     def _has_indexed_data(self) -> bool:

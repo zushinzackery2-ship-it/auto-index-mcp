@@ -47,18 +47,26 @@ class SymbolEmbedder:
 
     def search(
         self,
-        conn_provider: Any,
         query: str,
         limit: int,
         min_score: float = 0.0,
     ) -> list[dict[str, Any]]:
         query_vector = self.backend.embed([query])[0]
-        with conn_provider.read_connect() as conn:
+        with self.conn_provider.read_connect() as conn:
             return self.store.search(conn, query_vector, self.backend.name, limit, min_score)
 
-    def count(self, conn_provider: Any) -> int:
-        with conn_provider.read_connect() as conn:
+    def count(self) -> int:
+        with self.conn_provider.read_connect() as conn:
             return self.store.count(conn, self.backend.name)
+
+    def delete_files(self, paths: Iterable[str]) -> None:
+        """Drop vectors for removed files from the embedding store."""
+        paths = list(paths)
+        if not paths:
+            return
+        with self.conn_provider.connect() as conn:
+            for path in paths:
+                self.store.delete_file(conn, path)
 
     def _embed_files(
         self, root: Path, symbols_by_file: dict[str, list[dict[str, Any]]]
@@ -89,6 +97,7 @@ class SymbolEmbedder:
                                 "symbol_line": symbol["line"],
                                 "text_hash": text_hash,
                                 "vector": existing_vectors[key],
+                                **_symbol_meta(symbol),
                             }
                         )
                         reused += 1
@@ -114,6 +123,7 @@ class SymbolEmbedder:
                         "symbol_line": symbol["line"],
                         "text_hash": text_hash,
                         "vector": vector,
+                        **_symbol_meta(symbol),
                     }
                 )
                 remaining_by_file[file_path] -= 1
@@ -181,6 +191,17 @@ def _read_lines_safe(root: Path, file_path: str) -> list[str]:
         return read_text_file(root / file_path).splitlines()
     except (OSError, UnicodeDecodeError):
         return []
+
+
+def _symbol_meta(symbol: dict[str, Any]) -> dict[str, Any]:
+    """Symbol metadata denormalized into the vector row for join-free search."""
+    start = int(symbol.get("line", 1))
+    return {
+        "kind": symbol.get("kind", "") or "",
+        "end_line": int(symbol.get("end_line", start) or start),
+        "signature": symbol.get("signature", "") or "",
+        "complexity": int(symbol.get("complexity", 1) or 1),
+    }
 
 
 def _symbol_text(symbol: dict[str, Any], lines: list[str]) -> str:

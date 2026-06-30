@@ -109,14 +109,19 @@ class SymbolEmbeddingStore:
         for entry in entries:
             conn.execute(
                 "INSERT INTO symbol_embeddings"
-                "(file_path, symbol_name, symbol_line, model_name, text_hash, vector) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(file_path, symbol_name, symbol_line, model_name, text_hash, "
+                "kind, end_line, signature, complexity, vector) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     file_path,
                     entry["symbol_name"],
                     entry["symbol_line"],
                     model_name,
                     entry["text_hash"],
+                    entry.get("kind", ""),
+                    entry.get("end_line", 0),
+                    entry.get("signature", ""),
+                    entry.get("complexity", 1),
                     encode_vector(entry["vector"]),
                 ),
             )
@@ -135,12 +140,9 @@ class SymbolEmbeddingStore:
 
     def load_all(self, conn: sqlite3.Connection, model_name: str) -> list[dict[str, Any]]:
         rows = conn.execute(
-            "SELECT e.file_path, e.symbol_name, e.symbol_line, e.vector, "
-            "s.kind, s.end_line, s.signature, s.complexity "
-            "FROM symbol_embeddings e "
-            "JOIN symbols s "
-            "ON s.file_path=e.file_path AND s.name=e.symbol_name AND s.line=e.symbol_line "
-            "WHERE e.model_name=?",
+            "SELECT file_path, symbol_name, symbol_line, kind, end_line, "
+            "signature, complexity, vector "
+            "FROM symbol_embeddings WHERE model_name=?",
             (model_name,),
         ).fetchall()
         result: list[dict[str, Any]] = []

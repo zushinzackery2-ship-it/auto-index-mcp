@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from .background_indexer import BackgroundIndexer, PHASE_EMBEDDING
 from .config import DEFAULT_WATCH_DEBOUNCE_SECONDS
 from ..embedding.backend import create_embedder, resolve_embedding_model_path
+from ..embedding.embedding_store import EmbeddingStore
 from ..embedding.indexer import SymbolEmbedder
 from ..indexing.snapshot import snapshot_from_index, take_watch_snapshot, update_watch_snapshot
 from ..indexing.updater import IndexUpdater
@@ -28,6 +29,7 @@ class ServiceWatcherMixin:
         watcher: FileEventWatcher | None
         embedding_indexer: SymbolEmbedder | None
         embedding_background: BackgroundIndexer | None
+        embedding_store: EmbeddingStore | None
         last_errors: list[str]
         _embedding_lock: threading.Lock
 
@@ -39,9 +41,10 @@ class ServiceWatcherMixin:
 
     def ensure_embedding_background(self) -> dict[str, Any]:
         root, store = self._ready_context()
+        embedding_store = self.embedding_store
         if self.embedding_indexer is not None:
             try:
-                if self.embedding_indexer.count(store) > 0:
+                if self.embedding_indexer.count() > 0:
                     return {"state": "ready", "model": self.embedding_indexer.backend.name}
             except Exception:
                 pass
@@ -50,7 +53,7 @@ class ServiceWatcherMixin:
             if existing is not None and existing.is_running():
                 return existing.status()
             worker = BackgroundIndexer(
-                lambda background: self._load_and_embed_project(background, root, store)
+                lambda background: self._load_and_embed_project(background, root, store, embedding_store)
             )
             self.embedding_background = worker
         worker.start()
@@ -140,13 +143,15 @@ class ServiceWatcherMixin:
         return apply
 
     def _refresh_embedder(self) -> None:
-        store = self.store
-        if store is None:
+        if self.store is None or self.embedding_store is None:
             self.embedding_indexer = None
             return
-        self.embedding_indexer = self._create_embedding_indexer(store)
+        self.embedding_indexer = self._create_embedding_indexer()
 
-    def _create_embedding_indexer(self, store: IndexStore) -> SymbolEmbedder | None:
+    def _create_embedding_indexer(self, embedding_store: EmbeddingStore | None = None) -> SymbolEmbedder | None:
+        store = embedding_store if embedding_store is not None else self.embedding_store
+        if store is None:
+            return None
         backend = create_embedder()
         return SymbolEmbedder(backend, store) if backend is not None else None
 
@@ -155,9 +160,10 @@ class ServiceWatcherMixin:
         background: BackgroundIndexer,
         root: Path,
         store: IndexStore,
+        embedding_store: EmbeddingStore | None = None,
     ) -> dict[str, Any]:
         background.set_phase(PHASE_EMBEDDING)
-        indexer = self._create_embedding_indexer(store)
+        indexer = self._create_embedding_indexer(embedding_store)
         if indexer is None:
             return {
                 "status": "embedding-unavailable",
@@ -170,7 +176,7 @@ class ServiceWatcherMixin:
         if self.root_path is not None and self.root_path.resolve() == root.resolve() and self.store is store:
             self.embedding_indexer = indexer
         try:
-            count = indexer.count(store)
+            count = indexer.count()
             if count > 0:
                 return {
                     "status": "embedding-ready",
@@ -194,6 +200,7 @@ class ServiceWatcherMixin:
         store = store or self.store
         if store is None:
             return None
+        embedding_store = self.embedding_store
         with self._embedding_lock:
             existing = self.embedding_background
             if existing is not None and existing.is_running():
@@ -201,7 +208,7 @@ class ServiceWatcherMixin:
                 return {"status": "embedding-in-background", "model": model}
             if indexer is None:
                 worker = BackgroundIndexer(
-                    lambda background: self._load_and_embed_project(background, root, store)
+                    lambda background: self._load_and_embed_project(background, root, store, embedding_store)
                 )
                 model = _embedding_model_name(None)
             else:
@@ -250,9 +257,7 @@ class ServiceWatcherMixin:
                     self.last_errors.append(f"embedding-incremental: {exc}")
         if deleted:
             try:
-                with store.connect() as conn:
-                    for path in deleted:
-                        indexer.store.delete_file(conn, path)
+                indexer.delete_files(deleted)
             except Exception as exc:
                 self.last_errors.append(f"embedding-delete: {exc}")
 

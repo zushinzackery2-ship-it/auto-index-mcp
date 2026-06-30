@@ -8,9 +8,11 @@ from .config import INDEX_VERSION
 from .background_indexer import (
     BackgroundIndexer,
     PHASE_ANALYZING,
+    PHASE_DONE,
     PHASE_EMBEDDING,
     PHASE_SCANNING,
     PHASE_WRITING,
+    STATE_DONE,
 )
 from .index_policy import can_reuse_index, can_start_auto_watch_policy
 from .oversized_sources import scan_oversized_sources
@@ -50,6 +52,7 @@ class ServiceRebuildMixin:
         _auto_watch_after_build: bool
         _auto_watch_context_key: tuple[Path, Path] | None
         _background_context_key: tuple[Path, Path] | None
+        _last_index_build: dict[str, Any] | None
 
         def _ready_context(self) -> tuple[Path, IndexStore]: ...
         def status(self) -> dict[str, Any]: ...
@@ -67,7 +70,7 @@ class ServiceRebuildMixin:
             store: IndexStore | None = ...,
             indexer: SymbolEmbedder | None = ...,
         ) -> dict[str, Any] | None: ...
-        def _create_embedding_indexer(self, store: IndexStore) -> SymbolEmbedder | None: ...
+        def _create_embedding_indexer(self) -> SymbolEmbedder | None: ...
 
     def rebuild(self, reuse_if_fresh: bool = False) -> dict[str, Any]:
         self._ready_context()
@@ -245,6 +248,18 @@ class ServiceRebuildMixin:
         if indexer is not None:
             indexer.set_phase(PHASE_EMBEDDING)
         embedding_meta = self._embed_after_full_rebuild(root, store, context.embedding_indexer)
+        end = time.time()
+        if indexer is None:
+            # Synchronous rebuild has no BackgroundIndexer handle; record its
+            # timing so build_timers can still report this build's duration.
+            self._last_index_build = {
+                "state": STATE_DONE,
+                "phase": PHASE_DONE,
+                "running": False,
+                "elapsed_seconds": round(end - start, 3),
+                "started_at": start,
+                "finished_at": end,
+            }
         return {
             "status": "indexed",
             "root": scan.root,
@@ -257,7 +272,7 @@ class ServiceRebuildMixin:
             "oversized_paths": scan.oversized_paths,
             "privileged_paths": sorted(set(oversized.privileged_paths + scan.privileged_paths)),
             "error_count": len(scan.errors),
-            "elapsed_seconds": round(time.time() - start, 3),
+            "elapsed_seconds": round(end - start, 3),
             "index_path": str(store.db_path),
             "updated_at": store.get_metadata_map().get("updated_at"),
             "embedding": embedding_meta,

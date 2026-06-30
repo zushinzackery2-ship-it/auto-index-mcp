@@ -124,3 +124,45 @@ class BackgroundIndexer:
                 "error": self._error,
                 "last_result": self._last_result,
             }
+
+    def timer(self) -> dict[str, Any]:
+        """Normalized build-timer view: state plus real-time elapsed seconds.
+
+        ``elapsed_seconds`` ticks live while the build runs (recomputed against
+        the wall clock on every call) and freezes to the total duration once the
+        build finishes, so a polling caller always sees current build time.
+        """
+        snap = self.status()
+        return {
+            "state": snap["state"],
+            "phase": snap["phase"],
+            "running": snap["state"] == STATE_RUNNING,
+            "elapsed_seconds": snap["elapsed_seconds"],
+            "started_at": snap["started_at"],
+            "finished_at": snap["finished_at"],
+        }
+
+
+def idle_timer() -> dict[str, Any]:
+    """Timer view for a build that has never started in this session."""
+    return {
+        "state": STATE_IDLE,
+        "phase": PHASE_IDLE,
+        "running": False,
+        "elapsed_seconds": None,
+        "started_at": None,
+        "finished_at": None,
+    }
+
+
+def timer_or_idle(
+    background: "BackgroundIndexer | None",
+    fallback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Live timer for ``background``; ``fallback`` (e.g. a recorded synchronous
+    build) or an idle view when no background runner ever started."""
+    if background is not None:
+        view = background.timer()
+        if view["started_at"] is not None:
+            return view
+    return dict(fallback) if fallback is not None else idle_timer()

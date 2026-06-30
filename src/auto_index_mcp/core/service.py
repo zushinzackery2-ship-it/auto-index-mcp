@@ -18,6 +18,7 @@ from .service_semantic import ServiceSemanticMixin
 from .service_watcher import ServiceWatcherMixin
 from .tree_progress import TreeProgress
 from ..embedding.indexer import SymbolEmbedder
+from ..embedding.embedding_store import EmbeddingStore
 from ..workspace.view import WorkspaceView
 from ..indexing.store import IndexStore
 from ..indexing.watcher import FileEventWatcher
@@ -55,6 +56,9 @@ class AutoIndexService(
         self.watcher: FileEventWatcher | None = None
         self.embedding_indexer: SymbolEmbedder | None = None
         self.embedding_background: BackgroundIndexer | None = None
+        # Per-symbol vectors live in a standalone embeddings.db, decoupled from
+        # the navigable index.db (separate write lock, schema, lifecycle).
+        self.embedding_store: EmbeddingStore | None = None
         # Background full-tree rebuild runner. Stays None when the project is
         # enabled against a reusable existing index (fast path) or while idle.
         self.background: BackgroundIndexer | None = None
@@ -62,6 +66,10 @@ class AutoIndexService(
         self._auto_watch_after_build = False
         self._auto_watch_context_key: tuple[Path, Path] | None = None
         self._background_context_key: tuple[Path, Path] | None = None
+        # Timing of the most recent synchronous full rebuild (watcher-driven or
+        # programmatic enable). Background builds report timing through their own
+        # BackgroundIndexer; this captures the path that has no runner handle.
+        self._last_index_build: dict[str, Any] | None = None
         self._ignore_config = IgnoreConfig()
         self._ignore_config_dirty = False
         self.tree_progress = TreeProgress()
@@ -115,6 +123,8 @@ class AutoIndexService(
         self.index_root = self.index_root_override or project_index_root(root)
         self.store = IndexStore(self._db_path(root))
         self.store.initialize()
+        self.embedding_store = EmbeddingStore(self.index_root / "embeddings.db")
+        self.embedding_store.initialize()
         self._load_ignore_config_from_store()
         self.tree_progress = TreeProgress()
         if refresh_embedder:
@@ -142,6 +152,10 @@ class AutoIndexService(
         db_existed = self._db_path(root).exists()
         result = self.enable(str(root), rebuild=False, refresh_embedder=False)
         if db_existed and self.can_reuse_index_for(root):
+            # Reused a fresh index: build the vector store now (non-blocking) so
+            # semantic search is ready without waiting for a first query to
+            # trigger a lazy build.
+            self.ensure_embedding_background()
             return self.status()
         return self._start_background_rebuild(wait_seconds=wait_seconds)
 
@@ -196,6 +210,7 @@ class AutoIndexService(
                 "enabled": self.embedding_indexer is not None,
                 "model": self.embedding_indexer.backend.name if self.embedding_indexer is not None else None,
             },
+            "build_timers": self.build_timers(),
         }
         if self.background is not None:
             result["background_index"] = self.background.status()
@@ -220,8 +235,14 @@ class AutoIndexService(
             store.delete_file()
             self.store = None
             self.enabled = False
+            if self.embedding_store is not None:
+                self.embedding_store.delete_file()
+                self.embedding_store = None
+            self.embedding_indexer = None
         else:
             store.clear()
+            if self.embedding_store is not None:
+                self.embedding_store.clear()
         self.tree_progress.clear()
         self._invalidate_view_cache()
         return self.status()
