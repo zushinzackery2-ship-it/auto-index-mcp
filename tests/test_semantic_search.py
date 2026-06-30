@@ -117,10 +117,38 @@ def test_embedding_model_path_missing_bundled_returns_none(monkeypatch) -> None:
     assert embedding_backend.resolve_embedding_model_path({}) is None
 
 
+def test_embedding_threads_env_override_is_honored() -> None:
+    assert (
+        embedding_backend.resolve_embedding_threads(
+            {"AUTO_INDEX_EMBEDDING_THREADS": "6"}
+        )
+        == 6
+    )
+
+
+def test_embedding_threads_invalid_env_uses_default(monkeypatch) -> None:
+    monkeypatch.setattr(embedding_backend.os, "cpu_count", lambda: 8)
+    for bad in ("0", "-2", "abc", ""):
+        assert (
+            embedding_backend.resolve_embedding_threads(
+                {"AUTO_INDEX_EMBEDDING_THREADS": bad}
+            )
+            == 3
+        )
+
+
+def test_embedding_threads_default_leaves_a_core(monkeypatch) -> None:
+    for cores, expected in ((8, 3), (4, 3), (2, 1), (1, 1)):
+        monkeypatch.setattr(embedding_backend.os, "cpu_count", lambda c=cores: c)
+        assert embedding_backend.resolve_embedding_threads({}) == expected
+    monkeypatch.setattr(embedding_backend.os, "cpu_count", lambda: None)
+    assert embedding_backend.resolve_embedding_threads({}) == 1
+
+
 @pytest.mark.allow_default_embedder
 def test_bundled_model_enables_service_embeddings(monkeypatch, tmp_path: Path) -> None:
     class FakeOnnxEmbedder:
-        def __init__(self, model_dir: Path) -> None:
+        def __init__(self, model_dir: Path, intra_op_num_threads: int = 1) -> None:
             self.model_dir = Path(model_dir)
             self._backend = BagHashEmbedder(dim=32)
 

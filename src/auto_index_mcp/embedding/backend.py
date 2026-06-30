@@ -11,6 +11,8 @@ EMBEDDING_DIM_DEFAULT = 384
 _TOKEN_RE = re.compile(r"[a-z0-9_]+")
 _BUNDLED_MODEL_DIR = Path("models") / "minilm-onnx"
 _REQUIRED_MODEL_FILES = ("model.onnx", "tokenizer.json")
+_EMBEDDING_THREADS_ENV = "AUTO_INDEX_EMBEDDING_THREADS"
+_AUTO_THREAD_CAP = 3
 
 
 @runtime_checkable
@@ -98,6 +100,29 @@ def resolve_embedding_model_path(env: dict[str, str] | None = None) -> Path | No
     return _find_bundled_model_dir()
 
 
+def resolve_embedding_threads(env: dict[str, str] | None = None) -> int:
+    """Resolve the ONNX intra-op thread count for embedding inference.
+
+    ``AUTO_INDEX_EMBEDDING_THREADS`` overrides explicitly: any value >= 1 is
+    honored as-is, on the assumption the operator knows their host. Unset or
+    invalid falls back to a polite background default capped at
+    ``_AUTO_THREAD_CAP`` and never above ``cpu_count - 1`` so the user's
+    foreground work always keeps a core. The small MiniLM encoder stops scaling
+    past a few intra-op threads, so the cap costs no real throughput.
+    """
+    environment = env if env is not None else os.environ
+    raw = environment.get(_EMBEDDING_THREADS_ENV, "").strip()
+    if raw:
+        try:
+            requested = int(raw)
+        except ValueError:
+            requested = 0
+        if requested >= 1:
+            return requested
+    cores = os.cpu_count() or 1
+    return min(_AUTO_THREAD_CAP, max(1, cores - 1))
+
+
 def create_embedder(env: dict[str, str] | None = None) -> EmbeddingBackend | None:
     """Build an embedding backend from configuration.
 
@@ -121,7 +146,7 @@ def create_embedder(env: dict[str, str] | None = None) -> EmbeddingBackend | Non
     except ImportError:
         return None
     try:
-        backend = OnnxEmbedder(path)
+        backend = OnnxEmbedder(path, intra_op_num_threads=resolve_embedding_threads(env))
     except Exception:
         return None
     _EMBEDDER_CACHE[cache_key] = backend

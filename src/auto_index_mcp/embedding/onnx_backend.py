@@ -23,9 +23,15 @@ class OnnxEmbedder:
     Produces L2-normalized vectors. Default target is MiniLM-L6-v2 (dim=384).
     """
 
-    def __init__(self, model_dir: Path, max_length: int = 64) -> None:
+    def __init__(
+        self,
+        model_dir: Path,
+        max_length: int = 64,
+        intra_op_num_threads: int = 1,
+    ) -> None:
         self.model_dir = Path(model_dir)
         self.max_length = max_length
+        self.intra_op_num_threads = max(1, int(intra_op_num_threads))
         self._session: Any = None
         self._tokenizer: Any = None
         self._dim: int = 0
@@ -47,7 +53,7 @@ class OnnxEmbedder:
         self._tokenizer.enable_truncation(max_length=self.max_length)
         self._tokenizer.enable_padding(length=self.max_length)
         sess_options = ort.SessionOptions()
-        sess_options.intra_op_num_threads = 1
+        sess_options.intra_op_num_threads = self.intra_op_num_threads
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self._session = ort.InferenceSession(
             str(model_file),
