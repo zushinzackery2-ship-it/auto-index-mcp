@@ -24,6 +24,42 @@ def _dot(a: list[float], b: list[float]) -> float:
     return total
 
 
+def _score_records(
+    query_vector: list[float],
+    records: list[dict[str, Any]],
+    min_score: float,
+) -> list[tuple[float, dict[str, Any]]]:
+    """Score every record by dot product with the query.
+
+    Stored and query vectors are L2-normalized, so dot product is cosine
+    similarity. Uses a single float64 matrix multiply when numpy is available,
+    and falls back to an equivalent pure-Python loop otherwise; both paths
+    produce the same ranking.
+    """
+    if not records:
+        return []
+    try:
+        import numpy as np
+
+        matrix = np.asarray([record["vector"] for record in records], dtype=np.float64)
+        query = np.asarray(query_vector, dtype=np.float64)
+        if matrix.ndim == 2 and query.ndim == 1 and matrix.shape[1] == query.shape[0]:
+            scores = matrix @ query
+            return [
+                (float(scores[index]), records[index])
+                for index in range(len(records))
+                if float(scores[index]) >= min_score
+            ]
+    except (ImportError, ValueError, TypeError):
+        pass
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for record in records:
+        score = _dot(query_vector, record["vector"])
+        if score >= min_score:
+            scored.append((score, record))
+    return scored
+
+
 class SymbolEmbeddingStore:
     """Persistence layer for per-symbol embedding vectors.
 
@@ -132,11 +168,7 @@ class SymbolEmbeddingStore:
         min_score: float = 0.0,
     ) -> list[dict[str, Any]]:
         records = self.load_all(conn, model_name)
-        scored: list[tuple[float, dict[str, Any]]] = []
-        for record in records:
-            score = _dot(query_vector, record["vector"])
-            if score >= min_score:
-                scored.append((score, record))
+        scored = _score_records(query_vector, records, min_score)
         scored.sort(key=lambda item: item[0], reverse=True)
         hits: list[dict[str, Any]] = []
         for score, record in scored[: max(1, limit)]:

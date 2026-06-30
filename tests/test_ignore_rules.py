@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from auto_index_mcp.core.ignore_rules import IgnoreRule
 from auto_index_mcp.core.service import AutoIndexService
 from auto_index_mcp.indexing.store import IndexStore
 from auto_index_mcp.mcp_api.lifecycle import register_lifecycle_tools
@@ -146,3 +147,32 @@ def _write_child_index(root: Path) -> None:
 def _write_oversized_dump(path: Path) -> None:
     padding = "// padding data for oversized source\n" * 70_000
     path.write_text("class DumpRoot {}\n" + padding, encoding="utf-8")
+
+
+def test_single_star_does_not_cross_directory_separator() -> None:
+    rule = IgnoreRule.parse("src/*.py")
+    assert rule is not None
+    assert rule.matches("src/app.py", is_dir=False)
+    # The bug: fnmatch let '*' swallow '/', wrongly ignoring nested files.
+    assert not rule.matches("src/sub/app.py", is_dir=False)
+
+
+def test_double_star_crosses_directories() -> None:
+    rule = IgnoreRule.parse("src/**/app.py")
+    assert rule is not None
+    assert rule.matches("src/app.py", is_dir=False)
+    assert rule.matches("src/a/b/app.py", is_dir=False)
+
+
+def test_anchored_pattern_matches_only_at_root() -> None:
+    rule = IgnoreRule.parse("/main.py")
+    assert rule is not None
+    assert rule.matches("main.py", is_dir=False)
+    assert not rule.matches("pkg/main.py", is_dir=False)
+
+
+def test_basename_pattern_still_matches_anywhere() -> None:
+    rule = IgnoreRule.parse("*.pyc")
+    assert rule is not None
+    assert rule.matches("a/b/c.pyc", is_dir=False)
+    assert rule.matches("c.pyc", is_dir=False)

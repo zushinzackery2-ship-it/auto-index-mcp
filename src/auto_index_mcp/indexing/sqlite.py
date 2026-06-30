@@ -14,12 +14,18 @@ class IndexDatabase:
     def connect(self) -> Iterator[sqlite3.Connection]:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path, timeout=30.0)
-        self._configure(conn)
+        # _configure runs inside the try so a PRAGMA failure on a corrupt DB still
+        # hits finally:close(); otherwise the connection leaks and Windows refuses
+        # to unlink the file during corruption recovery.
         try:
+            self._configure(conn)
             yield conn
             conn.commit()
         except Exception:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
             raise
         finally:
             conn.close()
@@ -27,8 +33,8 @@ class IndexDatabase:
     @contextmanager
     def connect_readonly(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(f"file:{self.db_path.resolve().as_posix()}?mode=ro", timeout=30.0, uri=True)
-        self._configure(conn, readonly=True)
         try:
+            self._configure(conn, readonly=True)
             yield conn
         finally:
             conn.close()

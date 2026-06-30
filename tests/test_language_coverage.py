@@ -138,3 +138,45 @@ def test_pascal_ansi_files_are_decoded(tmp_path: Path) -> None:
     summary = service.file_summary("AnsiMain.pas")
 
     assert any(symbol["name"] == "RunAnsi" for symbol in summary["symbols"])
+
+
+def test_cpp_function_with_default_argument_is_indexed(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "Cfg.cpp").write_text(
+        "\n".join(
+            [
+                "void Configure(int retries = 3)",
+                "{",
+                "    DoWork(retries);",
+                "}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+
+    summary = service.file_summary("Cfg.cpp")
+    # A default-argument '=' inside the parens must not suppress the function.
+    assert any(symbol["name"] == "Configure" for symbol in summary["symbols"])
+
+
+def test_cpp_long_function_end_line_is_not_capped(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    body = "\n".join(f"    int v{index} = {index};" for index in range(120))
+    (project / "Big.cpp").write_text(
+        "int Compute()\n{\n" + body + "\n    return 0;\n}\n",
+        encoding="utf-8",
+    )
+
+    service = AutoIndexService(index_root=tmp_path / "index")
+    service.enable(str(project), rebuild=True)
+
+    summary = service.file_summary("Big.cpp")
+    compute = next(symbol for symbol in summary["symbols"] if symbol["name"] == "Compute")
+    # The function spans ~124 lines; end_line must reflect the real closing brace,
+    # not the old +80 cap that silently truncated large functions.
+    assert compute["end_line"] >= 124

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,9 @@ class AutoIndexService(
         # Use a shared view with TTL-based caching for better incremental update responsiveness
         self._view: WorkspaceView | None = None
         self._view_created_at: float = 0.0
+        # Guards check-then-act on the embedding background handle so two callers
+        # never spawn duplicate embedding passes over the same store.
+        self._embedding_lock = threading.Lock()
 
     @property
     def file_count(self) -> int:

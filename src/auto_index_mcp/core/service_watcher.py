@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,7 @@ class ServiceWatcherMixin:
         embedding_indexer: SymbolEmbedder | None
         embedding_background: BackgroundIndexer | None
         last_errors: list[str]
+        _embedding_lock: threading.Lock
 
         def _ready_context(self) -> tuple[Path, IndexStore]: ...
         def runtime_ignore_patterns(self) -> list[str]: ...
@@ -37,19 +39,20 @@ class ServiceWatcherMixin:
 
     def ensure_embedding_background(self) -> dict[str, Any]:
         root, store = self._ready_context()
-        existing = self.embedding_background
-        if existing is not None and existing.is_running():
-            return existing.status()
         if self.embedding_indexer is not None:
             try:
                 if self.embedding_indexer.count(store) > 0:
                     return {"state": "ready", "model": self.embedding_indexer.backend.name}
             except Exception:
                 pass
-        worker = BackgroundIndexer(
-            lambda background: self._load_and_embed_project(background, root, store)
-        )
-        self.embedding_background = worker
+        with self._embedding_lock:
+            existing = self.embedding_background
+            if existing is not None and existing.is_running():
+                return existing.status()
+            worker = BackgroundIndexer(
+                lambda background: self._load_and_embed_project(background, root, store)
+            )
+            self.embedding_background = worker
         worker.start()
         return worker.status()
 
@@ -191,21 +194,22 @@ class ServiceWatcherMixin:
         store = store or self.store
         if store is None:
             return None
-        existing = self.embedding_background
-        if existing is not None and existing.is_running():
-            model = _embedding_model_name(indexer)
-            return {"status": "embedding-in-background", "model": model}
-        if indexer is None:
-            worker = BackgroundIndexer(
-                lambda background: self._load_and_embed_project(background, root, store)
-            )
-            model = _embedding_model_name(None)
-        else:
-            worker = BackgroundIndexer(
-                lambda background: self._run_full_embedding(background, root, store, indexer)
-            )
-            model = _embedding_model_name(indexer)
-        self.embedding_background = worker
+        with self._embedding_lock:
+            existing = self.embedding_background
+            if existing is not None and existing.is_running():
+                model = _embedding_model_name(indexer)
+                return {"status": "embedding-in-background", "model": model}
+            if indexer is None:
+                worker = BackgroundIndexer(
+                    lambda background: self._load_and_embed_project(background, root, store)
+                )
+                model = _embedding_model_name(None)
+            else:
+                worker = BackgroundIndexer(
+                    lambda background: self._run_full_embedding(background, root, store, indexer)
+                )
+                model = _embedding_model_name(indexer)
+            self.embedding_background = worker
         worker.start()
         return {"status": "embedding-in-background", "model": model}
 

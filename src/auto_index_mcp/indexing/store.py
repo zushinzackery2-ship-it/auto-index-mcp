@@ -13,6 +13,23 @@ from .store_schema import initialize_schema
 from .store_rows import file_row_to_dict, symbol_row_to_dict
 from .store_writes import delete_file_rows, insert_child_indexes, insert_many
 
+_CORRUPTION_TOKENS = (
+    "malformed",
+    "not a database",
+    "disk image",
+    "file is encrypted",
+)
+
+
+def _is_corruption_error(exc: sqlite3.DatabaseError) -> bool:
+    """True only for errors that mean the DB file itself is unusable.
+
+    Lock contention (``database is locked``) and IO errors are explicitly NOT
+    corruption: they must propagate so a healthy index is never deleted.
+    """
+    message = str(exc).lower()
+    return any(token in message for token in _CORRUPTION_TOKENS)
+
 
 class IndexStore:
     def __init__(self, db_path: Path) -> None:
@@ -36,62 +53,57 @@ class IndexStore:
         child_indexes: list[dict[str, Any]] | None = None,
         extra_metadata: dict[str, Any] | None = None,
     ) -> None:
-        # Handle corrupted database by deleting and recreating
-        conn_to_close = None
         try:
-            conn_to_close = sqlite3.connect(self.db_path, timeout=1.0)
-            conn_to_close.execute("PRAGMA busy_timeout=1000")
-            conn_to_close.execute("DELETE FROM files")
-            conn_to_close.execute("DELETE FROM symbols")
-            conn_to_close.execute("DELETE FROM symbol_nesting")
-            conn_to_close.execute("DELETE FROM file_fts")
-            conn_to_close.execute("DELETE FROM child_indexes")
-            insert_many(conn_to_close, records)
-            insert_child_indexes(conn_to_close, child_indexes or [])
-            self.set_metadata(conn_to_close, "version", INDEX_VERSION)
-            self.set_metadata(conn_to_close, "root", root)
-            self.set_metadata(conn_to_close, "updated_at", time.time())
-            self.set_metadata(conn_to_close, "file_count", len(records))
-            children = child_indexes or []
-            self.set_metadata(conn_to_close, "child_index_count", len(children))
+            self._write_all(root, records, child_indexes, extra_metadata)
+        except sqlite3.DatabaseError as exc:
+            # Only a genuinely corrupted database file justifies discarding it.
+            # Lock contention, disk errors and programming bugs must surface so a
+            # healthy index is never destroyed under a transient failure.
+            if not _is_corruption_error(exc):
+                raise
+            self._discard_corrupt_database()
+            self.initialize()
+            self._write_all(root, records, child_indexes, extra_metadata)
+
+    def _write_all(
+        self,
+        root: str,
+        records: list[FileRecord],
+        child_indexes: list[dict[str, Any]] | None,
+        extra_metadata: dict[str, Any] | None,
+    ) -> None:
+        # connect() runs WAL + 30s busy_timeout + foreign_keys and commits the
+        # whole DELETE+INSERT as one transaction (rolling back on any error), so a
+        # concurrent reader sees either the old index or the new one - never a
+        # half-written mix - and a failed write leaves the existing index intact.
+        children = child_indexes or []
+        with self.connect() as conn:
+            conn.execute("DELETE FROM files")
+            conn.execute("DELETE FROM symbols")
+            conn.execute("DELETE FROM symbol_nesting")
+            conn.execute("DELETE FROM file_fts")
+            conn.execute("DELETE FROM child_indexes")
+            insert_many(conn, records)
+            insert_child_indexes(conn, children)
+            self.set_metadata(conn, "version", INDEX_VERSION)
+            self.set_metadata(conn, "root", root)
+            self.set_metadata(conn, "updated_at", time.time())
+            self.set_metadata(conn, "file_count", len(records))
+            self.set_metadata(conn, "child_index_count", len(children))
             self.set_metadata(
-                conn_to_close,
+                conn,
                 "total_file_count",
                 len(records) + sum(int(child["file_count"]) for child in children),
             )
             for key, value in (extra_metadata or {}).items():
-                self.set_metadata(conn_to_close, key, value)
-            conn_to_close.commit()
-        except Exception:
-            # Database is corrupted, delete and reinitialize
-            if conn_to_close:
-                conn_to_close.close()
-            self.db_path.unlink(missing_ok=True)
-            self.initialize()
-            with self.connect() as conn:
-                conn.execute("DELETE FROM files")
-                conn.execute("DELETE FROM symbols")
-                conn.execute("DELETE FROM symbol_nesting")
-                conn.execute("DELETE FROM file_fts")
-                conn.execute("DELETE FROM child_indexes")
-                insert_many(conn, records)
-                children = child_indexes or []
-                insert_child_indexes(conn, children)
-                self.set_metadata(conn, "version", INDEX_VERSION)
-                self.set_metadata(conn, "root", root)
-                self.set_metadata(conn, "updated_at", time.time())
-                self.set_metadata(conn, "file_count", len(records))
-                self.set_metadata(conn, "child_index_count", len(children))
-                self.set_metadata(
-                    conn,
-                    "total_file_count",
-                    len(records) + sum(int(child["file_count"]) for child in children),
-                )
-                for key, value in (extra_metadata or {}).items():
-                    self.set_metadata(conn, key, value)
-        else:
-            if conn_to_close:
-                conn_to_close.close()
+                self.set_metadata(conn, key, value)
+
+    def _discard_corrupt_database(self) -> None:
+        # Drop the corrupt main file together with its WAL/SHM sidecars so a stale
+        # journal cannot be replayed onto the freshly initialized index.
+        self.db_path.unlink(missing_ok=True)
+        for suffix in ("-wal", "-shm"):
+            Path(str(self.db_path) + suffix).unlink(missing_ok=True)
 
     def replace_files(self, records: list[FileRecord]) -> None:
         if not records:

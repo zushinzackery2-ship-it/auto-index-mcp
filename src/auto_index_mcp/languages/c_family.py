@@ -56,9 +56,13 @@ def _function_candidate(lines: list[str], start: int) -> tuple[str, str, int] | 
 
 
 def _function_info(header: str) -> tuple[str, bool] | None:
-    if "=" in header and "operator=" not in header:
+    prefix = header.split("(", 1)[0]
+    # Only an assignment '=' BEFORE the parameter list disqualifies a function
+    # (e.g. `int x = foo();`). A '=' inside the parens is a default argument and
+    # must not suppress the symbol (e.g. `void Configure(int retries = 3)`).
+    if "=" in prefix and "operator" not in prefix:
         return None
-    prefix = header.split("(", 1)[0].strip()
+    prefix = prefix.strip()
     if not prefix:
         return None
     raw_token = prefix.split()[-1]
@@ -110,7 +114,7 @@ def _find_brace_end(lines: list[str], start: int) -> int:
         depth += opens
         if opened and depth <= 0:
             return index + 1
-    return min(start + 80, len(lines))
+    return len(lines)
 
 
 def _starts_with_keyword(text: str) -> bool:

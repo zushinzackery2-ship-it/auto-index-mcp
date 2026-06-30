@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,7 +50,7 @@ class IgnoreRule:
             return self._matches_directory(rel, is_dir)
         if not self.has_slash and not self.anchored:
             return fnmatch.fnmatch(Path(rel).name, self.pattern)
-        return fnmatch.fnmatch(rel, self.pattern)
+        return _path_glob_match(rel, self.pattern)
 
     def _matches_directory(self, rel: str, is_dir: bool) -> bool:
         if not self.has_slash and not self.anchored:
@@ -188,3 +189,70 @@ def _parse_rules(patterns: list[str]) -> list[IgnoreRule]:
 
 def _normalize_rel(path: str) -> str:
     return path.replace("\\", "/").strip("/")
+
+
+_GLOB_REGEX_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _path_glob_match(rel: str, pattern: str) -> bool:
+    """Match a relative posix path against a gitignore-style glob.
+
+    Unlike ``fnmatch``, a single ``*`` does NOT cross ``/`` (it matches within
+    one path segment), ``**`` crosses segments, and ``?`` matches one non-slash
+    character. This keeps slashed patterns like ``src/*.py`` from wrongly
+    matching ``src/sub/app.py`` the way ``fnmatch`` does.
+    """
+    regex = _GLOB_REGEX_CACHE.get(pattern)
+    if regex is None:
+        regex = re.compile(_glob_to_regex(pattern))
+        _GLOB_REGEX_CACHE[pattern] = regex
+    return regex.fullmatch(rel) is not None
+
+
+def _glob_to_regex(pattern: str) -> str:
+    out: list[str] = []
+    index = 0
+    length = len(pattern)
+    while index < length:
+        char = pattern[index]
+        if char == "*":
+            if index + 1 < length and pattern[index + 1] == "*":
+                index += 2
+                if index < length and pattern[index] == "/":
+                    out.append("(?:.*/)?")
+                    index += 1
+                else:
+                    out.append(".*")
+            else:
+                out.append("[^/]*")
+                index += 1
+        elif char == "?":
+            out.append("[^/]")
+            index += 1
+        elif char == "[":
+            close = _char_class_end(pattern, index)
+            if close is None:
+                out.append(re.escape("["))
+                index += 1
+            else:
+                inner = pattern[index + 1:close]
+                if inner.startswith("!"):
+                    inner = "^" + inner[1:]
+                out.append("[" + inner + "]")
+                index = close + 1
+        else:
+            out.append(re.escape(char))
+            index += 1
+    return "".join(out)
+
+
+def _char_class_end(pattern: str, start: int) -> int | None:
+    index = start + 1
+    length = len(pattern)
+    if index < length and pattern[index] in ("!", "^"):
+        index += 1
+    if index < length and pattern[index] == "]":
+        index += 1
+    while index < length and pattern[index] != "]":
+        index += 1
+    return index if index < length else None
