@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .config import INDEX_VERSION
 from .background_indexer import (
@@ -19,58 +19,24 @@ from .oversized_sources import scan_oversized_sources
 from .quality_dangling import with_project_quality_findings
 from .rebuild_context import RebuildContext
 from .service_rebuild_ignore import config_ignore_metadata, service_ignore_fingerprint
+from .service_state import ServiceBase
 from .tree_progress import TreeProgress
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.active_sources import annotate_active_sources
 from ..indexing.scanner import SourceScanner
 from ..indexing.build_lock import BuildLock
-from ..indexing.store import IndexStore
-from ..embedding.indexer import SymbolEmbedder
 from ..workspace.discovery import child_indexes_to_dicts, discover_child_indexes
 
 
-class ServiceRebuildMixin:
+class ServiceRebuildMixin(ServiceBase):
     """Full-tree rebuild orchestration.
 
     Owns background dispatch, cross-process build-lock handling, per-phase
     progress reporting, and the index-state envelopes that keep search
     responses honest while a build is in flight. Concrete state
-    (store/root_path/background/...) and the watcher/embedding hooks are
-    provided by AutoIndexService at runtime.
+    (store/root_path/background/...) lives in ServiceBase; the watcher and
+    embedding hooks come from their mixins through the shared MRO.
     """
-
-    if TYPE_CHECKING:
-        index_root: Path | None
-        root_path: Path | None
-        store: IndexStore | None
-        background: BackgroundIndexer | None
-        embedding_indexer: SymbolEmbedder | None
-        watcher: Any
-        tree_progress: TreeProgress
-        enabled: bool
-        last_errors: list[str]
-        _auto_watch_after_build: bool
-        _auto_watch_context_key: tuple[Path, Path] | None
-        _background_context_key: tuple[Path, Path] | None
-        _last_index_build: dict[str, Any] | None
-
-        def _ready_context(self) -> tuple[Path, IndexStore]: ...
-        def status(self) -> dict[str, Any]: ...
-        def _background_status(self) -> dict[str, Any]: ...
-        def ignore_config(self): ...
-        def runtime_ignore_patterns(self) -> list[str]: ...
-        def auto_ignore_patterns(self) -> list[str]: ...
-        def privileged_ignore_patterns(self) -> list[str]: ...
-        def replace_ignore_config(self, config, dirty: bool) -> None: ...
-        def _mark_ignore_config_persisted(self) -> None: ...
-        def start_watcher(self, debounce_seconds: float = ..., wait_ready: bool = ...) -> dict[str, Any]: ...
-        def _embed_after_full_rebuild(
-            self,
-            root: Path,
-            store: IndexStore | None = ...,
-            indexer: SymbolEmbedder | None = ...,
-        ) -> dict[str, Any] | None: ...
-        def _create_embedding_indexer(self) -> SymbolEmbedder | None: ...
 
     def rebuild(self, reuse_if_fresh: bool = False) -> dict[str, Any]:
         self._ready_context()

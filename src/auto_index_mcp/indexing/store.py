@@ -200,6 +200,26 @@ class IndexStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def symbols_for_files(self, paths: list[str]) -> list[dict[str, Any]]:
+        """Symbol rows for the given file paths only (incremental embedding)."""
+        if not paths:
+            return []
+        rows: list[Any] = []
+        with self.read_connect() as conn:
+            # Chunk to stay well below SQLite's bound-parameter limit.
+            for start in range(0, len(paths), 500):
+                chunk = paths[start:start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows.extend(
+                    conn.execute(
+                        "SELECT file_path, name, kind, line, end_line, signature, complexity "
+                        f"FROM symbols WHERE file_path IN ({placeholders}) "
+                        "ORDER BY file_path, line",
+                        chunk,
+                    ).fetchall()
+                )
+        return [dict(row) for row in rows]
+
     def symbol_count(self) -> int:
         with self.read_connect() as conn:
             row = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()

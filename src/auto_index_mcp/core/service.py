@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import threading
-import time
 from pathlib import Path
 from typing import Any
 
 from .config import project_index_root
-from .background_indexer import BackgroundIndexer
-from .ignore_config import IgnoreConfig
 from .service_ignore import ServiceIgnoreMixin
 from .service_navigation import ServiceNavigationMixin
 from .service_index_state import ServiceIndexStateMixin
@@ -15,17 +11,11 @@ from .service_quality import ServiceQualityMixin
 from .service_rebuild import ServiceRebuildMixin
 from .service_search import ServiceSearchMixin
 from .service_semantic import ServiceSemanticMixin
+from .service_state import ServiceBase
 from .service_watcher import ServiceWatcherMixin
 from .tree_progress import TreeProgress
-from ..embedding.indexer import SymbolEmbedder
 from ..embedding.embedding_store import EmbeddingStore
-from ..workspace.view import WorkspaceView
 from ..indexing.store import IndexStore
-from ..indexing.watcher import FileEventWatcher
-
-
-# View cache TTL - must be <= WorkspaceView cache TTL for consistency
-_VIEW_CACHE_TTL_SECONDS = 0.5
 
 
 class AutoIndexService(
@@ -40,71 +30,11 @@ class AutoIndexService(
 ):
     """Single-root code index service.
 
-    Owns lifecycle (enable/disable/clear/status) and shared infrastructure
-    (store, cached WorkspaceView, readiness guards); rebuild orchestration,
-    the filesystem watcher, and the search/navigation tool surfaces live in
-    the composed mixins.
+    Owns lifecycle (enable/disable/clear/status); shared state and the
+    smallest helpers live in ServiceBase (which every mixin extends), and
+    rebuild orchestration, the filesystem watcher, and the search/navigation
+    tool surfaces live in the composed mixins.
     """
-
-    def __init__(self, index_root: Path | None = None) -> None:
-        self.index_root_override = index_root
-        self.index_root: Path | None = index_root
-        self.root_path: Path | None = None
-        self.enabled = False
-        self.last_errors: list[str] = []
-        self.store: IndexStore | None = None
-        self.watcher: FileEventWatcher | None = None
-        self.embedding_indexer: SymbolEmbedder | None = None
-        self.embedding_background: BackgroundIndexer | None = None
-        # Per-symbol vectors live in a standalone embeddings.db, decoupled from
-        # the navigable index.db (separate write lock, schema, lifecycle).
-        self.embedding_store: EmbeddingStore | None = None
-        # Background full-tree rebuild runner. Stays None when the project is
-        # enabled against a reusable existing index (fast path) or while idle.
-        self.background: BackgroundIndexer | None = None
-        # Set when a watcher should auto-start as soon as a background build ends.
-        self._auto_watch_after_build = False
-        self._auto_watch_context_key: tuple[Path, Path] | None = None
-        self._background_context_key: tuple[Path, Path] | None = None
-        # Timing of the most recent synchronous full rebuild (watcher-driven or
-        # programmatic enable). Background builds report timing through their own
-        # BackgroundIndexer; this captures the path that has no runner handle.
-        self._last_index_build: dict[str, Any] | None = None
-        self._ignore_config = IgnoreConfig()
-        self._ignore_config_dirty = False
-        self.tree_progress = TreeProgress()
-        # Use a shared view with TTL-based caching for better incremental update responsiveness
-        self._view: WorkspaceView | None = None
-        self._view_created_at: float = 0.0
-        # Guards check-then-act on the embedding background handle so two callers
-        # never spawn duplicate embedding passes over the same store.
-        self._embedding_lock = threading.Lock()
-
-    @property
-    def file_count(self) -> int:
-        """Cached file count from metadata, avoid full all_files() call."""
-        self._store_context()
-        assert self.store is not None
-        return len(self.store.search_targets())
-
-    @property
-    def view(self) -> WorkspaceView:
-        """Get WorkspaceView with TTL-based caching."""
-        self._store_context()
-        now = time.time()
-        if self._view is None or (now - self._view_created_at) > _VIEW_CACHE_TTL_SECONDS:
-            self._view = WorkspaceView(
-                self._store_context(),
-                ignore_patterns=self.runtime_ignore_patterns(),
-                auto_ignore_patterns=self.auto_ignore_patterns(),
-                privileged_patterns=self.privileged_ignore_patterns(),
-            )
-            self._view_created_at = now
-        return self._view
-
-    def _invalidate_view_cache(self) -> None:
-        """Invalidate the cached view after mutations."""
-        self._view = None
 
     def enable(
         self,
@@ -246,27 +176,3 @@ class AutoIndexService(
         self.tree_progress.clear()
         self._invalidate_view_cache()
         return self.status()
-
-    def _db_path(self, root: Path) -> Path:
-        index_root = self.index_root_override or project_index_root(root)
-        return index_root / "index.db"
-
-    def _require_ready(self) -> None:
-        self._store_context()
-        if self.root_path is None:
-            raise RuntimeError("auto-index root is not configured")
-
-    def _require_store(self) -> None:
-        if self.store is None:
-            raise RuntimeError("auto-index is not enabled")
-
-    def _store_context(self) -> IndexStore:
-        self._require_store()
-        assert self.store is not None
-        return self.store
-
-    def _ready_context(self) -> tuple[Path, IndexStore]:
-        self._require_ready()
-        assert self.root_path is not None
-        assert self.store is not None
-        return self.root_path, self.store

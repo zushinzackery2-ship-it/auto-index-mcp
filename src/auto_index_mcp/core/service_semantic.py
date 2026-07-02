@@ -1,30 +1,15 @@
 from __future__ import annotations
 
-from typing import Any, Protocol, cast
+from typing import Any
 
-from .background_indexer import BackgroundIndexer, timer_or_idle
+from .background_indexer import timer_or_idle
+from .service_state import ServiceBase
 from ..embedding.backend import resolve_embedding_model_path
 from ..embedding.indexer import SymbolEmbedder
 from ..indexing.store import IndexStore
 
 
-class _SemanticService(Protocol):
-    root_path: Any
-    store: IndexStore | None
-    embedding_indexer: SymbolEmbedder | None
-    embedding_background: BackgroundIndexer | None
-
-    def _require_ready(self) -> None:
-        ...
-
-    def _with_index_status(self, result: dict[str, Any]) -> dict[str, Any]:
-        ...
-
-    def ensure_embedding_background(self) -> dict[str, Any]:
-        ...
-
-
-class ServiceSemanticMixin:
+class ServiceSemanticMixin(ServiceBase):
     def semantic_search(
         self,
         query: str,
@@ -38,13 +23,12 @@ class ServiceSemanticMixin:
         backend or the bundled repo model; without one it reports unavailable
         rather than degrading to a fake result.
         """
-        service = cast(_SemanticService, self)
-        service._require_ready()
+        self._require_ready()
         if not query.strip():
             raise ValueError("query is required")
-        if service.store is None:
+        if self.store is None:
             return _unavailable("embedding store is unavailable")
-        indexer = service.embedding_indexer
+        indexer = self.embedding_indexer
         if indexer is None:
             if resolve_embedding_model_path() is None:
                 return _unavailable(
@@ -52,13 +36,13 @@ class ServiceSemanticMixin:
                     "and keep models/minilm-onnx, or set "
                     "AUTO_INDEX_EMBEDDING_MODEL to an ONNX model directory"
                 )
-            return _building(service.ensure_embedding_background(), service.embedding_background)
-        count = _embedding_vector_count(service, indexer)
+            return _building(self.ensure_embedding_background(), self.embedding_background)
+        count = _embedding_vector_count(indexer)
         if count <= 0:
-            return _building(service.ensure_embedding_background(), service.embedding_background)
+            return _building(self.ensure_embedding_background(), self.embedding_background)
         safe_limit = max(1, min(int(limit), 100))
         hits = indexer.search(query, safe_limit, min_score)
-        embedding = _partial_embedding_status(service, count)
+        embedding = self._partial_embedding_status(count)
         result: dict[str, Any] = {
             "format": "auto_index_semantic_search",
             "model": indexer.backend.name,
@@ -67,19 +51,16 @@ class ServiceSemanticMixin:
         }
         if embedding is not None:
             result["embedding"] = embedding
-        return service._with_index_status(
-            result
-        )
+        return self._with_index_status(result)
 
     def embedding_status(self) -> dict[str, Any]:
         """Report whether a semantic embedding backend is active and its vector count."""
-        service = cast(_SemanticService, self)
-        indexer = service.embedding_indexer
-        if indexer is None or service.store is None:
+        indexer = self.embedding_indexer
+        if indexer is None or self.store is None:
             result: dict[str, Any] = {"enabled": False, "model": None, "vector_count": 0}
-            if service.embedding_background is not None:
-                result["embedding_background"] = service.embedding_background.status()
-            result["build_timer"] = timer_or_idle(service.embedding_background, None)
+            if self.embedding_background is not None:
+                result["embedding_background"] = self.embedding_background.status()
+            result["build_timer"] = timer_or_idle(self.embedding_background, None)
             return result
         try:
             count = indexer.count()
@@ -89,38 +70,32 @@ class ServiceSemanticMixin:
                 "model": indexer.backend.name,
                 "vector_count": 0,
                 "error": str(exc),
-                "build_timer": timer_or_idle(service.embedding_background, None),
+                "build_timer": timer_or_idle(self.embedding_background, None),
             }
-        result: dict[str, Any] = {
+        result = {
             "enabled": True,
             "model": indexer.backend.name,
             "vector_count": count,
         }
-        if service.embedding_background is not None:
-            result["embedding_background"] = service.embedding_background.status()
-        result["build_timer"] = timer_or_idle(service.embedding_background, None)
+        if self.embedding_background is not None:
+            result["embedding_background"] = self.embedding_background.status()
+        result["build_timer"] = timer_or_idle(self.embedding_background, None)
         return result
 
-
-def _partial_embedding_status(
-    service: _SemanticService,
-    vector_count: int,
-) -> dict[str, Any] | None:
-    background = service.embedding_background
-    if background is None or not background.is_running() or service.store is None:
-        return None
-    return {
-        "status": "partial",
-        "vector_count": vector_count,
-        "total_symbol_count": _symbol_count(service.store),
-        "background": background.status(),
-        "build_timer": background.timer(),
-    }
+    def _partial_embedding_status(self, vector_count: int) -> dict[str, Any] | None:
+        background = self.embedding_background
+        if background is None or not background.is_running() or self.store is None:
+            return None
+        return {
+            "status": "partial",
+            "vector_count": vector_count,
+            "total_symbol_count": _symbol_count(self.store),
+            "background": background.status(),
+            "build_timer": background.timer(),
+        }
 
 
-def _embedding_vector_count(service: _SemanticService, indexer: SymbolEmbedder) -> int:
-    if service.store is None:
-        return 0
+def _embedding_vector_count(indexer: SymbolEmbedder) -> int:
     try:
         return indexer.count()
     except Exception:
@@ -136,7 +111,7 @@ def _symbol_count(store: IndexStore) -> int:
 
 def _building(
     background_status: dict[str, Any],
-    background: BackgroundIndexer | None,
+    background: Any,
 ) -> dict[str, Any]:
     return {
         "format": "auto_index_semantic_search_unavailable",

@@ -15,9 +15,10 @@ from ..core.config import (
 from ..core.ignore_config import matches_patterns
 from ..core.ignore_rules import IgnoreRules
 from ..core.models import FileRecord, ScanResult, SymbolRecord
+from ..core.source_clean import clean_source_lines
 from ..core.tree_progress import TreeProgress
 from ..core._utils import is_relative_to
-from ..core.quality_dangling import file_quality_findings
+from ..core.quality_unreachable import file_quality_findings
 from ..core.text_decode import decode_text
 from .analysis import enrich_symbols
 from ..languages.c_family import extract_c_family_symbols
@@ -27,6 +28,8 @@ from ..languages.generic import extract_symbols
 from ..languages.pascal import extract_pascal_symbols
 
 IMPORT_RE = re.compile(r"^\s*(?:from\s+[\w.]+\s+import|import\s+[\w., ]+|#include\s+[<\"].+[>\"]|using\s+[\w.:]+;)")
+
+
 class SourceScanner:
     def __init__(
         self,
@@ -60,21 +63,24 @@ class SourceScanner:
 
         for path in self._iter_files():
             try:
+                # Resolve and stat exactly once per file; both are real syscalls
+                # on Windows and everything downstream reuses these results.
                 target = path.resolve(strict=True)
-                if self._should_skip(target):
+                stat = target.stat()
+                if self._should_skip(target, stat):
                     skipped += 1
                     continue
                 if target in seen_targets:
                     skipped += 1
                     continue
                 seen_targets.add(target)
-                reused_record = self._reuse_record_if_current(target)
+                reused_record = self._reuse_record_if_current(target, stat)
                 if reused_record:
                     records.append(reused_record)
                     self._note_progress_file(reused_record)
                     reused += 1
                     continue
-                record = self._read_record(target)
+                record = self._read_record(target, stat)
                 records.append(record)
                 self._note_progress_file(record)
             except (OSError, UnicodeDecodeError, ValueError) as exc:
@@ -92,8 +98,7 @@ class SourceScanner:
             sorted(set(self.privileged_paths)),
         )
 
-    def _should_skip(self, path: Path) -> bool:
-        resolved = path.resolve(strict=True)
+    def _should_skip(self, resolved: Path, stat: os.stat_result) -> bool:
         if not is_relative_to(resolved, self.root):
             return True
         if any(is_relative_to(resolved, root) for root in self.boundary_roots):
@@ -105,7 +110,7 @@ class SourceScanner:
             return True
         if matches_patterns(self.auto_excludes, rel) and not self._is_privileged(rel):
             return True
-        if resolved.stat().st_size > self.max_bytes and not self._is_privileged(rel):
+        if stat.st_size > self.max_bytes and not self._is_privileged(rel):
             self.oversized_paths.append(rel)
             return True
         return False
@@ -142,24 +147,33 @@ class SourceScanner:
 
     def read_path(self, path: Path) -> FileRecord:
         path = path.resolve(strict=True)
-        if self._should_skip(path):
+        stat = path.stat()
+        if self._should_skip(path, stat):
             raise ValueError(f"path is not indexable: {self._relative(path)}")
-        return self._read_record(path)
+        return self._read_record(path, stat)
 
-    def _read_record(self, path: Path) -> FileRecord:
-        path = path.resolve(strict=True)
+    def _read_record(self, path: Path, stat: os.stat_result) -> FileRecord:
         rel = self._relative(path)
-        if path.stat().st_size > self.max_bytes and self._is_privileged(rel):
+        if stat.st_size > self.max_bytes and self._is_privileged(rel):
             self.privileged_paths.append(rel)
         data = path.read_bytes()
         text = decode_text(data)
         lines = text.splitlines()
         imports = self._extract_matches(lines, IMPORT_RE, whole_line=True)
         language = LANGUAGE_BY_EXTENSION.get(path.suffix.lower(), "text")
-        symbols = enrich_symbols(lines, self._extract_symbols(language, text, lines), language)
+        # One comment/string-aware cleaning pass feeds symbol extraction,
+        # call/complexity analysis, nesting and quality checks alike.
+        cleaned = clean_source_lines(lines, language)
+        symbols = enrich_symbols(
+            lines,
+            self._extract_symbols(language, text, lines, cleaned),
+            language,
+            cleaned,
+        )
         quality_findings = file_quality_findings(
             {"path": rel, "language": language, "symbols": [asdict(symbol) for symbol in symbols]},
             text,
+            cleaned,
         )
         parent = str(Path(rel).parent).replace("\\", "/")
         if parent == ".":
@@ -171,7 +185,7 @@ class SourceScanner:
             extension=path.suffix.lower(),
             language=language,
             size=len(data),
-            mtime_ns=path.stat().st_mtime_ns,
+            mtime_ns=stat.st_mtime_ns,
             sha1=hashlib.sha1(data).hexdigest(),
             line_count=len(lines),
             imports=imports[:80],
@@ -181,12 +195,11 @@ class SourceScanner:
             snippet="\n".join(lines[:40]),
         )
 
-    def _reuse_record_if_current(self, path: Path) -> FileRecord | None:
+    def _reuse_record_if_current(self, path: Path, stat: os.stat_result) -> FileRecord | None:
         rel = self._relative(path)
         existing = self.existing_records.get(rel)
         if not existing:
             return None
-        stat = path.stat()
         if existing["size"] != stat.st_size or existing["mtime_ns"] != stat.st_mtime_ns:
             return None
         return FileRecord(
@@ -214,25 +227,31 @@ class SourceScanner:
                 found.append(line.strip() if whole_line else match.group(1))
         return found
 
-    def _extract_symbols(self, language: str, text: str, lines: list[str]) -> list[SymbolRecord]:
+    def _extract_symbols(
+        self,
+        language: str,
+        text: str,
+        lines: list[str],
+        cleaned: list[str],
+    ) -> list[SymbolRecord]:
         if language == "python":
             return extract_python_symbols(text, lines)
         if language in {"javascript", "typescript"}:
-            return extract_javascript_like_symbols(lines)
+            return extract_javascript_like_symbols(lines, cleaned)
         if language in {"c", "cpp"}:
-            return extract_c_family_symbols(lines)
+            return extract_c_family_symbols(lines, cleaned)
         if language == "pascal":
-            return extract_pascal_symbols(lines)
-        return extract_symbols(lines)
+            return extract_pascal_symbols(lines, cleaned)
+        return extract_symbols(lines, cleaned)
 
-    def _relative(self, path: Path) -> str:
-        return str(path.resolve(strict=True).relative_to(self.root)).replace("\\", "/")
+    def _relative(self, resolved: Path) -> str:
+        return str(resolved.relative_to(self.root)).replace("\\", "/")
 
     def _is_privileged(self, rel: str) -> bool:
         return matches_patterns(self.privileged_patterns, rel)
 
     def _display_path(self, path: Path) -> str:
         try:
-            return self._relative(path)
+            return self._relative(path.resolve(strict=True))
         except (OSError, ValueError):
             return str(path)

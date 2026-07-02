@@ -4,7 +4,7 @@ import re
 from dataclasses import replace
 
 from ..core.models import FileRecord, SymbolRecord
-from ..core._utils import strip_comments, strip_string_literals
+from ..core.source_clean import clean_source_lines
 from .nesting import annotate_symbol_nesting
 
 CALL_RE = re.compile(r"\b([A-Za-z_][\w]*)\s*\(")
@@ -12,10 +12,18 @@ CONTROL_NAMES = {"if", "for", "while", "switch", "return", "raise", "catch", "wi
 COMPLEXITY_RE = re.compile(r"\b(if|elif|else if|for|while|case|catch|except|and|or|\?|&&|\|\|)\b")
 
 
-def enrich_symbols(lines: list[str], symbols: list[SymbolRecord], language: str = "") -> list[SymbolRecord]:
+def enrich_symbols(
+    lines: list[str],
+    symbols: list[SymbolRecord],
+    language: str = "",
+    cleaned_lines: list[str] | None = None,
+) -> list[SymbolRecord]:
+    # Comment/string regions are blanked once per file so complexity, call and
+    # nesting analysis only ever see executable code.
+    cleaned = cleaned_lines if cleaned_lines is not None else clean_source_lines(lines, language)
     enriched = []
     for symbol in symbols:
-        body = lines[symbol.line - 1:symbol.end_line]
+        body = cleaned[symbol.line - 1:symbol.end_line]
         enriched.append(
             SymbolRecord(
                 name=symbol.name,
@@ -28,7 +36,7 @@ def enrich_symbols(lines: list[str], symbols: list[SymbolRecord], language: str 
                 called_by=[],
             )
         )
-    return annotate_symbol_nesting(lines, enriched, language)
+    return annotate_symbol_nesting(cleaned, enriched, language)
 
 
 def resolve_project_callers(records: list[FileRecord]) -> list[FileRecord]:
@@ -107,18 +115,17 @@ def _apply_callers(
     return updated_records
 
 
-def _complexity(lines: list[str]) -> int:
+def _complexity(cleaned_body: list[str]) -> int:
     score = 1
-    for line in lines:
-        score += len(COMPLEXITY_RE.findall(strip_comments(line)))
+    for line in cleaned_body:
+        score += len(COMPLEXITY_RE.findall(line))
     return score
 
 
-def _calls(lines: list[str], own_name: str) -> list[str]:
+def _calls(cleaned_body: list[str], own_name: str) -> list[str]:
     calls: list[str] = []
-    for line in lines:
-        searchable = strip_comments(strip_string_literals(line))
-        for name in CALL_RE.findall(searchable):
+    for line in cleaned_body:
+        for name in CALL_RE.findall(line):
             if name == own_name or name in CONTROL_NAMES:
                 continue
             if name not in calls:

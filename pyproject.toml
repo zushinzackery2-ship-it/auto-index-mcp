@@ -30,4 +30,5 @@ where = ["src"]
 pythonpath = ["src"]
 markers = [
     "allow_default_embedder: allow a test to use the production embedding backend factory",
+    "smoke: end-to-end smoke checks that rebuild the project index",
 ]

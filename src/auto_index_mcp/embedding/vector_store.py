@@ -24,39 +24,44 @@ def _dot(a: list[float], b: list[float]) -> float:
     return total
 
 
-def _score_records(
+def _score_rows(
     query_vector: list[float],
-    records: list[dict[str, Any]],
+    rows: list[Any],
     min_score: float,
-) -> list[tuple[float, dict[str, Any]]]:
-    """Score every record by dot product with the query.
+) -> list[tuple[float, Any]]:
+    """Score every stored row by dot product with the query.
 
     Stored and query vectors are L2-normalized, so dot product is cosine
-    similarity. Uses a single float64 matrix multiply when numpy is available,
-    and falls back to an equivalent pure-Python loop otherwise; both paths
-    produce the same ranking.
+    similarity. The fast path builds one float32 matrix straight from the raw
+    blobs (``np.frombuffer`` is zero-copy) and does a single float64 multiply;
+    the pure-Python fallback decodes per row and produces the same ranking.
     """
-    if not records:
+    if not rows:
         return []
+    dim = len(query_vector)
     try:
         import numpy as np
 
-        matrix = np.asarray([record["vector"] for record in records], dtype=np.float64)
-        query = np.asarray(query_vector, dtype=np.float64)
-        if matrix.ndim == 2 and query.ndim == 1 and matrix.shape[1] == query.shape[0]:
-            scores = matrix @ query
+        matrix = np.frombuffer(b"".join(row["vector"] for row in rows), dtype=np.float32)
+        if dim > 0 and matrix.size == len(rows) * dim:
+            scores = matrix.reshape(len(rows), dim).astype(np.float64) @ np.asarray(
+                query_vector, dtype=np.float64
+            )
             return [
-                (float(scores[index]), records[index])
-                for index in range(len(records))
+                (float(scores[index]), rows[index])
+                for index in range(len(rows))
                 if float(scores[index]) >= min_score
             ]
     except (ImportError, ValueError, TypeError):
         pass
-    scored: list[tuple[float, dict[str, Any]]] = []
-    for record in records:
-        score = _dot(query_vector, record["vector"])
+    scored: list[tuple[float, Any]] = []
+    for row in rows:
+        vector = decode_vector(row["vector"])
+        if len(vector) != dim:
+            continue
+        score = _dot(query_vector, vector)
         if score >= min_score:
-            scored.append((score, record))
+            scored.append((score, row))
     return scored
 
 
@@ -73,26 +78,22 @@ class SymbolEmbeddingStore:
     def __init__(self) -> None:
         pass
 
-    def hashes_for(
+    def entries_for(
         self, conn: sqlite3.Connection, file_path: str, model_name: str
-    ) -> dict[tuple[str, int], str]:
-        rows = conn.execute(
-            "SELECT symbol_name, symbol_line, text_hash FROM symbol_embeddings "
-            "WHERE file_path=? AND model_name=?",
-            (file_path, model_name),
-        ).fetchall()
-        return {(row["symbol_name"], row["symbol_line"]): row["text_hash"] for row in rows}
+    ) -> dict[tuple[str, int], tuple[str, bytes]]:
+        """Existing ``(text_hash, raw vector blob)`` per symbol of one file.
 
-    def vectors_for(
-        self, conn: sqlite3.Connection, file_path: str, model_name: str
-    ) -> dict[tuple[str, int], list[float]]:
+        The blob stays encoded so reuse checks do not pay a decode for symbols
+        whose hash no longer matches.
+        """
         rows = conn.execute(
-            "SELECT symbol_name, symbol_line, vector FROM symbol_embeddings "
+            "SELECT symbol_name, symbol_line, text_hash, vector FROM symbol_embeddings "
             "WHERE file_path=? AND model_name=?",
             (file_path, model_name),
         ).fetchall()
         return {
-            (row["symbol_name"], row["symbol_line"]): decode_vector(row["vector"]) for row in rows
+            (row["symbol_name"], row["symbol_line"]): (row["text_hash"], row["vector"])
+            for row in rows
         }
 
     def replace_file(
@@ -138,29 +139,6 @@ class SymbolEmbeddingStore:
         ).fetchone()
         return int(row[0]) if row else 0
 
-    def load_all(self, conn: sqlite3.Connection, model_name: str) -> list[dict[str, Any]]:
-        rows = conn.execute(
-            "SELECT file_path, symbol_name, symbol_line, kind, end_line, "
-            "signature, complexity, vector "
-            "FROM symbol_embeddings WHERE model_name=?",
-            (model_name,),
-        ).fetchall()
-        result: list[dict[str, Any]] = []
-        for row in rows:
-            result.append(
-                {
-                    "file_path": row["file_path"],
-                    "symbol_name": row["symbol_name"],
-                    "symbol_line": row["symbol_line"],
-                    "kind": row["kind"],
-                    "end_line": row["end_line"],
-                    "signature": row["signature"],
-                    "complexity": row["complexity"],
-                    "vector": decode_vector(row["vector"]),
-                }
-            )
-        return result
-
     def search(
         self,
         conn: sqlite3.Connection,
@@ -169,13 +147,26 @@ class SymbolEmbeddingStore:
         limit: int,
         min_score: float = 0.0,
     ) -> list[dict[str, Any]]:
-        records = self.load_all(conn, model_name)
-        scored = _score_records(query_vector, records, min_score)
+        rows = conn.execute(
+            "SELECT file_path, symbol_name, symbol_line, kind, end_line, "
+            "signature, complexity, vector "
+            "FROM symbol_embeddings WHERE model_name=?",
+            (model_name,),
+        ).fetchall()
+        scored = _score_rows(query_vector, rows, min_score)
         scored.sort(key=lambda item: item[0], reverse=True)
         hits: list[dict[str, Any]] = []
-        for score, record in scored[: max(1, limit)]:
-            hit = dict(record)
-            hit["score"] = round(score, 4)
-            hit.pop("vector", None)
-            hits.append(hit)
+        for score, row in scored[: max(1, limit)]:
+            hits.append(
+                {
+                    "file_path": row["file_path"],
+                    "symbol_name": row["symbol_name"],
+                    "symbol_line": row["symbol_line"],
+                    "kind": row["kind"],
+                    "end_line": row["end_line"],
+                    "signature": row["signature"],
+                    "complexity": row["complexity"],
+                    "score": round(score, 4),
+                }
+            )
         return hits

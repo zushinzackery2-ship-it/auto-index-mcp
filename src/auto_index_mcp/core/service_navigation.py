@@ -1,58 +1,30 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any
 
 from .navigation_format import compact_file, overview_result, tree_result
 from .pagination import PageRequest
 from .path_filters import is_glob_pattern
-from .tree_progress import TreeProgress
-from ..indexing.store import IndexStore
-from ..workspace.view import WorkspaceView
+from .service_state import ServiceBase
 
 
-class _NavigationService(Protocol):
-    root_path: Path | None
-    tree_progress: TreeProgress
-
-    @property
-    def view(self) -> WorkspaceView:
-        ...
-
-    def _store_context(self) -> IndexStore:
-        ...
-
-    def _ready_context(self) -> tuple[Path, IndexStore]:
-        ...
-
-    def _with_index_status(self, result: dict[str, Any]) -> dict[str, Any]:
-        ...
-
-    def _index_status(self) -> dict[str, Any] | None:
-        ...
-
-    def _not_ready_response(self) -> dict[str, Any] | None:
-        ...
-
-
-class ServiceNavigationMixin:
+class ServiceNavigationMixin(ServiceBase):
     def overview(self, limit: int = 30) -> dict[str, Any]:
-        service = cast(_NavigationService, self)
-        service._store_context()
-        files = service.view.all_files()
-        return service._with_index_status(overview_result(files, limit))
+        self._store_context()
+        files = self.view.all_files()
+        return self._with_index_status(overview_result(files, limit))
 
     def tree_get(self, root_path: str = "", depth: int = 2, limit: int = 120) -> dict[str, Any]:
-        service = cast(_NavigationService, self)
-        service._store_context()
-        status = service._index_status()
+        self._store_context()
+        status = self._index_status()
         if status is not None and not status["ready"]:
-            partial = service.tree_progress.snapshot(root_path, depth, limit)
+            partial = self.tree_progress.snapshot(root_path, depth, limit)
             if partial is not None:
                 partial["index_status"] = _partial_tree_status(status, partial)
                 return partial
-        files = service.view.all_files()
-        return service._with_index_status(tree_result(files, root_path, depth, limit))
+        files = self.view.all_files()
+        return self._with_index_status(tree_result(files, root_path, depth, limit))
 
     def query(
         self,
@@ -62,28 +34,26 @@ class ServiceNavigationMixin:
         limit: int = 80,
         cursor: str | None = None,
     ) -> dict[str, Any]:
-        service = cast(_NavigationService, self)
-        service._store_context()
+        self._store_context()
         page = PageRequest.from_cursor(cursor, limit)
-        rows = service.view.query(text, languages or [], parent, page.fetch_limit, page.offset)
+        rows = self.view.query(text, languages or [], parent, page.fetch_limit, page.offset)
         next_cursor = page.next_cursor if len(rows) > page.limit else None
-        return service._with_index_status({
+        return self._with_index_status({
             "format": "auto_index_query_indexed",
             "items": [compact_file(row) for row in rows[:page.limit]],
             "cursor": next_cursor,
         })
 
     def file_summary(self, path: str) -> dict[str, Any]:
-        service = cast(_NavigationService, self)
-        service._store_context()
-        lookup = service.view.get_file(path)
+        self._store_context()
+        lookup = self.view.get_file(path)
         if lookup.item is None:
-            not_ready = service._not_ready_response()
+            not_ready = self._not_ready_response()
             if not_ready is not None:
                 return not_ready
             raise KeyError(f"indexed file not found: {path}")
         symbols = lookup.item["symbols"]
-        return service._with_index_status({
+        return self._with_index_status({
             "format": "auto_index_file_summary_full",
             "path": lookup.item["path"],
             "language": lookup.item["language"],
@@ -96,54 +66,64 @@ class ServiceNavigationMixin:
         })
 
     def get(self, path: str) -> dict[str, Any]:
-        service = cast(_NavigationService, self)
-        service._store_context()
-        lookup = service.view.get_file(path)
+        self._store_context()
+        lookup = self.view.get_file(path)
         if lookup.item is None:
-            not_ready = service._not_ready_response()
+            not_ready = self._not_ready_response()
             if not_ready is not None:
                 return not_ready
             raise KeyError(f"indexed file not found: {path}")
-        return service._with_index_status({"format": "auto_index_get_full", "item": lookup.item})
+        return self._with_index_status({"format": "auto_index_get_full", "item": lookup.item})
 
     def file_content(self, path: str) -> str:
-        service = cast(_NavigationService, self)
-        root, _store = service._ready_context()
-        return service.view.read_text(root, path)
+        root, _store = self._ready_context()
+        return self.view.read_text(root, path)
 
     def resolve_path(self, path: str, limit: int = 20) -> dict[str, Any]:
-        service = cast(_NavigationService, self)
-        service._store_context()
+        self._store_context()
         needle = path.lower().replace("\\", "/")
-        matches = []
-        for item in service.view.all_files():
-            candidate = item["path"].lower()
-            if is_glob_pattern(needle) and (Path(candidate).match(needle) or Path(candidate).name.lower() == needle):
-                matches.append(compact_file(item))
-                if len(matches) >= limit:
-                    break
+        matches: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
+
+        def try_add(file_path: str) -> bool:
+            """Append the full record for one path; True once limit is reached."""
+            if file_path not in seen_paths:
+                seen_paths.add(file_path)
+                lookup = self.view.get_file(file_path)
+                if lookup.item is not None:
+                    matches.append(compact_file(lookup.item))
+            return len(matches) >= limit
+
+        # Path/name matching walks light headers only; the symbol JSON of the
+        # whole workspace is never deserialized. Full records are point-fetched
+        # for the (at most ``limit``) hits.
+        glob = is_glob_pattern(needle)
+        for header in self.view.file_headers():
+            candidate = header["path"].lower()
+            if glob:
+                if not (Path(candidate).match(needle) or Path(candidate).name.lower() == needle):
+                    continue
+            elif not (candidate == needle or header["name"].lower() == needle or needle in candidate):
                 continue
-            if candidate == needle or item["name"].lower() == needle or needle in candidate:
-                matches.append(compact_file(item))
-                if len(matches) >= limit:
+            if try_add(header["path"]):
+                break
+        if not glob and len(matches) < limit:
+            # Exact symbol-name lookup goes through the indexed symbols table
+            # instead of scanning per-file symbol JSON.
+            for row in self.view.query_symbols(path, "", 200, 0):
+                if row["name"].lower() != needle:
+                    continue
+                if try_add(row["file_path"]):
                     break
-                continue
-            symbols = item.get("symbols") or []
-            symbol_names = [s["name"].lower() if isinstance(s, dict) else str(s).lower() for s in symbols]
-            if needle in symbol_names:
-                matches.append(compact_file(item))
-                if len(matches) >= limit:
-                    break
-        return service._with_index_status({"format": "auto_index_resolve_indexed", "items": matches})
+        return self._with_index_status({"format": "auto_index_resolve_indexed", "items": matches})
 
     def diff_filesystem(self) -> dict[str, Any]:
-        service = cast(_NavigationService, self)
-        root, _store = service._ready_context()
-        diff = service.view.diff_filesystem(root)
+        root, _store = self._ready_context()
+        diff = self.view.diff_filesystem(root)
         added = diff["added"]
         deleted = diff["deleted"]
         changed = diff["changed"]
-        return service._with_index_status({
+        return self._with_index_status({
             "format": "auto_index_diff_indexed",
             "added": added[:100],
             "deleted": deleted[:100],
@@ -154,9 +134,8 @@ class ServiceNavigationMixin:
         })
 
     def all_files(self) -> list[dict[str, Any]]:
-        service = cast(_NavigationService, self)
-        service._store_context()
-        return service.view.all_files()
+        self._store_context()
+        return self.view.all_files()
 
 
 def _partial_tree_status(status: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:

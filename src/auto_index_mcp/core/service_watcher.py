@@ -1,43 +1,27 @@
 from __future__ import annotations
 
-import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .background_indexer import BackgroundIndexer, PHASE_EMBEDDING
 from .config import DEFAULT_WATCH_DEBOUNCE_SECONDS
+from .service_state import ServiceBase
 from ..embedding.backend import create_embedder, resolve_embedding_model_path
 from ..embedding.embedding_store import EmbeddingStore
 from ..embedding.indexer import SymbolEmbedder
 from ..indexing.snapshot import snapshot_from_index, take_watch_snapshot, update_watch_snapshot
 from ..indexing.updater import IndexUpdater
 from ..indexing.store import IndexStore
-from ..indexing.watcher import FileEventWatcher
+from ..indexing.watcher import FileEventWatcher, make_event_filter
 
 
-class ServiceWatcherMixin:
+class ServiceWatcherMixin(ServiceBase):
     """Filesystem-watcher lifecycle and embedding upkeep.
 
     Manages the event-driven incremental watcher plus the full and incremental
-    symbol-embedding passes. Shared state and the rebuild entrypoint are
-    provided by AutoIndexService at runtime.
+    symbol-embedding passes. Shared state lives in ServiceBase; the rebuild
+    entrypoint comes from ServiceRebuildMixin through the shared MRO.
     """
-
-    if TYPE_CHECKING:
-        root_path: Path | None
-        store: IndexStore | None
-        watcher: FileEventWatcher | None
-        embedding_indexer: SymbolEmbedder | None
-        embedding_background: BackgroundIndexer | None
-        embedding_store: EmbeddingStore | None
-        last_errors: list[str]
-        _embedding_lock: threading.Lock
-
-        def _ready_context(self) -> tuple[Path, IndexStore]: ...
-        def runtime_ignore_patterns(self) -> list[str]: ...
-        def auto_ignore_patterns(self) -> list[str]: ...
-        def privileged_ignore_patterns(self) -> list[str]: ...
-        def rebuild_sync(self, reuse_if_fresh: bool = ...) -> dict[str, Any]: ...
 
     def ensure_embedding_background(self) -> dict[str, Any]:
         root, store = self._ready_context()
@@ -91,6 +75,7 @@ class ServiceWatcherMixin:
             self._make_watch_updater(root, store),
             debounce_seconds,
             previous,
+            event_filter=make_event_filter(root, store.db_path.parent),
         )
         self.watcher.start(wait_ready=wait_ready)
         return self.watcher_status()
@@ -244,11 +229,10 @@ class ServiceWatcherMixin:
         if status != "incremental":
             return
         added, deleted, modified = current.changed_files(previous)
-        changed = set(added) | set(modified)
+        changed = sorted(set(added) | set(modified))
         if changed:
-            symbols = [s for s in store.all_symbols() if s["file_path"] in changed]
             grouped: dict[str, list[dict[str, Any]]] = {}
-            for symbol in symbols:
+            for symbol in store.symbols_for_files(changed):
                 grouped.setdefault(symbol["file_path"], []).append(symbol)
             if grouped:
                 try:

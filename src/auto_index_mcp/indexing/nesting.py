@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 
-from ..core._utils import strip_comments, strip_string_literals
 from ..core.models import SymbolRecord
 
 BRACE_LANGUAGES = {
@@ -22,7 +21,12 @@ PYTHON_BLOCK_RE = re.compile(
 )
 
 
-def annotate_symbol_nesting(lines: list[str], symbols: list[SymbolRecord], language: str) -> list[SymbolRecord]:
+def annotate_symbol_nesting(cleaned_lines: list[str], symbols: list[SymbolRecord], language: str) -> list[SymbolRecord]:
+    """Annotate parent/depth/nesting data.
+
+    ``cleaned_lines`` must already have comments and string literals blanked
+    (see ``core.source_clean``) so brace and indent tracking see code only.
+    """
     records = list(symbols)
     if not records:
         return []
@@ -50,7 +54,7 @@ def annotate_symbol_nesting(lines: list[str], symbols: list[SymbolRecord], langu
             parent_kind=parent_symbol.kind if parent_symbol else "",
             depth=depth,
             nesting_path=nesting_path,
-            max_block_depth=_max_block_depth(lines, symbol, language),
+            max_block_depth=_max_block_depth(cleaned_lines, symbol, language),
         )
         stack.append(index)
 
@@ -78,10 +82,10 @@ def _contains(parent: SymbolRecord, child: SymbolRecord) -> bool:
     )
 
 
-def _max_block_depth(lines: list[str], symbol: SymbolRecord, language: str) -> int:
-    body = lines[symbol.line - 1:symbol.end_line]
+def _max_block_depth(cleaned_lines: list[str], symbol: SymbolRecord, language: str) -> int:
+    body = cleaned_lines[symbol.line - 1:symbol.end_line]
     if language == "python":
-        return _python_block_depth(lines, symbol)
+        return _python_block_depth(cleaned_lines, symbol)
     if language == "pascal":
         return _pascal_block_depth(body)
     if language in BRACE_LANGUAGES or any("{" in line or "}" in line for line in body):
@@ -89,15 +93,15 @@ def _max_block_depth(lines: list[str], symbol: SymbolRecord, language: str) -> i
     return 0
 
 
-def _python_block_depth(lines: list[str], symbol: SymbolRecord) -> int:
-    if not lines or symbol.line < 1 or symbol.line > len(lines):
+def _python_block_depth(cleaned_lines: list[str], symbol: SymbolRecord) -> int:
+    if not cleaned_lines or symbol.line < 1 or symbol.line > len(cleaned_lines):
         return 0
 
-    base_indent = _indent_width(lines[symbol.line - 1])
+    base_indent = _indent_width(cleaned_lines[symbol.line - 1])
     active: list[int] = []
     max_depth = 0
-    for line in lines[symbol.line:symbol.end_line]:
-        stripped = strip_comments(line).strip()
+    for line in cleaned_lines[symbol.line:symbol.end_line]:
+        stripped = line.strip()
         if not stripped:
             continue
         indent = _indent_width(line)
@@ -112,11 +116,10 @@ def _python_block_depth(lines: list[str], symbol: SymbolRecord) -> int:
     return max_depth
 
 
-def _brace_block_depth(lines: list[str]) -> int:
+def _brace_block_depth(cleaned_body: list[str]) -> int:
     depth = 0
     max_depth = 0
-    for line in lines:
-        text = strip_comments(strip_string_literals(line))
+    for text in cleaned_body:
         depth = max(0, depth - text.count("}"))
         opens = text.count("{")
         if opens:
@@ -125,11 +128,11 @@ def _brace_block_depth(lines: list[str]) -> int:
     return max(0, max_depth - 1)
 
 
-def _pascal_block_depth(lines: list[str]) -> int:
+def _pascal_block_depth(cleaned_body: list[str]) -> int:
     depth = 0
     max_depth = 0
-    for line in lines:
-        text = strip_comments(strip_string_literals(line)).strip().lower()
+    for line in cleaned_body:
+        text = line.strip().lower()
         if not text:
             continue
         if text.startswith(("end", "until ")):

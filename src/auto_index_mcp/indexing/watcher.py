@@ -8,7 +8,37 @@ from typing import Any, Callable
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
+from ..core.config import DEFAULT_EXCLUDE_DIRS
+from ..core._utils import is_relative_to
 from .snapshot import WatchSnapshot
+
+# Directory names whose events can be dropped at the source: they are excluded
+# from indexing unconditionally, so no snapshot could ever change because of
+# them. ``.auto-index-mcp`` is deliberately NOT here - child-index WAL commits
+# under a subproject's .auto-index-mcp must keep waking the watcher; only this
+# project's own index directory is filtered (by prefix, below).
+_EVENT_IGNORED_DIR_NAMES = frozenset(DEFAULT_EXCLUDE_DIRS - {".auto-index-mcp"})
+
+
+def make_event_filter(root: Path, own_index_dir: Path | None) -> Callable[[Path], bool]:
+    """Cheap pre-filter for filesystem events (string ops only, no syscalls).
+
+    Returns True for paths that can never affect the index: anything inside
+    this project's own index directory (index.db/embeddings.db/WAL writes would
+    otherwise wake the watcher after every update), and anything under an
+    always-excluded directory such as .git or __pycache__.
+    """
+
+    def should_ignore(path: Path) -> bool:
+        if own_index_dir is not None and is_relative_to(path, own_index_dir):
+            return True
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            return False
+        return any(part in _EVENT_IGNORED_DIR_NAMES for part in rel.parts)
+
+    return should_ignore
 
 
 class FileEventWatcher:
@@ -20,6 +50,7 @@ class FileEventWatcher:
         apply_changes: Callable[[WatchSnapshot, WatchSnapshot], dict[str, Any]],
         debounce_seconds: float,
         initial_snapshot: WatchSnapshot | None = None,
+        event_filter: Callable[[Path], bool] | None = None,
     ) -> None:
         self.root = root
         self.take_snapshot = take_snapshot
@@ -27,6 +58,7 @@ class FileEventWatcher:
         self.apply_changes = apply_changes
         self.debounce_seconds = debounce_seconds
         self._initial_snapshot = initial_snapshot
+        self._event_filter = event_filter
         self._observer = None
         self._worker: threading.Thread | None = None
         self._stop = threading.Event()
@@ -113,6 +145,10 @@ class FileEventWatcher:
         dest_path = getattr(event, "dest_path", "")
         if dest_path:
             paths.append(Path(str(dest_path)))
+        if self._event_filter is not None:
+            paths = [path for path in paths if not self._event_filter(path)]
+            if not paths:
+                return
         with self._changes_lock:
             self._changed_paths.update(paths)
         self._changed.set()

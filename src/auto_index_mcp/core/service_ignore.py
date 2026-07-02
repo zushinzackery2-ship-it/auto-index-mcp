@@ -1,28 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .ignore_config import IgnoreConfig, clean_patterns
 from .ignore_rules import IgnoreRules, ignore_fingerprint
-from ..indexing.store import IndexStore
-
-if TYPE_CHECKING:
-    from ..indexing.watcher import FileEventWatcher
+from .service_state import ServiceBase
 
 
-class ServiceIgnoreMixin:
-    if TYPE_CHECKING:
-        root_path: Path | None
-        store: IndexStore | None
-        watcher: FileEventWatcher | None
-        enabled: bool
-        _ignore_config: IgnoreConfig
-        _ignore_config_dirty: bool
-
-        def _invalidate_view_cache(self) -> None: ...
-        def watcher_status(self) -> dict[str, Any]: ...
-
+class ServiceIgnoreMixin(ServiceBase):
     def ignore_config(self) -> IgnoreConfig:
         return self._ignore_config
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from ..core.models import SymbolRecord
-from ..core._utils import strip_string_literals
+from ..core.source_clean import clean_source_lines
 
 SYMBOL_PATTERNS = [
     ("class", re.compile(r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_][\w]*)")),
@@ -22,21 +22,25 @@ SYMBOL_PATTERNS = [
 ]
 
 
-def extract_symbols(lines: list[str]) -> list[SymbolRecord]:
+def extract_symbols(
+    lines: list[str],
+    cleaned_lines: list[str] | None = None,
+) -> list[SymbolRecord]:
+    cleaned = cleaned_lines if cleaned_lines is not None else clean_source_lines(lines, "")
     records: list[SymbolRecord] = []
-    for index, line in enumerate(lines):
+    for index, line in enumerate(cleaned):
         matched = _match_symbol(line)
         if not matched:
             continue
         kind, name = matched
-        end_line = _find_end_line(lines, index)
+        end_line = _find_end_line(cleaned, index)
         records.append(
             SymbolRecord(
                 name=name,
                 kind=kind,
                 line=index + 1,
                 end_line=end_line,
-                signature=line.strip(),
+                signature=lines[index].strip(),
             )
         )
     return records
@@ -53,19 +57,19 @@ def _match_symbol(line: str) -> tuple[str, str] | None:
     return None
 
 
-def _find_end_line(lines: list[str], start_index: int) -> int:
-    start_line = lines[start_index]
+def _find_end_line(cleaned: list[str], start_index: int) -> int:
+    start_line = cleaned[start_index]
     stripped = start_line.lstrip()
-    if stripped.endswith(":") and not "{" in stripped:
-        return _find_python_block_end(lines, start_index)
-    return _find_brace_block_end(lines, start_index)
+    if stripped.rstrip().endswith(":") and not "{" in stripped:
+        return _find_python_block_end(cleaned, start_index)
+    return _find_brace_block_end(cleaned, start_index)
 
 
-def _find_python_block_end(lines: list[str], start_index: int) -> int:
-    base_indent = len(lines[start_index]) - len(lines[start_index].lstrip())
+def _find_python_block_end(cleaned: list[str], start_index: int) -> int:
+    base_indent = len(cleaned[start_index]) - len(cleaned[start_index].lstrip())
     end_index = start_index
-    for index in range(start_index + 1, len(lines)):
-        text = lines[index]
+    for index in range(start_index + 1, len(cleaned)):
+        text = cleaned[index]
         stripped = text.strip()
         if not stripped:
             end_index = index
@@ -77,17 +81,17 @@ def _find_python_block_end(lines: list[str], start_index: int) -> int:
     return end_index + 1
 
 
-def _find_brace_block_end(lines: list[str], start_index: int) -> int:
+def _find_brace_block_end(cleaned: list[str], start_index: int) -> int:
     depth = 0
     opened = False
-    for index in range(start_index, len(lines)):
-        line = strip_string_literals(lines[index])
+    for index in range(start_index, len(cleaned)):
+        line = cleaned[index]
         depth += line.count("{")
         if line.count("{"):
             opened = True
         depth -= line.count("}")
         if opened and depth <= 0:
             return index + 1
-        if not opened and index > start_index and lines[index].strip():
+        if not opened and index > start_index and cleaned[index].strip():
             return index
-    return min(start_index + 50, len(lines))
+    return min(start_index + 50, len(cleaned))

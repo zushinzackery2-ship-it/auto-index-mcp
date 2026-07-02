@@ -2,42 +2,58 @@ from __future__ import annotations
 
 import re
 
-from ..core._utils import strip_comments, strip_string_literals
 from ..core.models import SymbolRecord
+from ..core.source_clean import clean_source_lines
 
 TYPE_RE = re.compile(r"^\s*(?:class|struct|enum(?:\s+class)?)\s+([A-Za-z_][\w]*)")
 CONTROL_NAMES = {"if", "for", "while", "switch", "catch", "return", "sizeof"}
 LEADING_KEYWORDS = {"namespace", "using", "typedef", "static_assert"}
 
 
-def extract_c_family_symbols(lines: list[str]) -> list[SymbolRecord]:
+def extract_c_family_symbols(
+    lines: list[str],
+    cleaned_lines: list[str] | None = None,
+) -> list[SymbolRecord]:
+    # Comment blocks and string literals are blanked up front, so brace counting
+    # and signature detection below only ever see executable code. This is what
+    # keeps macro/comment-dense sources (ImGui-style) from producing phantom
+    # symbol starts or runaway end lines.
+    cleaned = cleaned_lines if cleaned_lines is not None else clean_source_lines(lines, "cpp")
     records: list[SymbolRecord] = []
     index = 0
     while index < len(lines):
-        type_match = TYPE_RE.match(_clean(lines[index]))
+        type_match = TYPE_RE.match(cleaned[index])
         if type_match:
-            records.append(_record(type_match.group(1), _type_kind(lines[index]), index, lines))
+            records.append(_record(type_match.group(1), _type_kind(cleaned[index]), index, cleaned))
             index += 1
             continue
-        candidate = _function_candidate(lines, index)
+        candidate = _function_candidate(cleaned, index)
         if candidate:
             name, kind, end_line = candidate
-            records.append(SymbolRecord(name=name, kind=kind, line=index + 1, end_line=end_line, signature=_signature(lines, index)))
+            records.append(
+                SymbolRecord(
+                    name=name,
+                    kind=kind,
+                    line=index + 1,
+                    end_line=end_line,
+                    signature=_signature(cleaned, index),
+                )
+            )
             index = max(index + 1, end_line)
             continue
         index += 1
     return records
 
 
-def _function_candidate(lines: list[str], start: int) -> tuple[str, str, int] | None:
-    first = _clean(lines[start])
+def _function_candidate(cleaned: list[str], start: int) -> tuple[str, str, int] | None:
+    first = cleaned[start].strip()
     if not first or first.startswith("#") or _starts_with_keyword(first):
         return None
     header_lines = []
     paren_depth = 0
     saw_paren = False
-    for index in range(start, min(start + 16, len(lines))):
-        text = _clean(lines[index])
+    for index in range(start, min(start + 16, len(cleaned))):
+        text = cleaned[index].strip()
         if not text:
             continue
         header_lines.append(text)
@@ -49,7 +65,7 @@ def _function_candidate(lines: list[str], start: int) -> tuple[str, str, int] | 
             if not info:
                 return None
             name, is_method = info
-            return name, "method" if is_method else "function", _find_brace_end(lines, index)
+            return name, "method" if is_method else "function", _find_brace_end(cleaned, index)
         if ";" in text and paren_depth <= 0:
             return None
     return None
@@ -73,18 +89,18 @@ def _function_info(header: str) -> tuple[str, bool] | None:
     return raw_name.lstrip("~"), is_method
 
 
-def _record(name: str, kind: str, index: int, lines: list[str]) -> SymbolRecord:
+def _record(name: str, kind: str, index: int, cleaned: list[str]) -> SymbolRecord:
     return SymbolRecord(
         name=name,
         kind=kind,
         line=index + 1,
-        end_line=_find_brace_end(lines, index),
-        signature=_signature(lines, index),
+        end_line=_find_brace_end(cleaned, index),
+        signature=_signature(cleaned, index),
     )
 
 
-def _type_kind(line: str) -> str:
-    stripped = line.lstrip()
+def _type_kind(cleaned_line: str) -> str:
+    stripped = cleaned_line.lstrip()
     if stripped.startswith("struct "):
         return "struct"
     if stripped.startswith("enum "):
@@ -92,10 +108,10 @@ def _type_kind(line: str) -> str:
     return "class"
 
 
-def _signature(lines: list[str], start: int) -> str:
+def _signature(cleaned: list[str], start: int) -> str:
     parts = []
-    for line in lines[start:min(start + 6, len(lines))]:
-        text = _clean(line)
+    for line in cleaned[start:min(start + 6, len(cleaned))]:
+        text = " ".join(line.split())
         if text:
             parts.append(text)
         if "{" in text:
@@ -103,11 +119,11 @@ def _signature(lines: list[str], start: int) -> str:
     return " ".join(parts).strip()
 
 
-def _find_brace_end(lines: list[str], start: int) -> int:
+def _find_brace_end(cleaned: list[str], start: int) -> int:
     depth = 0
     opened = False
-    for index in range(start, len(lines)):
-        text = _clean(lines[index])
+    for index in range(start, len(cleaned)):
+        text = cleaned[index]
         depth = max(0, depth - text.count("}"))
         opens = text.count("{")
         opened = opened or opens > 0
@@ -118,13 +134,9 @@ def _find_brace_end(lines: list[str], start: int) -> int:
     # mis-detected (macros / comment blocks throw off the brace count). Fall back
     # to a minimal span so one bad symbol cannot swallow the rest of a large
     # file's calls and nesting (e.g. an 11k-line file collapsing into one symbol).
-    return min(start + 1, len(lines))
+    return min(start + 1, len(cleaned))
 
 
 def _starts_with_keyword(text: str) -> bool:
     first = text.split(None, 1)[0].rstrip(":")
     return first in CONTROL_NAMES or first in LEADING_KEYWORDS
-
-
-def _clean(line: str) -> str:
-    return strip_comments(strip_string_literals(line)).strip()

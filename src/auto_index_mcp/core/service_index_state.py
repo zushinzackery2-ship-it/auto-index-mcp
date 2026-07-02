@@ -1,26 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from .background_indexer import (
-    BackgroundIndexer,
     STATE_ERROR,
     STATE_RUNNING,
     timer_or_idle,
 )
-from ..indexing.store import IndexStore
+from .service_state import ServiceBase
 
 
-class ServiceIndexStateMixin:
+class ServiceIndexStateMixin(ServiceBase):
     """Index readiness envelopes shared by navigation, search, and rebuild code."""
-
-    if TYPE_CHECKING:
-        root_path: Path | None
-        store: IndexStore | None
-        background: BackgroundIndexer | None
-        embedding_background: BackgroundIndexer | None
-        _last_index_build: dict[str, Any] | None
 
     def build_timers(self) -> dict[str, Any]:
         """Live build timers for both pipelines.

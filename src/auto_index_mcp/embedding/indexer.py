@@ -6,7 +6,7 @@ from typing import Any, Iterable
 
 from ..core.text_decode import read_text_file
 from .backend import EmbeddingBackend
-from .vector_store import SymbolEmbeddingStore
+from .vector_store import SymbolEmbeddingStore, decode_vector
 
 MAX_BODY_LINES = 64
 MAX_BODY_CHARS = 2000
@@ -81,8 +81,7 @@ class SymbolEmbedder:
         with self.conn_provider.read_connect() as conn:
             for file_path, symbols in symbols_by_file.items():
                 files += 1
-                existing_hashes = self.store.hashes_for(conn, file_path, model_name)
-                existing_vectors = self.store.vectors_for(conn, file_path, model_name)
+                existing_entries = self.store.entries_for(conn, file_path, model_name)
                 lines = _read_lines_safe(root, file_path)
                 entries: list[dict[str, Any]] = []
                 pending_for_file = 0
@@ -90,13 +89,14 @@ class SymbolEmbedder:
                     text = _symbol_text(symbol, lines)
                     text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
                     key = (symbol["name"], symbol["line"])
-                    if existing_hashes.get(key) == text_hash and key in existing_vectors:
+                    existing = existing_entries.get(key)
+                    if existing is not None and existing[0] == text_hash:
                         entries.append(
                             {
                                 "symbol_name": symbol["name"],
                                 "symbol_line": symbol["line"],
                                 "text_hash": text_hash,
-                                "vector": existing_vectors[key],
+                                "vector": decode_vector(existing[1]),
                                 **_symbol_meta(symbol),
                             }
                         )

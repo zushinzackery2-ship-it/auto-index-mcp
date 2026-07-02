@@ -63,12 +63,12 @@ def test_first_build_tree_returns_partial_progress(tmp_path: Path, monkeypatch) 
     release = threading.Event()
     real_read = SourceScanner._read_record
 
-    def slow_read(self: SourceScanner, path: Path):
+    def slow_read(self: SourceScanner, path: Path, stat):
         rel = str(path.resolve().relative_to(self.root)).replace("\\", "/")
         if rel == "src/deep/more.py":
             blocked.set()
             release.wait(5.0)
-        return real_read(self, path)
+        return real_read(self, path, stat)
 
     monkeypatch.setattr(SourceScanner, "_read_record", slow_read)
     service = AutoIndexService(index_root=tmp_path / "index")
