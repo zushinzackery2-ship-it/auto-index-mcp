@@ -68,13 +68,13 @@
 
 ## 语义搜索
 
-`auto_index_semantic_search()` 通过自然语言搜索找到最相关的代码符号。需要额外安装依赖：
+`auto_index_semantic_search()` 通过自然语言搜索找到最相关的代码符号，基于向量 embedding。需要额外安装依赖：
 
 ```bash
 pip install -e ".[semantic]"
 ```
 
-默认使用内置 MiniLM ONNX 模型（约 90MB），纯本地推理，无网络依赖。可通过 `AUTO_INDEX_EMBEDDING_MODEL` 环境变量指定自定义模型目录（须包含 `model.onnx` 和 `tokenizer.json`）。
+默认使用内置 MiniLM ONNX 模型（约 90MB）进行 embedding 推理，纯本地计算，无网络依赖。可通过 `AUTO_INDEX_EMBEDDING_MODEL` 环境变量指定自定义模型目录（须包含 `model.onnx` 和 `tokenizer.json`）。
 
 
 ---
