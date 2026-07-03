@@ -55,7 +55,7 @@
 | **搜索** | `auto_index_symbol_body()` | 返回指定符号的源码片段。 |
 | **语义搜索** | `auto_index_semantic_search()` | 自然语言语义搜索，默认使用仓库随附 ONNX 模型，返回最相似的符号及行范围。 |
 | **语义搜索** | `auto_index_embedding_status()` | 报告语义 embedding 后端是否启用及向量数量；`build_timer` 给出语义向量构建的实时计时。 |
-| **质量检查** | `auto_index_quality_check()` | 从持久化缓存报告代码质量问题；`kind="nesting"` 读 `symbol_nesting` 嵌套深度，`kind="dangling"` 读 `quality_findings` 疑似悬空/不可达代码，`kind="all"` 同时返回两者。 |
+| **质量检查** | `auto_index_quality_check()` | 从持久化缓存报告代码质量问题；`kind="nesting"` 读 `symbol_nesting` 嵌套深度，`kind="dangling"` 读 `quality_findings` 疑似悬空/不可达代码，`kind="all"` 同时返回两者；`include_low_confidence` 控制是否展示低置信 orphan 噪音，`include_tests` 控制是否纳入测试文件。 |
 | **漂移检查** | `auto_index_diff_filesystem()` | 对比索引与当前文件系统的新增、删除、变化。 |
 | **自动刷新** | `auto_index_watcher_start()` | 非阻塞启动文件系统事件驱动的自动刷新。 |
 | **自动刷新** | `auto_index_watcher_stop()` | 停止文件系统事件驱动的自动刷新。 |
@@ -70,16 +70,20 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 
 `auto_index_text_search()` 与 `auto_index_quality_check()` 支持 `exclude_paths`，用于排除 `reference_origin/**`、`dist/**`、`_deps/**` 等目录；质量检查还支持 `active_only`，会基于索引阶段缓存的 Visual Studio `.vcxproj` `ClCompile` 列表过滤 C/C++ 编译源。`auto_index_quality_check(kind="nesting")` 会输出 `nesting_coverage`、`reliable` 和 `warnings`，覆盖率过低时不要把结果当作结构质量结论。
 
+> [!NOTE]
+> **已知局限**
+> `auto_index_symbol_search()` 按名称/签名模糊匹配，子类 signature 含基类名时可能排在基类定义之前；精确读符号体请用 `auto_index_symbol_body()`。`kind="dangling"` 默认 `include_low_confidence=false`，配置/文档类 orphan 低置信项不展示。不可达检测：Python AST 路径为 high 置信；C/JS 等为大括号启发式 medium 置信，嵌套块内可能误报或漏报。
+
 ---
 
 ## 设计边界
 
 | 模块 | 职责 |
 |:-----|:-----|
-| `core/` | 对外服务编排、状态管理、生命周期入口。 |
-| `indexing/` | 扫描、SQLite 存储、child-index 定位、增量更新、watcher、轻量快照。 |
+| `core/` | 对外服务编排（`ServiceBase` + mixin）、源码清洗（`source_clean`）、质量分析（嵌套/悬空/不可达）、生命周期入口。 |
+| `indexing/` | 扫描、符号分析、SQLite 存储、child-index 定位、增量更新、watcher、轻量快照。 |
 | `workspace/` | 嵌套工作区发现、父子索引聚合、路径安全检查、搜索上下文读取。 |
-| `languages/` | Python、JavaScript/TypeScript 和通用文本符号提取。 |
+| `languages/` | Python AST、JavaScript/TypeScript、C/C++、Pascal 和通用文本符号提取。 |
 | `search/` | ripgrep/Python fallback 搜索后端。 |
 | `embedding/` | 可选语义 embedding 后端（ONNX）、独立向量库（`embeddings.db`）、符号级增量索引器。 |
 | `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、语义、质量检查拆分。 |
@@ -156,19 +160,24 @@ auto-index-mcp/
 |       |-- model.onnx
 |       `-- tokenizer.json
 |-- scripts/
+|   |-- bench_embedding_length.py
+|   |-- self_quality_check.py
 |   |-- smoke_auto_index.py
 |   `-- verify_mcp_stdio.py
 |-- src/
 |   `-- auto_index_mcp/
 |       |-- core/
-|       |   |-- index_policy.py
-|       |   |-- pagination.py
+|       |   |-- background_indexer.py
+|       |   |-- multi_match.py
 |       |   |-- quality_dangling.py
 |       |   |-- quality_nesting.py
+|       |   |-- quality_unreachable.py
 |       |   |-- service.py
+|       |   |-- service_state.py
 |       |   |-- service_rebuild.py
 |       |   |-- service_quality.py
 |       |   |-- service_search.py
+|       |   |-- source_clean.py
 |       |   `-- tree_progress.py
 |       |-- embedding/
 |       |   |-- backend.py
@@ -177,14 +186,27 @@ auto-index-mcp/
 |       |   |-- onnx_backend.py
 |       |   `-- vector_store.py
 |       |-- indexing/
+|       |   |-- analysis.py
 |       |   |-- build_lock.py
 |       |   |-- locator.py
-|       |   |-- nesting.py
+|       |   |-- scanner.py
 |       |   |-- snapshot.py
 |       |   |-- store.py
+|       |   |-- updater.py
 |       |   `-- watcher.py
 |       |-- languages/
+|       |   |-- c_family.py
+|       |   |-- generic.py
+|       |   |-- javascript.py
+|       |   |-- pascal.py
+|       |   `-- python.py
 |       |-- mcp_api/
+|       |   |-- lifecycle.py
+|       |   |-- navigation.py
+|       |   |-- quality.py
+|       |   |-- search.py
+|       |   |-- semantic.py
+|       |   `-- server.py
 |       |-- search/
 |       |-- workspace/
 |       |   |-- context.py
@@ -195,16 +217,14 @@ auto-index-mcp/
 |       `-- server.py
 |-- tests/
 |   |-- test_auto_index_service.py
-|   |-- test_build_lock.py
-|   |-- test_child_index_discovery.py
-|   |-- test_index_store.py
-|   |-- test_language_coverage.py
+|   |-- test_multi_match.py
+|   |-- test_quality_unreachable.py
 |   |-- test_search_backend.py
-|   |-- test_server_shutdown.py
-|   |-- test_service_rebuild_reuse.py
-|   |-- test_service_workspace_integration.py
+|   |-- test_self_quality_smoke.py
+|   |-- test_source_clean.py
 |   |-- test_watcher_core.py
-|   `-- test_watcher_updates.py
+|   |-- test_watcher_event_filter.py
+|   `-- ...（其余单元/压力/边界测试）
 |-- fastmcp.json
 |-- install_windows.bat
 |-- pyproject.toml
@@ -277,9 +297,17 @@ Windows 一键安装后，可以参考安装脚本生成的 `mcp-client-config.w
 
 ## 测试
 
+本地质量闸以 pytest + 端到端脚本为准（无 GitHub Actions CI）：
+
 ```bash
 python -m pytest -q
 ```
+
+```bash
+python scripts/self_quality_check.py
+```
+
+对本仓库做全量 rebuild，并汇总 nesting/dangling 质量检查与搜索 sanity probe。
 
 ```bash
 python scripts/smoke_auto_index.py
