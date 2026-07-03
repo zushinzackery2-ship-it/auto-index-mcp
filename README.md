@@ -107,6 +107,7 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 - **模型优先级**：`AUTO_INDEX_EMBEDDING_MODEL` 指定的目录优先，需包含 `model.onnx` 和 `tokenizer.json`；未设置时使用仓库随附 `models/minilm-onnx/`。
 - **后端可插拔**：默认通过 `onnxruntime`（纯 CPU 推理，零 torch 依赖）加载本地 ONNX embedding 模型，当前随附模型为 MiniLM ONNX 版本，约 90MB。
 - **CPU 线程**：embedding 推理默认用 `min(3, 核数-1)` 个 ONNX intra-op 线程（后台索引时给前台留核），小模型在该区间已基本吃满吞吐；可用 `AUTO_INDEX_EMBEDDING_THREADS` 显式覆盖（设为 ≥1 的线程数即按设定值生效）。
+- **截断窗口**：符号文本默认截断到 192 token（按真实符号 token 分布实测选定：64 只能完整覆盖约 15% 的符号，192 覆盖约 2/3，再往上边际收益骤降）；可用 `AUTO_INDEX_EMBEDDING_MAX_LENGTH` 覆盖（范围 16–512，越大召回越全、全量构建越慢）。窗口长度参与向量存储键，改动后旧向量自动整体失效并重嵌，不会新旧混用。批内按最长序列动态填充，mean-pooling 掩码保证向量与定长填充完全一致。
 - **可选依赖**：安装 `pip install -e ".[semantic]"` 启用 onnxruntime + tokenizers；依赖缺失或所选模型不可用时 `auto_index_semantic_search()` 明确报告不可用，不做关键词假降级。
 - **符号级 chunking**：embedding 文本由 `kind + signature + 符号体源码` 构成，复用已有符号索引作为精确分块，这是 auto-index 相对“全树喂 AI”方案的架构优势。
 - **后台向量构建**：rebuild 先完成代码索引写库，embedding 向量随后在独立后台任务生成；复用旧索引时只要向量缺失也会在 enable 完成后**自动派发**后台构建（无需等首次查询触发）。向量部分就绪时会先返回已有向量的检索结果，并附带 `embedding.status="partial"`、`vector_count` 和后台状态。

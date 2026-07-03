@@ -26,16 +26,26 @@ class SymbolEmbedder:
         self.backend = backend
         self.conn_provider = conn_provider
         self.store = SymbolEmbeddingStore()
+        # Stored vectors are only valid for the exact text->vector mapping that
+        # produced them. Backends whose mapping depends on more than the model
+        # name (e.g. the ONNX truncation window) expose ``text_fingerprint``;
+        # folding it into the storage key makes a config change look like a new
+        # model: counts drop to zero, a clean re-embed runs, and search never
+        # mixes vectors from incompatible spaces - even across process restarts.
+        fingerprint = getattr(backend, "text_fingerprint", "")
+        self.model_key = f"{backend.name}#{fingerprint}" if fingerprint else backend.name
 
     def embed_project(self, root: Path, symbols: list[dict[str, Any]]) -> dict[str, Any]:
         grouped = _group_symbols_by_file(symbols)
         result = self._embed_files(root, grouped)
-        model_name = self.backend.name
         current_files = set(grouped.keys())
         with self.conn_provider.connect() as conn:
+            # Vectors from other model keys (older model or older fingerprint)
+            # are unreachable garbage once this pass completes; drop them.
+            self.store.purge_other_models(conn, self.model_key)
             rows = conn.execute(
                 "SELECT DISTINCT file_path FROM symbol_embeddings WHERE model_name=?",
-                (model_name,),
+                (self.model_key,),
             ).fetchall()
             for row in rows:
                 if row["file_path"] not in current_files:
@@ -53,11 +63,11 @@ class SymbolEmbedder:
     ) -> list[dict[str, Any]]:
         query_vector = self.backend.embed([query])[0]
         with self.conn_provider.read_connect() as conn:
-            return self.store.search(conn, query_vector, self.backend.name, limit, min_score)
+            return self.store.search(conn, query_vector, self.model_key, limit, min_score)
 
     def count(self) -> int:
         with self.conn_provider.read_connect() as conn:
-            return self.store.count(conn, self.backend.name)
+            return self.store.count(conn, self.model_key)
 
     def delete_files(self, paths: Iterable[str]) -> None:
         """Drop vectors for removed files from the embedding store."""
@@ -71,7 +81,7 @@ class SymbolEmbedder:
     def _embed_files(
         self, root: Path, symbols_by_file: dict[str, list[dict[str, Any]]]
     ) -> dict[str, Any]:
-        model_name = self.backend.name
+        model_name = self.model_key
         embedded = 0
         reused = 0
         files = 0
@@ -137,7 +147,9 @@ class SymbolEmbedder:
                 entries_by_file,
                 sorted(completed),
             )
-        return {"embedded": embedded, "reused": reused, "files": files, "model": model_name}
+        # ``model`` is display-facing: the backend name without the storage
+        # fingerprint suffix, matching every other status/report surface.
+        return {"embedded": embedded, "reused": reused, "files": files, "model": self.backend.name}
 
 
 def _replace_completed_files(

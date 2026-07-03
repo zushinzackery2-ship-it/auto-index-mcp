@@ -145,10 +145,40 @@ def test_embedding_threads_default_leaves_a_core(monkeypatch) -> None:
     assert embedding_backend.resolve_embedding_threads({}) == 1
 
 
+def test_embedding_max_length_env_override_is_honored() -> None:
+    assert (
+        embedding_backend.resolve_embedding_max_length(
+            {"AUTO_INDEX_EMBEDDING_MAX_LENGTH": "256"}
+        )
+        == 256
+    )
+
+
+def test_embedding_max_length_out_of_range_is_clamped() -> None:
+    resolve = embedding_backend.resolve_embedding_max_length
+    assert resolve({"AUTO_INDEX_EMBEDDING_MAX_LENGTH": "4"}) == 16
+    assert resolve({"AUTO_INDEX_EMBEDDING_MAX_LENGTH": "9999"}) == 512
+
+
+def test_embedding_max_length_invalid_env_uses_default() -> None:
+    for bad in ("0", "-8", "abc", ""):
+        assert (
+            embedding_backend.resolve_embedding_max_length(
+                {"AUTO_INDEX_EMBEDDING_MAX_LENGTH": bad}
+            )
+            == embedding_backend.EMBEDDING_MAX_LENGTH_DEFAULT
+        )
+
+
 @pytest.mark.allow_default_embedder
 def test_bundled_model_enables_service_embeddings(monkeypatch, tmp_path: Path) -> None:
     class FakeOnnxEmbedder:
-        def __init__(self, model_dir: Path, intra_op_num_threads: int = 1) -> None:
+        def __init__(
+            self,
+            model_dir: Path,
+            max_length: int = 192,
+            intra_op_num_threads: int = 1,
+        ) -> None:
             self.model_dir = Path(model_dir)
             self._backend = BagHashEmbedder(dim=32)
 
@@ -277,6 +307,46 @@ def test_text_hash_reuse_on_rebuild(monkeypatch, tmp_path: Path) -> None:
     assert second["embedding"]["status"] == "embedding-in-background"
     assert second_result["reused"] == first_embedded + first_reused
     assert second_result["embedded"] == 0
+
+
+def test_fingerprint_change_invalidates_stored_vectors(monkeypatch, tmp_path: Path) -> None:
+    class FingerprintedBagHash(BagHashEmbedder):
+        def __init__(self, fingerprint: str) -> None:
+            super().__init__(dim=64)
+            self.text_fingerprint = fingerprint
+
+    def install(fingerprint: str) -> None:
+        monkeypatch.setattr(
+            "auto_index_mcp.core.service_watcher.create_embedder",
+            lambda env=None: FingerprintedBagHash(fingerprint),
+        )
+
+    install("maxlen=64")
+    _make_project(tmp_path)
+    service = AutoIndexService(index_root=tmp_path / ".idx")
+    service.enable(str(tmp_path), rebuild=True)
+    first = _wait_embedding(service)
+    assert first["embedded"] > 0
+    total = service.embedding_status()["vector_count"]
+
+    # Same fingerprint after a restart: stored vectors serve as-is - either
+    # the ready short-circuit fires or embed_project reuses every hash.
+    service = AutoIndexService(index_root=tmp_path / ".idx")
+    service.enable(str(tmp_path))
+    unchanged = _wait_embedding(service)
+    assert unchanged.get("embedded", 0) == 0
+    assert service.embedding_status()["vector_count"] == total
+
+    # New fingerprint after a restart (e.g. truncation window changed): the
+    # ready short-circuit must not fire; everything re-embeds under the new
+    # key and vectors from the old space are purged, not left to mix.
+    install("maxlen=192")
+    service = AutoIndexService(index_root=tmp_path / ".idx")
+    service.enable(str(tmp_path))
+    changed = _wait_embedding(service)
+    assert changed["embedded"] == first["embedded"]
+    assert changed["reused"] == 0
+    assert service.embedding_status()["vector_count"] == total
 
 
 def test_incremental_embed_files(monkeypatch, tmp_path: Path) -> None:

@@ -130,6 +130,16 @@ class SymbolEmbeddingStore:
     def delete_file(self, conn: sqlite3.Connection, file_path: str) -> None:
         conn.execute("DELETE FROM symbol_embeddings WHERE file_path=?", (file_path,))
 
+    def purge_other_models(self, conn: sqlite3.Connection, model_name: str) -> None:
+        """Drop vectors written under any other model key.
+
+        One backend serves a store at a time, so rows keyed by an older model
+        or an older config fingerprint can never be searched again.
+        """
+        conn.execute(
+            "DELETE FROM symbol_embeddings WHERE model_name != ?", (model_name,)
+        )
+
     def clear(self, conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM symbol_embeddings")
 

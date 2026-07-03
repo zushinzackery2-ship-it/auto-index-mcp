@@ -13,6 +13,16 @@ _BUNDLED_MODEL_DIR = Path("models") / "minilm-onnx"
 _REQUIRED_MODEL_FILES = ("model.onnx", "tokenizer.json")
 _EMBEDDING_THREADS_ENV = "AUTO_INDEX_EMBEDDING_THREADS"
 _AUTO_THREAD_CAP = 3
+_EMBEDDING_MAX_LENGTH_ENV = "AUTO_INDEX_EMBEDDING_MAX_LENGTH"
+# Default picked from measured token coverage on real symbol texts (head +
+# body slice): 64 fully covers ~15% of symbols, 128 ~48%, 192 ~67%, 256 ~78%.
+# 192 is the knee of the coverage/cost curve; past it mean-pooling dilution
+# grows faster than recall.
+EMBEDDING_MAX_LENGTH_DEFAULT = 192
+# MiniLM position embeddings top out at 512; below 16 the head alone no longer
+# fits. Out-of-range overrides clamp instead of crashing ONNX at inference.
+_EMBEDDING_MAX_LENGTH_MIN = 16
+_EMBEDDING_MAX_LENGTH_MAX = 512
 
 
 @runtime_checkable
@@ -73,7 +83,7 @@ class BagHashEmbedder:
         return out
 
 
-_EMBEDDER_CACHE: dict[Path, EmbeddingBackend] = {}
+_EMBEDDER_CACHE: dict[tuple[Path, int], EmbeddingBackend] = {}
 
 
 def _has_model_files(path: Path) -> bool:
@@ -123,6 +133,25 @@ def resolve_embedding_threads(env: dict[str, str] | None = None) -> int:
     return min(_AUTO_THREAD_CAP, max(1, cores - 1))
 
 
+def resolve_embedding_max_length(env: dict[str, str] | None = None) -> int:
+    """Resolve the tokenizer truncation window for symbol embedding texts.
+
+    ``AUTO_INDEX_EMBEDDING_MAX_LENGTH`` overrides the measured default,
+    clamped to what the encoder's position embeddings actually support.
+    Unset or non-numeric values fall back to the default.
+    """
+    environment = env if env is not None else os.environ
+    raw = environment.get(_EMBEDDING_MAX_LENGTH_ENV, "").strip()
+    if raw:
+        try:
+            requested = int(raw)
+        except ValueError:
+            requested = 0
+        if requested >= 1:
+            return min(_EMBEDDING_MAX_LENGTH_MAX, max(_EMBEDDING_MAX_LENGTH_MIN, requested))
+    return EMBEDDING_MAX_LENGTH_DEFAULT
+
+
 def create_embedder(env: dict[str, str] | None = None) -> EmbeddingBackend | None:
     """Build an embedding backend from configuration.
 
@@ -137,7 +166,8 @@ def create_embedder(env: dict[str, str] | None = None) -> EmbeddingBackend | Non
     path = resolve_embedding_model_path(env)
     if path is None:
         return None
-    cache_key = path.resolve()
+    max_length = resolve_embedding_max_length(env)
+    cache_key = (path.resolve(), max_length)
     cached = _EMBEDDER_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -146,7 +176,11 @@ def create_embedder(env: dict[str, str] | None = None) -> EmbeddingBackend | Non
     except ImportError:
         return None
     try:
-        backend = OnnxEmbedder(path, intra_op_num_threads=resolve_embedding_threads(env))
+        backend = OnnxEmbedder(
+            path,
+            max_length=max_length,
+            intra_op_num_threads=resolve_embedding_threads(env),
+        )
     except Exception:
         return None
     _EMBEDDER_CACHE[cache_key] = backend

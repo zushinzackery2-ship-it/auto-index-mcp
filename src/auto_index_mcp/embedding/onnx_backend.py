@@ -26,7 +26,7 @@ class OnnxEmbedder:
     def __init__(
         self,
         model_dir: Path,
-        max_length: int = 64,
+        max_length: int = 192,
         intra_op_num_threads: int = 1,
     ) -> None:
         self.model_dir = Path(model_dir)
@@ -51,7 +51,10 @@ class OnnxEmbedder:
 
         self._tokenizer = Tokenizer.from_file(str(tokenizer_file))
         self._tokenizer.enable_truncation(max_length=self.max_length)
-        self._tokenizer.enable_padding(length=self.max_length)
+        # Pad to the longest sequence in each batch, not to max_length: mean
+        # pooling masks pad tokens out, so vectors are identical either way and
+        # short batches skip the wasted compute of fixed-length padding.
+        self._tokenizer.enable_padding()
         sess_options = ort.SessionOptions()
         sess_options.intra_op_num_threads = self.intra_op_num_threads
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -79,6 +82,18 @@ class OnnxEmbedder:
     @property
     def name(self) -> str:
         return self._name
+
+    @property
+    def text_fingerprint(self) -> str:
+        """Identity of the text->vector mapping beyond the model name.
+
+        Stored vectors are only reusable when the truncation window that
+        produced them matches; mixing lengths would silently blend
+        incompatible similarity spaces. The indexer salts ``text_hash`` with
+        this value so a ``max_length`` change invalidates every stored vector
+        and triggers a clean re-embed.
+        """
+        return f"maxlen={self.max_length}"
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         import numpy as np
