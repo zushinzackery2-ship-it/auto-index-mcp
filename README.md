@@ -28,8 +28,8 @@
 | **嵌套工作区** | 父目录发现子目录已有索引库时只挂链接，不重复维护子目录数据。 |
 | **低上下文导航** | 提供 overview、tree、query、get、resolve、diff 等轻量工具。 |
 | **符号索引** | 支持 Python AST 符号，JavaScript/TypeScript、C/C++、Pascal 和通用文本轻量符号提取。 |
-| **代码搜索** | 优先使用 ripgrep 按轻量索引目标清单搜索；无 ripgrep 时才回退 Python 索引范围搜索。 |
-| **自动刷新** | 使用系统文件变更事件触发，短 debounce 合并连续变更，再做轻量快照比对。 |
+| **代码搜索** | 支持源码内容和符号名称搜索，同时支持正则匹配。 |
+| **自动刷新** | 文件变更时自动增量更新索引，无需手动重建。 |
 | **质量检查** | 基于持久索引缓存报告嵌套过深、疑似悬空代码和不可达代码。 |
 | **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
 
@@ -41,8 +41,8 @@
 |:-----|:----|:-----|
 | **生命周期** | `auto_index_enable()` | 设置项目根目录，默认复用已有索引，可显式重建。 |
 | **生命周期** | `auto_index_disable()` | 停用当前索引状态并停止自动刷新。 |
-| **生命周期** | `auto_index_status()` | 返回根目录、索引库路径、文件数量、更新时间、最近错误，以及 watcher/embedding 运行状态；`build_timers` 给出索引与语义两条构建链的实时计时（`elapsed_seconds` 运行中实时累加、结束后固定为总耗时）。 |
-| **生命周期** | `auto_index_ignore()` | 查看或配置运行期 ignore 规则；`target="privileged"` 可维护超大源码特权索引名单。 |
+| **生命周期** | `auto_index_status()` | 返回索引状态，包括文件数量、更新时间、错误信息及后台任务进度。 |
+| **生命周期** | `auto_index_ignore()` | 配置索引排除规则，支持忽略大文件或特定目录。 |
 | **生命周期** | `auto_index_rebuild()` | 派发后台全量扫描并重写持久索引，请通过 `auto_index_status()` 观察进度。 |
 | **生命周期** | `auto_index_clear()` | 清空索引数据，可选择删除 SQLite 文件。 |
 | **导航** | `auto_index_overview()` | 返回语言分布、目录分布、样例文件等紧凑概览。 |
@@ -55,20 +55,12 @@
 | **搜索** | `auto_index_symbol_body()` | 返回指定符号的源码片段。 |
 | **语义搜索** | `auto_index_semantic_search()` | 自然语言语义搜索，默认使用仓库随附 ONNX 模型，返回最相似的符号及行范围。 |
 | **语义搜索** | `auto_index_embedding_status()` | 报告语义 embedding 后端是否启用及向量数量；`build_timer` 给出语义向量构建的实时计时。 |
-| **质量检查** | `auto_index_quality_check()` | 从持久化缓存报告代码质量问题；`kind="nesting"` 读 `symbol_nesting` 嵌套深度，`kind="dangling"` 读 `quality_findings` 疑似悬空/不可达代码，`kind="all"` 同时返回两者；`include_low_confidence` 控制是否展示低置信 orphan 噪音，`include_tests` 控制是否纳入测试文件。 |
+| **质量检查** | `auto_index_quality_check()` | 检查代码质量，报告嵌套深度过深、悬空代码或不可达代码等问题。 |
 | **漂移检查** | `auto_index_diff_filesystem()` | 对比索引与当前文件系统的新增、删除、变化。 |
 | **自动刷新** | `auto_index_watcher_start()` | 非阻塞启动文件系统事件驱动的自动刷新。 |
 | **自动刷新** | `auto_index_watcher_stop()` | 停止文件系统事件驱动的自动刷新。 |
 
-MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容工具。旧的 `set_project_path()`、`find_files()`、`get_file_summary()`、`get_symbol_body()`、`search_code_advanced()` 已移除，请使用上表中的 native API。
-
-`auto_index_enable()` 会返回 whole-workspace total files 和 local files。父工作区复用子索引时，local 只代表父库自身保存的文件数量，total 才代表包含子索引后的可导航文件数量。首次设置或切换到一个已有索引根目录时会复用 `.auto-index-mcp/index.db`；需要强制全量刷新时使用 `auto_index_rebuild()`、`auto_index_enable(rebuild=True)` 或 CLI `--rebuild`。MCP/CLI enable 会给代码索引 3 秒完成窗口：窗口内完成则直接返回 `status="indexed"`，否则返回 `status="indexing-in-background"` 并继续后台重建；同一 root 已在后台构建时重复 enable 返回 `status="already-running"`，不会重置当前服务状态。embedding 模型加载和向量生成始终走独立后台任务，不占用这 3 秒窗口。若另一个 MCP 进程正在持有构建锁，本进程返回 `indexing-in-other-process`，不会在请求线程等待锁超时。
-
-首建后台索引期间，`auto_index_tree_get()` 会读取轻量目录进度：已完成层级返回真实目录摘要，更深仍在扫描的目录返回 `state="indexing"` 和 `message="inner is indexing"`。主符号/搜索索引仍保持原子发布；`auto_index_query()`、`auto_index_file()`、`auto_index_symbol_search()` 等工具在首建未完成时继续返回 not-ready 语义，不暴露半成品符号结果。已有旧索引时，后台重建期间继续返回旧索引结果并附带 stale/running 状态。
-
-索引边界默认读取项目根目录 `.gitignore`，并叠加内置排除目录（如 `.venv/`、`third-party/`、`node_modules/`、`.auto-index-mcp/`）和 `auto_index_ignore()` 配置的运行期模式。超过 2MB 的源码会自动进入 `auto_patterns` 并跳过，避免静默读入巨大 dump；需要索引 300MB 级 `dump.cs` 时使用 `auto_index_ignore(mode="add", target="privileged", patterns=["/dump.cs"])` 后重建。ignore 配置写入 SQLite metadata，`.gitignore`、运行期 ignore、auto ignore 或 privileged 变化都会让旧索引失效。
-
-`auto_index_text_search()` 与 `auto_index_quality_check()` 支持 `exclude_paths`，用于排除 `reference_origin/**`、`dist/**`、`_deps/**` 等目录；质量检查还支持 `active_only`，会基于索引阶段缓存的 Visual Studio `.vcxproj` `ClCompile` 列表过滤 C/C++ 编译源。`auto_index_quality_check(kind="nesting")` 会输出 `nesting_coverage`、`reliable` 和 `warnings`，覆盖率过低时不要把结果当作结构质量结论。
+可通过 `auto_index_enable(rebuild=True)` 强制全量重建索引，或使用 `auto_index_rebuild()` 后台重建。所有 API 详细参数见各工具的在线帮助。
 
 > [!NOTE]
 > **已知局限**
@@ -76,160 +68,17 @@ MCP 工具面只注册 `auto_index_*` 主线入口，不再暴露旧命名兼容
 
 ---
 
-## 设计边界
-
-| 模块 | 职责 |
-|:-----|:-----|
-| `core/` | 对外服务编排（`ServiceBase` + mixin）、源码清洗（`source_clean`）、质量分析（嵌套/悬空/不可达）、生命周期入口。 |
-| `indexing/` | 扫描、符号分析、SQLite 存储、child-index 定位、增量更新、watcher、轻量快照。 |
-| `workspace/` | 嵌套工作区发现、父子索引聚合、路径安全检查、搜索上下文读取。 |
-| `languages/` | Python AST、JavaScript/TypeScript、C/C++、Pascal 和通用文本符号提取。 |
-| `search/` | ripgrep/Python fallback 搜索后端。 |
-| `embedding/` | 可选语义 embedding 后端（ONNX）、独立向量库（`embeddings.db`）、符号级增量索引器。 |
-| `mcp_api/` | MCP 工具注册，按生命周期、导航、搜索、语义、质量检查拆分。 |
-
----
-
-## 搜索一致性
-
-`auto_index_query()`、`auto_index_symbol_search()`、`auto_index_file()` 等结构化导航工具读取 SQLite 中的持久索引数据。
-
-`auto_index_text_search()` 的正文匹配遵循“索引范围 + 实时文件内容”模型：
-
-- 文件集合来自当前索引，新增、删除、重命名文件需要 watcher 或重建索引后才进入搜索范围。
-- 正文内容优先通过 ripgrep 读取轻量 SQL search-target 清单对应的实时文件；不会把项目根目录交给 ripgrep 做递归全树搜索，也不会为了正文搜索拉取符号/import 等完整文件详情。
-- 使用 ripgrep 时按 `limit` 流式读取匹配结果，达到限制后终止子进程，避免大仓高频命中把 stdout 全量收进内存。
-- 没有 ripgrep 时回退为 Python 读取索引文件集合；ripgrep timeout/error 会直接返回对应 backend 状态和已收集结果，不再退回 Python 重扫同一批文件。
-- 因此，已索引文件的内容刚被修改后，正文搜索通常能立即命中新内容；结构摘要和符号关系仍以索引刷新后的数据为准。
-
-这个分工让低上下文导航保持稳定范围，同时让代码正文搜索尽量贴近磁盘上的最新内容。
 
 ## 语义搜索
 
-`auto_index_semantic_search()` 提供自然语言到符号的语义检索：把查询语句 embed 后，按余弦相似度返回最相关的符号、文件路径和行范围。
+`auto_index_semantic_search()` 通过自然语言搜索找到最相关的代码符号。需要额外安装依赖：
 
-- **模型优先级**：`AUTO_INDEX_EMBEDDING_MODEL` 指定的目录优先，需包含 `model.onnx` 和 `tokenizer.json`；未设置时使用仓库随附 `models/minilm-onnx/`。
-- **后端可插拔**：默认通过 `onnxruntime`（纯 CPU 推理，零 torch 依赖）加载本地 ONNX embedding 模型，当前随附模型为 MiniLM ONNX 版本，约 90MB。
-- **CPU 线程**：embedding 推理默认用 `min(3, 核数-1)` 个 ONNX intra-op 线程（后台索引时给前台留核），小模型在该区间已基本吃满吞吐；可用 `AUTO_INDEX_EMBEDDING_THREADS` 显式覆盖（设为 ≥1 的线程数即按设定值生效）。
-- **截断窗口**：符号文本默认截断到 192 token（按真实符号 token 分布实测选定：64 只能完整覆盖约 15% 的符号，192 覆盖约 2/3，再往上边际收益骤降）；可用 `AUTO_INDEX_EMBEDDING_MAX_LENGTH` 覆盖（范围 16–512，越大召回越全、全量构建越慢）。窗口长度参与向量存储键，改动后旧向量自动整体失效并重嵌，不会新旧混用。批内按最长序列动态填充，mean-pooling 掩码保证向量与定长填充完全一致。
-- **可选依赖**：安装 `pip install -e ".[semantic]"` 启用 onnxruntime + tokenizers；依赖缺失或所选模型不可用时 `auto_index_semantic_search()` 明确报告不可用，不做关键词假降级。
-- **符号级 chunking**：embedding 文本由 `kind + signature + 符号体源码` 构成，复用已有符号索引作为精确分块，这是 auto-index 相对“全树喂 AI”方案的架构优势。
-- **后台向量构建**：rebuild 先完成代码索引写库，embedding 向量随后在独立后台任务生成；复用旧索引时只要向量缺失也会在 enable 完成后**自动派发**后台构建（无需等首次查询触发）。向量部分就绪时会先返回已有向量的检索结果，并附带 `embedding.status="partial"`、`vector_count` 和后台状态。
-- **增量复用**：每个符号向量带 `text_hash`，rebuild 与 watcher 增量更新时，源码未变的符号直接复用已存向量，只对变更符号重新推理。
-- **独立向量库**：float32 向量以 BLOB 存入**独立的 `embeddings.db`**（与 `index.db` 同目录但分文件），表 `symbol_embeddings` 按 `(file_path, symbol_name, symbol_line, model_name)` 自然键定位，跨 rebuild 稳定。检索所需的符号元数据（`kind/end_line/signature/complexity`）随向量**反规范化**冗余存储，因此语义检索只读向量库、不与 `index.db` 的 `symbols` 表跨库 JOIN——向量库可独立重建/清空/换模型而不动代码索引。
-
-## 索引存储
-
-每个项目的 SQLite 索引默认放在项目根目录内：
-
-```text
-<project>/.auto-index-mcp/index.db        # 代码索引（文件、符号、调用图、FTS）
-<project>/.auto-index-mcp/embeddings.db   # 语义向量（独立库，缺失时自动后台构建）
+```bash
+pip install -e ".[semantic]"
 ```
 
-`.auto-index-mcp` 会被扫描器排除，也已经写入 `.gitignore`。
+默认使用内置 MiniLM ONNX 模型（约 90MB），纯本地推理，无网络依赖。可通过 `AUTO_INDEX_EMBEDDING_MODEL` 环境变量指定自定义模型目录（须包含 `model.onnx` 和 `tokenizer.json`）。
 
-如果父项目包含一个已经有 `.auto-index-mcp/index.db` 的子目录，父索引只保存子库链接，并跳过对子目录源码的重复索引。导航、搜索、摘要、符号体读取会聚合父库和子库。多层嵌套按每层数据库递归展开，并通过 visited db path 避免循环引用。
-
----
-
-## 自动刷新设计
-
-| 变更类型 | 行为 |
-|:-----|:-----|
-| **普通文件新增/修改/删除** | 文件系统事件唤醒 watcher，debounce 合并连续变更，再用轻量快照定位变化路径，只重写受影响文件和相关 `called_by` 元数据。 |
-| **子索引新增/删除** | 父库执行一次结构重建，挂接或移除子库边界，并自动瘦身重复的子目录记录。 |
-| **子索引内容变化** | 父库只刷新 child link metadata，不重写父库源码记录。 |
-| **SQLite WAL 更新** | 子库指纹同时覆盖 `index.db`、`index.db-wal`、`index.db-shm`，避免漏掉 WAL 模式下的子库提交。 |
-| **自身索引 DB 更新** | 当前项目自己的 `.auto-index-mcp/index.db/-wal/-shm` 事件会被忽略，避免 watcher 自触发 child discovery 或重复扫描。 |
-
-当前 watcher 不是固定每隔几秒扫一次目录，而是由系统文件变更事件触发。`auto_index_watcher_start()` 默认只启动后台线程并立即返回，初始快照是否完成通过 `auto_index_status().watcher.ready` 查看。默认 debounce 为 0.25 秒，只用于合并连续保存、批量生成、SQLite WAL 写入等事件风暴。更新工作串行执行，一次快照/更新未结束时不会并发启动下一次。
-
-服务进程退出时会执行优雅熄火：`mcp.run()` 返回、异常退出、Python 正常退出、SIGINT、SIGTERM 都会调用 watcher 停止逻辑。默认 stdio 模式下 MCP 进程随客户端生命周期结束；HTTP/SSE 长驻模式下也可以通过 `auto_index_watcher_stop()` 或 `auto_index_disable()` 主动停止监听。
-
----
-
-## 目录结构
-
-```
-auto-index-mcp/
-|-- .well-known/
-|   `-- mcp.json
-|-- models/
-|   `-- minilm-onnx/
-|       |-- model.onnx
-|       `-- tokenizer.json
-|-- scripts/
-|   |-- bench_embedding_length.py
-|   |-- self_quality_check.py
-|   |-- smoke_auto_index.py
-|   `-- verify_mcp_stdio.py
-|-- src/
-|   `-- auto_index_mcp/
-|       |-- core/
-|       |   |-- background_indexer.py
-|       |   |-- multi_match.py
-|       |   |-- quality_dangling.py
-|       |   |-- quality_nesting.py
-|       |   |-- quality_unreachable.py
-|       |   |-- service.py
-|       |   |-- service_state.py
-|       |   |-- service_rebuild.py
-|       |   |-- service_quality.py
-|       |   |-- service_search.py
-|       |   |-- source_clean.py
-|       |   `-- tree_progress.py
-|       |-- embedding/
-|       |   |-- backend.py
-|       |   |-- embedding_store.py
-|       |   |-- indexer.py
-|       |   |-- onnx_backend.py
-|       |   `-- vector_store.py
-|       |-- indexing/
-|       |   |-- analysis.py
-|       |   |-- build_lock.py
-|       |   |-- locator.py
-|       |   |-- scanner.py
-|       |   |-- snapshot.py
-|       |   |-- store.py
-|       |   |-- updater.py
-|       |   `-- watcher.py
-|       |-- languages/
-|       |   |-- c_family.py
-|       |   |-- generic.py
-|       |   |-- javascript.py
-|       |   |-- pascal.py
-|       |   `-- python.py
-|       |-- mcp_api/
-|       |   |-- lifecycle.py
-|       |   |-- navigation.py
-|       |   |-- quality.py
-|       |   |-- search.py
-|       |   |-- semantic.py
-|       |   `-- server.py
-|       |-- search/
-|       |-- workspace/
-|       |   |-- context.py
-|       |   |-- discovery.py
-|       |   |-- safety.py
-|       |   `-- view.py
-|       |-- __main__.py
-|       `-- server.py
-|-- tests/
-|   |-- test_auto_index_service.py
-|   |-- test_multi_match.py
-|   |-- test_quality_unreachable.py
-|   |-- test_search_backend.py
-|   |-- test_self_quality_smoke.py
-|   |-- test_source_clean.py
-|   |-- test_watcher_core.py
-|   |-- test_watcher_event_filter.py
-|   `-- ...（其余单元/压力/边界测试）
-|-- fastmcp.json
-|-- install_windows.bat
-|-- pyproject.toml
-`-- README.md
-```
 
 ---
 
@@ -241,7 +90,7 @@ auto-index-mcp/
 install_windows.bat
 ```
 
-脚本会创建 `.venv`，以 `.[semantic]` 安装当前包和 ONNX 语义依赖，把 `AUTO_INDEX_EMBEDDING_MODEL` 写入 Windows 用户环境变量，指向仓库随附的 `models/minilm-onnx/`，再验证 MCP 入口并生成 `mcp-client-config.windows.json` 配置示例。配置示例只保留 MCP 启动命令，agent 侧不需要再单独配置模型路径；如果 MCP 客户端已在运行，安装后重启客户端让它继承新的环境变量。脚本不会自动修改 MCP 客户端配置，也不需要手动启动后端服务。
+脚本会创建 `.venv`、安装依赖、配置环境变量并验证 MCP 入口。若 MCP 客户端已运行，安装后重启以继承新环境变量。
 
 ### 手动安装
 
@@ -249,7 +98,7 @@ install_windows.bat
 python -m pip install -e .
 ```
 
-语义搜索需要额外安装 ONNX 运行依赖：
+语义搜索（可选）：
 
 ```bash
 python -m pip install -e ".[semantic]"
@@ -267,7 +116,7 @@ python -m auto_index_mcp.server --project-path /path/to/project
 auto-index-mcp --project-path /path/to/project
 ```
 
-传入 `--project-path` 时默认启动自动刷新。脚本或一次性校验场景可以加 `--no-watch` 禁用 watcher。
+传入 `--project-path` 时默认启动文件监听。一次性校验场景可加 `--no-watch` 禁用监听。
 
 ---
 
@@ -289,32 +138,28 @@ MCP 客户端会按配置通过 stdio 拉起本服务，不需要单独手动启
 }
 ```
 
-Windows 一键安装后，可以参考安装脚本生成的 `mcp-client-config.windows.json`，其中会使用本项目 `.venv` 里的 Python 绝对路径。
-
-当前发布包按 Windows x64 环境验证；其他平台未作为正式发布目标验证。
+Windows 一键安装后，可以参考安装脚本生成的 `mcp-client-config.windows.json` 示例配置。当前主要在 Windows x64 上验证。
 
 ---
 
 ## 测试
 
-本地质量闸以 pytest + 端到端脚本为准（无 GitHub Actions CI）：
+本地测试以 pytest 为准（无 GitHub Actions CI）：
 
 ```bash
 python -m pytest -q
 ```
 
+全量重建索引并进行质量检查：
+
 ```bash
 python scripts/self_quality_check.py
 ```
 
-对本仓库做全量 rebuild，并汇总 nesting/dangling 质量检查与搜索 sanity probe。
+烟测：
 
 ```bash
 python scripts/smoke_auto_index.py
-```
-
-```bash
-python scripts/verify_mcp_stdio.py
 ```
 
 ---
