@@ -25,7 +25,7 @@
 | **低上下文导航** | 提供 overview、tree、query、get、resolve、diff 等轻量工具。 |
 | **符号索引** | 支持 Python AST 符号，JavaScript/TypeScript、C/C++、Pascal 和通用文本轻量符号提取。 |
 | **代码搜索** | 支持源码内容和符号名称搜索，同时支持正则匹配。 |
-| **语义搜索** | 通过自然语言找到最相关的符号，基于本地 ONNX embedding 模型，无网络依赖。 |
+| **语义搜索** | 通过自然语言找到最相关的符号，基于本地 ONNX Embedding 模型，无网络依赖。 |
 | **自动刷新** | 文件变更时自动增量更新索引，无需手动重建。 |
 | **质量检查** | 基于持久索引缓存报告嵌套过深、疑似悬空代码和不可达代码。 |
 | **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
@@ -51,7 +51,7 @@
 | **搜索** | `auto_index_symbol_search()` | 按名称、签名、类型搜索符号。 |
 | **搜索** | `auto_index_symbol_body()` | 返回指定符号的源码片段。 |
 | **语义搜索** | `auto_index_semantic_search()` | 自然语言语义搜索，默认使用仓库随附 ONNX 模型，返回最相似的符号及行范围。 |
-| **语义搜索** | `auto_index_embedding_status()` | 报告语义 embedding 后端是否启用及向量数量；`build_timer` 给出语义向量构建的实时计时。 |
+| **语义搜索** | `auto_index_embedding_status()` | 报告语义 Embedding 后端是否启用及向量数量；`build_timer` 给出语义向量构建的实时计时。 |
 | **质量检查** | `auto_index_quality_check()` | 检查代码质量，报告嵌套深度过深、悬空代码或不可达代码等问题。 |
 | **漂移检查** | `auto_index_diff_filesystem()` | 对比索引与当前文件系统的新增、删除、变化。 |
 | **自动刷新** | `auto_index_watcher_start()` | 非阻塞启动文件系统事件驱动的自动刷新。 |
@@ -68,13 +68,13 @@
 
 ## 语义搜索
 
-`auto_index_semantic_search()` 通过自然语言搜索找到最相关的代码符号，基于向量 embedding。需要额外安装依赖：
+`auto_index_semantic_search()` 通过自然语言搜索找到最相关的代码符号，基于向量 Embedding。需要额外安装依赖：
 
 ```bash
 pip install -e ".[semantic]"
 ```
 
-默认使用内置 MiniLM ONNX 模型（约 90MB）进行 embedding 推理，纯本地计算，无网络依赖。可通过 `AUTO_INDEX_EMBEDDING_MODEL` 环境变量指定自定义模型目录（须包含 `model.onnx` 和 `tokenizer.json`）。
+默认使用内置 MiniLM ONNX 模型（约 90MB）进行 Embedding 推理，纯本地计算，无网络依赖。可通过 `AUTO_INDEX_EMBEDDING_MODEL` 环境变量指定自定义模型目录（须包含 `model.onnx` 和 `tokenizer.json`）。
 
 
 ---
