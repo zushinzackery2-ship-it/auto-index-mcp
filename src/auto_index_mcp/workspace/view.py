@@ -16,6 +16,20 @@ from .safety import ensure_relative_to
 _CACHE_TTL_SECONDS = 0.5
 
 
+def _ranked_symbol_sort_key(item: dict[str, Any]) -> tuple[int, int, str, int]:
+    """Relevance order for text-driven symbol queries.
+
+    ``match_rank`` comes from the store's tiered scoring; shorter names break
+    ties because they are the more precise hit for the same tier.
+    """
+    return (
+        int(item.get("match_rank", 99)),
+        len(item.get("name", "")),
+        item["file_path"].lower(),
+        item["line"],
+    )
+
+
 @dataclass(frozen=True)
 class FileLookup:
     item: dict[str, Any] | None
@@ -110,7 +124,21 @@ class WorkspaceView:
         for child in self._active_child_indexes():
             child_rows = self._child_view(child).query_symbols(text, kind, limit + offset, 0)
             rows.extend(self._prefixed_symbols(child, child_rows))
-        return sorted(rows, key=lambda item: (item["file_path"].lower(), item["line"]))[offset:offset + limit]
+        # Text queries carry a match_rank tier from the store; merged
+        # parent/child rows re-sort on it so relevance survives the merge.
+        if text:
+            rows.sort(key=_ranked_symbol_sort_key)
+        else:
+            rows.sort(key=lambda item: (item["file_path"].lower(), item["line"]))
+        return rows[offset:offset + limit]
+
+    def query_symbols_relaxed(self, subtokens: list[str], kind: str, limit: int, offset: int) -> list[dict[str, Any]]:
+        rows = self.store.query_symbols_relaxed(subtokens, kind, limit + offset, 0)
+        for child in self._active_child_indexes():
+            child_rows = self._child_view(child).query_symbols_relaxed(subtokens, kind, limit + offset, 0)
+            rows.extend(self._prefixed_symbols(child, child_rows))
+        rows.sort(key=_ranked_symbol_sort_key)
+        return rows[offset:offset + limit]
 
     def get_file(self, path: str) -> FileLookup:
         item = self.store.get_file(path)

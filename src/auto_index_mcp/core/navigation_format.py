@@ -3,6 +3,25 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
+# Tool responses are consumed by LLMs; a symbol referenced by a hundred tests
+# would otherwise dump its whole reverse-call list into every reply.
+MAX_PRESENTED_CALLERS = 25
+
+
+def presentable_symbol(symbol: dict[str, Any]) -> dict[str, Any]:
+    """Outward shape of one symbol dict.
+
+    Internal value-reference data never leaves the index, and oversized
+    ``called_by`` lists are cut to a preview with the real total alongside.
+    """
+    shaped = dict(symbol)
+    shaped.pop("refs", None)
+    called_by = shaped.get("called_by")
+    if isinstance(called_by, list) and len(called_by) > MAX_PRESENTED_CALLERS:
+        shaped["called_by"] = called_by[:MAX_PRESENTED_CALLERS]
+        shaped["called_by_total"] = len(called_by)
+    return shaped
+
 
 def overview_result(files: list[dict[str, Any]], limit: int) -> dict[str, Any]:
     languages = Counter(item["language"] for item in files)

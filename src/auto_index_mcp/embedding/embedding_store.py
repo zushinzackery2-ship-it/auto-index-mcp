@@ -8,7 +8,9 @@ from typing import Any, ContextManager
 from ..indexing.sqlite import IndexDatabase
 
 # Bumped independently of the index schema; the vector DB owns its own lifecycle.
-EMBEDDING_DB_VERSION = 1
+# v2: chunk_index joined the primary key so long symbols can carry one vector
+# per overlapping window.
+EMBEDDING_DB_VERSION = 2
 
 
 class EmbeddingStore:
@@ -37,6 +39,7 @@ class EmbeddingStore:
     def initialize(self) -> None:
         with self.connect() as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            _drop_pre_chunk_table(conn)
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS symbol_embeddings (
@@ -44,13 +47,14 @@ class EmbeddingStore:
                     symbol_name TEXT NOT NULL,
                     symbol_line INTEGER NOT NULL,
                     model_name TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL DEFAULT 0,
                     text_hash TEXT NOT NULL,
                     kind TEXT NOT NULL DEFAULT '',
                     end_line INTEGER NOT NULL DEFAULT 0,
                     signature TEXT NOT NULL DEFAULT '',
                     complexity INTEGER NOT NULL DEFAULT 1,
                     vector BLOB NOT NULL,
-                    PRIMARY KEY (file_path, symbol_name, symbol_line, model_name)
+                    PRIMARY KEY (file_path, symbol_name, symbol_line, model_name, chunk_index)
                 )
                 """
             )
@@ -72,3 +76,17 @@ class EmbeddingStore:
             self.db_path.unlink()
         for suffix in ("-wal", "-shm"):
             Path(str(self.db_path) + suffix).unlink(missing_ok=True)
+
+
+def _drop_pre_chunk_table(conn: sqlite3.Connection) -> None:
+    """Recreate the vector table when it predates chunked embedding.
+
+    Vectors are derived data: the text-scheme change that introduced chunking
+    also changes every storage key, so the old rows are unreachable garbage
+    either way. Dropping the table is the honest migration.
+    """
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(symbol_embeddings)").fetchall()
+    }
+    if columns and "chunk_index" not in columns:
+        conn.execute("DROP TABLE symbol_embeddings")

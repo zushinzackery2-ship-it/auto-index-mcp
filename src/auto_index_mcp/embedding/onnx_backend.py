@@ -10,6 +10,13 @@ from typing import Any
 # ``semantic`` extra. A missing/invalid model surfaces as None from the factory
 # rather than a hard crash at import time.
 
+# Long symbol texts are split into overlapping token windows so content beyond
+# the truncation budget stays searchable instead of being silently dropped.
+# The overlap keeps statements cut at a window edge visible in the next one.
+WINDOW_OVERLAP_TOKENS = 24
+# Bounds vector growth for pathological inputs (giant generated functions).
+MAX_WINDOWS_PER_TEXT = 8
+
 
 class OnnxEmbedder:
     """Sentence embedder backed by an ONNX encoder + HuggingFace fast tokenizer.
@@ -34,6 +41,7 @@ class OnnxEmbedder:
         self.intra_op_num_threads = max(1, int(intra_op_num_threads))
         self._session: Any = None
         self._tokenizer: Any = None
+        self._measure_tokenizer: Any = None
         self._dim: int = 0
         self._name: str = self.model_dir.name or "onnx-embedder"
         self._lazy_load()
@@ -55,6 +63,12 @@ class OnnxEmbedder:
         # pooling masks pad tokens out, so vectors are identical either way and
         # short batches skip the wasted compute of fixed-length padding.
         self._tokenizer.enable_padding()
+        # Separate instance for measuring/window-slicing: bundled tokenizer
+        # files can persist their own truncation/padding config, which would
+        # silently cap the token counts this backend windows on.
+        self._measure_tokenizer = Tokenizer.from_file(str(tokenizer_file))
+        self._measure_tokenizer.no_truncation()
+        self._measure_tokenizer.no_padding()
         sess_options = ort.SessionOptions()
         sess_options.intra_op_num_threads = self.intra_op_num_threads
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -87,13 +101,46 @@ class OnnxEmbedder:
     def text_fingerprint(self) -> str:
         """Identity of the text->vector mapping beyond the model name.
 
-        Stored vectors are only reusable when the truncation window that
-        produced them matches; mixing lengths would silently blend
-        incompatible similarity spaces. The indexer salts ``text_hash`` with
-        this value so a ``max_length`` change invalidates every stored vector
-        and triggers a clean re-embed.
+        Stored vectors are only reusable when the truncation window AND the
+        windowing scheme that produced them match; mixing either would
+        silently blend incompatible similarity spaces. The indexer folds this
+        value into the storage key so a change invalidates every stored
+        vector and triggers a clean re-embed.
         """
-        return f"maxlen={self.max_length}"
+        return (
+            f"maxlen={self.max_length};"
+            f"win={WINDOW_OVERLAP_TOKENS}x{MAX_WINDOWS_PER_TEXT}"
+        )
+
+    def window_texts(self, text: str) -> list[str]:
+        """Split ``text`` into overlapping windows that each fit the budget.
+
+        Window one naturally carries the symbol head; later windows represent
+        body middle/tail content that truncation used to drop. Name context
+        for those windows is recovered at rank time by the lexical blend, so
+        the head is not duplicated into every window.
+        """
+        encoded = self._measure_tokenizer.encode(text, add_special_tokens=False)
+        ids = encoded.ids
+        # encode() at embed time re-adds [CLS]/[SEP] inside max_length.
+        budget = max(1, self.max_length - 2)
+        if len(ids) <= budget:
+            return [text]
+        stride = max(1, budget - WINDOW_OVERLAP_TOKENS)
+        windows: list[str] = []
+        start = 0
+        while start < len(ids) and len(windows) < MAX_WINDOWS_PER_TEXT:
+            piece = ids[start:start + budget]
+            if windows and len(piece) <= WINDOW_OVERLAP_TOKENS:
+                # The tail is already fully covered by the previous overlap.
+                break
+            decoded = self._measure_tokenizer.decode(piece)
+            if decoded.strip():
+                windows.append(decoded)
+            start += stride
+        # A window list must never be empty: an empty list would silently
+        # drop the symbol from the vector store entirely.
+        return windows or [text]
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         import numpy as np

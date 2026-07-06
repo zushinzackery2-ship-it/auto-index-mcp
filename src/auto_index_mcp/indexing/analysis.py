@@ -11,6 +11,32 @@ CALL_RE = re.compile(r"\b([A-Za-z_][\w]*)\s*\(")
 CONTROL_NAMES = {"if", "for", "while", "switch", "return", "raise", "catch", "with"}
 COMPLEXITY_RE = re.compile(r"\b(if|elif|else if|for|while|case|catch|except|and|or|\?|&&|\|\|)\b")
 
+# Value references: a bare identifier used as data rather than invoked -
+# callback arguments (sort(key=fn)), kwarg values, assignment RHS, decorators,
+# collection elements, return values. The trailing lookahead rejects names that
+# are immediately called (CALL_RE territory), kwarg names (key=) and walrus /
+# dict-key positions (name:). Line-local by design: cleaned lines carry no
+# cross-line state, so a bare positional name on its own continuation line is
+# not seen - acceptable for a heuristic whose job is suppressing false
+# "unused symbol" verdicts, not building a complete reference graph.
+REF_RE = re.compile(r"(?:[=(,\[{:]|@|\breturn\b|\byield\b)\s*&?\s*([A-Za-z_]\w*)\b(?!\s*[(=:])")
+# Definition lines are skipped for reference extraction so parameter names in
+# single-line signatures are never mistaken for value references.
+DEF_LINE_RE = re.compile(
+    r"^\s*(?:async\s+)?(?:def|class|function|func|fn|procedure|constructor|interface|struct|enum)\b"
+)
+REF_STOP_NAMES = CONTROL_NAMES | {
+    "False", "None", "True", "and", "as", "assert", "async", "await", "bool",
+    "break", "case", "char", "class", "cls", "const", "continue", "def",
+    "default", "del", "delete", "do", "double", "elif", "else", "except",
+    "false", "finally", "float", "from", "function", "global", "import", "in",
+    "int", "is", "lambda", "let", "long", "new", "nonlocal", "not", "null",
+    "nullptr", "or", "pass", "self", "short", "signed", "sizeof", "static",
+    "struct", "super", "this", "true", "try", "typeof", "undefined",
+    "unsigned", "var", "void", "yield",
+}
+MAX_REFS_PER_SYMBOL = 64
+
 
 def enrich_symbols(
     lines: list[str],
@@ -24,6 +50,7 @@ def enrich_symbols(
     enriched = []
     for symbol in symbols:
         body = cleaned[symbol.line - 1:symbol.end_line]
+        calls = _calls(body, symbol.name)
         enriched.append(
             SymbolRecord(
                 name=symbol.name,
@@ -32,8 +59,9 @@ def enrich_symbols(
                 end_line=symbol.end_line,
                 signature=symbol.signature,
                 complexity=_complexity(body),
-                calls=_calls(body, symbol.name),
+                calls=calls,
                 called_by=[],
+                refs=_value_refs(body, symbol.name, calls),
             )
         )
     return annotate_symbol_nesting(cleaned, enriched, language)
@@ -67,9 +95,11 @@ def _caller_maps(
         local_names = {symbol.name for symbol in record.symbols}
         for symbol in record.symbols:
             project_caller = f"{record.path}::{symbol.name}"
-            for call in symbol.calls:
+            # Value references count as usage edges exactly like calls: a
+            # function handed to sort(key=...) or stored in a table has a user.
+            for call in dict.fromkeys(symbol.calls + symbol.refs):
                 _record_local_call(local_callers, symbol_locations, call, symbol.name, local_names, record_index)
-                _record_project_call(project_callers, symbol_locations, call, project_caller)
+                _record_project_call(project_callers, symbol_locations, call, project_caller, record_index)
     return local_callers, project_callers
 
 
@@ -93,9 +123,12 @@ def _record_project_call(
     locations_by_name: dict[str, list[tuple[int, int]]],
     call: str,
     project_caller: str,
+    caller_record_index: int,
 ) -> None:
     locations = locations_by_name.get(call, [])
-    if len(locations) == 1:
+    # Same-file callers are already covered by the bare-name local edge; adding
+    # the path-qualified form as well only duplicates every entry.
+    if len(locations) == 1 and locations[0][0] != caller_record_index:
         callers.setdefault(locations[0], []).append(project_caller)
 
 
@@ -131,3 +164,19 @@ def _calls(cleaned_body: list[str], own_name: str) -> list[str]:
             if name not in calls:
                 calls.append(name)
     return calls
+
+
+def _value_refs(cleaned_body: list[str], own_name: str, calls: list[str]) -> list[str]:
+    called = set(calls)
+    refs: list[str] = []
+    for line in cleaned_body:
+        if DEF_LINE_RE.match(line):
+            continue
+        for name in REF_RE.findall(line):
+            if name == own_name or name in REF_STOP_NAMES or name in called:
+                continue
+            if name not in refs:
+                refs.append(name)
+                if len(refs) >= MAX_REFS_PER_SYMBOL:
+                    return refs
+    return refs

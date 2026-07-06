@@ -28,6 +28,10 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+# Active suite lives in tests/. oldtest/ is archived history and is not collected.
+# reference/ and third-party/ carry foreign test trees that must never be collected.
+testpaths = ["tests"]
+norecursedirs = ["reference", "third-party", "models", "dist", ".auto-index-mcp"]
 markers = [
     "allow_default_embedder: allow a test to use the production embedding backend factory",
     "smoke: end-to-end smoke checks that rebuild the project index",

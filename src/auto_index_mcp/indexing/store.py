@@ -10,8 +10,9 @@ from ..core.config import INDEX_VERSION
 from ..core.models import FileRecord
 from .sqlite import IndexDatabase
 from .store_schema import initialize_schema
-from .store_rows import file_row_to_dict, symbol_row_to_dict
+from .store_rows import file_row_to_dict
 from .store_writes import delete_file_rows, insert_child_indexes, insert_many
+from .symbol_query import query_ranked, query_relaxed
 
 _CORRUPTION_TOKENS = (
     "malformed",
@@ -226,25 +227,12 @@ class IndexStore:
         return int(row[0]) if row else 0
 
     def query_symbols(self, text: str, kind: str, limit: int, offset: int) -> list[dict[str, Any]]:
-        where: list[str] = []
-        params: list[Any] = []
-        if text:
-            where.append("(symbols.name LIKE ? OR symbols.signature LIKE ?)")
-            params.extend([f"%{text}%", f"%{text}%"])
-        if kind:
-            where.append("symbols.kind=?")
-            params.append(kind)
-        sql = (
-            "SELECT symbols.*, files.language FROM symbols "
-            "JOIN files ON files.path=symbols.file_path"
-        )
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY symbols.file_path, symbols.line LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
         with self.read_connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [symbol_row_to_dict(row) for row in rows]
+            return query_ranked(conn, text, kind, limit, offset)
+
+    def query_symbols_relaxed(self, subtokens: list[str], kind: str, limit: int, offset: int) -> list[dict[str, Any]]:
+        with self.read_connect() as conn:
+            return query_relaxed(conn, subtokens, kind, limit, offset)
 
     def query(self, text: str, languages: list[str], parent: str, limit: int, offset: int) -> list[dict[str, Any]]:
         where: list[str] = []

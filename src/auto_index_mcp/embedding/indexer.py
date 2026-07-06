@@ -6,20 +6,32 @@ from typing import Any, Iterable
 
 from ..core.text_decode import read_text_file
 from .backend import EmbeddingBackend
+from .rerank import candidate_pool_size, rerank_hits
 from .vector_store import SymbolEmbeddingStore, decode_vector
 
-MAX_BODY_LINES = 64
-MAX_BODY_CHARS = 2000
+# Body slice bounds. Generous on purpose: windowed embedding (one vector per
+# overlapping token window) keeps long bodies searchable, so the caps only
+# guard against pathological files, not against ordinary long functions.
+MAX_BODY_LINES = 256
+MAX_BODY_CHARS = 8000
 EMBED_BATCH_SIZE = 8
+
+# Version of the symbol-text construction scheme (head composition, body
+# caps, windowing pipeline). Folded into the storage key next to the backend
+# fingerprint: bump it whenever _symbol_text or the window pipeline changes
+# meaning, so stale vectors are purged instead of silently searched.
+TEXT_SCHEME_VERSION = "txt2"
 
 
 class SymbolEmbedder:
     """Builds and maintains per-symbol embedding vectors.
 
     The embedder reads symbols straight from the index (``symbols`` table),
-    enriches each one with a slice of its source body, and stores L2-normalized
-    vectors via :class:`SymbolEmbeddingStore`. ``text_hash`` lets unchanged
-    symbols skip re-embedding across rebuilds and incremental watcher updates.
+    enriches each one with a slice of its source body, splits texts beyond the
+    backend's truncation budget into overlapping windows (one vector each) and
+    stores L2-normalized vectors via :class:`SymbolEmbeddingStore`.
+    ``text_hash`` lets unchanged windows skip re-embedding across rebuilds and
+    incremental watcher updates.
     """
 
     def __init__(self, backend: EmbeddingBackend, conn_provider: Any) -> None:
@@ -27,13 +39,15 @@ class SymbolEmbedder:
         self.conn_provider = conn_provider
         self.store = SymbolEmbeddingStore()
         # Stored vectors are only valid for the exact text->vector mapping that
-        # produced them. Backends whose mapping depends on more than the model
-        # name (e.g. the ONNX truncation window) expose ``text_fingerprint``;
-        # folding it into the storage key makes a config change look like a new
-        # model: counts drop to zero, a clean re-embed runs, and search never
-        # mixes vectors from incompatible spaces - even across process restarts.
-        fingerprint = getattr(backend, "text_fingerprint", "")
-        self.model_key = f"{backend.name}#{fingerprint}" if fingerprint else backend.name
+        # produced them. The storage key therefore folds in every input of that
+        # mapping beyond the model name: the backend's own fingerprint (e.g.
+        # ONNX truncation window + window scheme) plus the indexer-side text
+        # construction version. Any change makes counts drop to zero, a clean
+        # re-embed runs, and search never mixes vectors from incompatible
+        # spaces - even across process restarts.
+        fingerprint = getattr(self.backend, "text_fingerprint", "")
+        parts = [part for part in (fingerprint, TEXT_SCHEME_VERSION) if part]
+        self.model_key = f"{backend.name}#{';'.join(parts)}"
 
     def embed_project(self, root: Path, symbols: list[dict[str, Any]]) -> dict[str, Any]:
         grouped = _group_symbols_by_file(symbols)
@@ -61,13 +75,24 @@ class SymbolEmbedder:
         limit: int,
         min_score: float = 0.0,
     ) -> list[dict[str, Any]]:
+        """Hybrid semantic search: cosine recall, lexical-blended ranking.
+
+        ``min_score`` keeps its historical meaning of a cosine floor; it
+        filters the candidate pool before the lexical blend reorders it.
+        """
         query_vector = self.backend.embed([query])[0]
+        pool = candidate_pool_size(max(1, limit))
         with self.conn_provider.read_connect() as conn:
-            return self.store.search(conn, query_vector, self.model_key, limit, min_score)
+            hits = self.store.search(conn, query_vector, self.model_key, pool, min_score)
+        return rerank_hits(query, hits, max(1, limit))
 
     def count(self) -> int:
         with self.conn_provider.read_connect() as conn:
             return self.store.count(conn, self.model_key)
+
+    def count_symbols(self) -> int:
+        with self.conn_provider.read_connect() as conn:
+            return self.store.count_symbols(conn, self.model_key)
 
     def delete_files(self, paths: Iterable[str]) -> None:
         """Drop vectors for removed files from the embedding store."""
@@ -85,7 +110,7 @@ class SymbolEmbedder:
         embedded = 0
         reused = 0
         files = 0
-        pending_vectors: list[tuple[str, dict[str, Any], str, str]] = []
+        pending_vectors: list[tuple[str, dict[str, Any], int, str, str]] = []
         entries_by_file: dict[str, list[dict[str, Any]]] = {}
         remaining_by_file: dict[str, int] = {}
         with self.conn_provider.read_connect() as conn:
@@ -93,29 +118,16 @@ class SymbolEmbedder:
                 files += 1
                 existing_entries = self.store.entries_for(conn, file_path, model_name)
                 lines = _read_lines_safe(root, file_path)
-                entries: list[dict[str, Any]] = []
-                pending_for_file = 0
-                for symbol in symbols:
-                    text = _symbol_text(symbol, lines)
-                    text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-                    key = (symbol["name"], symbol["line"])
-                    existing = existing_entries.get(key)
-                    if existing is not None and existing[0] == text_hash:
-                        entries.append(
-                            {
-                                "symbol_name": symbol["name"],
-                                "symbol_line": symbol["line"],
-                                "text_hash": text_hash,
-                                "vector": decode_vector(existing[1]),
-                                **_symbol_meta(symbol),
-                            }
-                        )
-                        reused += 1
-                    else:
-                        pending_vectors.append((file_path, symbol, text, text_hash))
-                        pending_for_file += 1
+                entries, pending = _collect_file_entries(
+                    self.backend, symbols, lines, existing_entries
+                )
+                reused += len(entries)
+                pending_vectors.extend(
+                    (file_path, symbol, chunk_index, window, text_hash)
+                    for symbol, chunk_index, window, text_hash in pending
+                )
                 entries_by_file[file_path] = entries
-                remaining_by_file[file_path] = pending_for_file
+                remaining_by_file[file_path] = len(pending)
         _replace_completed_files(
             self.conn_provider,
             self.store,
@@ -124,13 +136,14 @@ class SymbolEmbedder:
             remaining_by_file,
         )
         for chunk in _chunks(pending_vectors, EMBED_BATCH_SIZE):
-            vectors = self.backend.embed([item[2] for item in chunk])
+            vectors = self.backend.embed([item[3] for item in chunk])
             completed: set[str] = set()
-            for (file_path, symbol, _, text_hash), vector in zip(chunk, vectors):
+            for (file_path, symbol, chunk_index, _, text_hash), vector in zip(chunk, vectors):
                 entries_by_file[file_path].append(
                     {
                         "symbol_name": symbol["name"],
                         "symbol_line": symbol["line"],
+                        "chunk_index": chunk_index,
                         "text_hash": text_hash,
                         "vector": vector,
                         **_symbol_meta(symbol),
@@ -149,7 +162,55 @@ class SymbolEmbedder:
             )
         # ``model`` is display-facing: the backend name without the storage
         # fingerprint suffix, matching every other status/report surface.
+        # ``embedded``/``reused`` count window vectors, not symbols.
         return {"embedded": embedded, "reused": reused, "files": files, "model": self.backend.name}
+
+
+def _collect_file_entries(
+    backend: EmbeddingBackend,
+    symbols: list[dict[str, Any]],
+    lines: list[str],
+    existing_entries: dict[tuple[str, int, int], tuple[str, bytes]],
+) -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], int, str, str]]]:
+    """Split one file's symbol windows into reusable entries and pending work.
+
+    Reusable windows (unchanged ``text_hash``) come back as finished entries
+    with their stored vector decoded; the rest come back as
+    ``(symbol, chunk_index, window_text, text_hash)`` work items.
+    """
+    entries: list[dict[str, Any]] = []
+    pending: list[tuple[dict[str, Any], int, str, str]] = []
+    for symbol in symbols:
+        text = _symbol_text(symbol, lines)
+        for chunk_index, window in enumerate(_window_texts(backend, text)):
+            text_hash = hashlib.sha256(window.encode("utf-8")).hexdigest()
+            existing = existing_entries.get((symbol["name"], symbol["line"], chunk_index))
+            if existing is not None and existing[0] == text_hash:
+                entries.append(
+                    {
+                        "symbol_name": symbol["name"],
+                        "symbol_line": symbol["line"],
+                        "chunk_index": chunk_index,
+                        "text_hash": text_hash,
+                        "vector": decode_vector(existing[1]),
+                        **_symbol_meta(symbol),
+                    }
+                )
+            else:
+                pending.append((symbol, chunk_index, window, text_hash))
+    return entries, pending
+
+
+def _window_texts(backend: EmbeddingBackend, text: str) -> list[str]:
+    """Windows to embed for one symbol text.
+
+    Backends without a tokenizer-driven truncation budget (the test stand-in)
+    have nothing to window around and embed the whole text as one vector.
+    """
+    window_texts = getattr(backend, "window_texts", None)
+    if window_texts is None:
+        return [text]
+    return window_texts(text)
 
 
 def _replace_completed_files(
@@ -191,9 +252,9 @@ def _group_symbols_by_file(
 
 
 def _chunks(
-    items: list[tuple[str, dict[str, Any], str, str]],
+    items: list[tuple[str, dict[str, Any], int, str, str]],
     size: int,
-) -> Iterable[list[tuple[str, dict[str, Any], str, str]]]:
+) -> Iterable[list[tuple[str, dict[str, Any], int, str, str]]]:
     for index in range(0, len(items), size):
         yield items[index:index + size]
 

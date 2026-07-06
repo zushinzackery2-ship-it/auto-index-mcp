@@ -190,7 +190,14 @@ def _file_import_keys(path: str) -> set[str]:
 def _is_test_path(path: str) -> bool:
     parts = Path(path).parts
     name = Path(path).name
-    return "tests" in parts or name.startswith("test_") or name.endswith("_test.py")
+    # conftest.py is pytest wiring by definition: its fixtures are invoked by
+    # the framework, never by indexed callers, so it belongs to the test set.
+    return (
+        "tests" in parts
+        or name == "conftest.py"
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+    )
 
 
 def _is_entry_file(path: str) -> bool:

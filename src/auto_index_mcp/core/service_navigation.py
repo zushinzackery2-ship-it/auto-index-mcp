@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .navigation_format import compact_file, overview_result, tree_result
+from .navigation_format import compact_file, overview_result, presentable_symbol, tree_result
 from .pagination import PageRequest
 from .path_filters import is_glob_pattern
 from .service_state import ServiceBase
@@ -52,7 +52,7 @@ class ServiceNavigationMixin(ServiceBase):
             if not_ready is not None:
                 return not_ready
             raise KeyError(f"indexed file not found: {path}")
-        symbols = lookup.item["symbols"]
+        symbols = [presentable_symbol(symbol) for symbol in lookup.item["symbols"]]
         return self._with_index_status({
             "format": "auto_index_file_summary_full",
             "path": lookup.item["path"],

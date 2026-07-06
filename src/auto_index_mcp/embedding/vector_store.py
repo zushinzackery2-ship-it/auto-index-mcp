@@ -69,10 +69,12 @@ class SymbolEmbeddingStore:
     """Persistence layer for per-symbol embedding vectors.
 
     Vectors are keyed by the natural symbol identity
-    ``(file_path, symbol_name, symbol_line, model_name)`` so they survive the
-    auto-increment ``symbols.id`` churn across rebuilds. ``text_hash`` enables
-    incremental reuse: when a symbol's embedding text is unchanged, the stored
-    vector is reused instead of recomputing it.
+    ``(file_path, symbol_name, symbol_line, model_name, chunk_index)`` so they
+    survive the auto-increment ``symbols.id`` churn across rebuilds. Long
+    symbols carry one row per overlapping text window; search aggregates them
+    back to one hit per symbol. ``text_hash`` enables incremental reuse: when
+    a window's embedding text is unchanged, the stored vector is reused
+    instead of recomputing it.
     """
 
     def __init__(self) -> None:
@@ -80,19 +82,22 @@ class SymbolEmbeddingStore:
 
     def entries_for(
         self, conn: sqlite3.Connection, file_path: str, model_name: str
-    ) -> dict[tuple[str, int], tuple[str, bytes]]:
-        """Existing ``(text_hash, raw vector blob)`` per symbol of one file.
+    ) -> dict[tuple[str, int, int], tuple[str, bytes]]:
+        """Existing ``(text_hash, raw vector blob)`` per window of one file.
 
-        The blob stays encoded so reuse checks do not pay a decode for symbols
+        The blob stays encoded so reuse checks do not pay a decode for windows
         whose hash no longer matches.
         """
         rows = conn.execute(
-            "SELECT symbol_name, symbol_line, text_hash, vector FROM symbol_embeddings "
-            "WHERE file_path=? AND model_name=?",
+            "SELECT symbol_name, symbol_line, chunk_index, text_hash, vector "
+            "FROM symbol_embeddings WHERE file_path=? AND model_name=?",
             (file_path, model_name),
         ).fetchall()
         return {
-            (row["symbol_name"], row["symbol_line"]): (row["text_hash"], row["vector"])
+            (row["symbol_name"], row["symbol_line"], row["chunk_index"]): (
+                row["text_hash"],
+                row["vector"],
+            )
             for row in rows
         }
 
@@ -110,14 +115,15 @@ class SymbolEmbeddingStore:
         for entry in entries:
             conn.execute(
                 "INSERT INTO symbol_embeddings"
-                "(file_path, symbol_name, symbol_line, model_name, text_hash, "
-                "kind, end_line, signature, complexity, vector) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(file_path, symbol_name, symbol_line, model_name, chunk_index, "
+                "text_hash, kind, end_line, signature, complexity, vector) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     file_path,
                     entry["symbol_name"],
                     entry["symbol_line"],
                     model_name,
+                    entry.get("chunk_index", 0),
                     entry["text_hash"],
                     entry.get("kind", ""),
                     entry.get("end_line", 0),
@@ -149,6 +155,16 @@ class SymbolEmbeddingStore:
         ).fetchone()
         return int(row[0]) if row else 0
 
+    def count_symbols(self, conn: sqlite3.Connection, model_name: str) -> int:
+        """Distinct embedded symbols, regardless of how many windows each has."""
+        row = conn.execute(
+            "SELECT COUNT(*) FROM ("
+            "SELECT DISTINCT file_path, symbol_name, symbol_line "
+            "FROM symbol_embeddings WHERE model_name=?)",
+            (model_name,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
     def search(
         self,
         conn: sqlite3.Connection,
@@ -164,9 +180,17 @@ class SymbolEmbeddingStore:
             (model_name,),
         ).fetchall()
         scored = _score_rows(query_vector, rows, min_score)
-        scored.sort(key=lambda item: item[0], reverse=True)
+        # A long symbol contributes several window vectors; its relevance is
+        # the best window's score, and it must surface once, not per window.
+        best: dict[tuple[str, str, int], tuple[float, Any]] = {}
+        for score, row in scored:
+            key = (row["file_path"], row["symbol_name"], row["symbol_line"])
+            current = best.get(key)
+            if current is None or score > current[0]:
+                best[key] = (score, row)
+        ranked = sorted(best.values(), key=lambda item: item[0], reverse=True)
         hits: list[dict[str, Any]] = []
-        for score, row in scored[: max(1, limit)]:
+        for score, row in ranked[: max(1, limit)]:
             hits.append(
                 {
                     "file_path": row["file_path"],

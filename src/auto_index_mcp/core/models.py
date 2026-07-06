@@ -21,6 +21,10 @@ class SymbolRecord:
     children_count: int = 0
     max_child_depth: int = 0
     max_block_depth: int = 0
+    # Bare-identifier value references (callback arguments, kwarg values,
+    # assignment RHS, decorators). Kept apart from ``calls`` so the call list
+    # stays a list of true invocations; both feed the reverse caller graph.
+    refs: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -24,8 +24,8 @@
 | **嵌套工作区** | 父目录发现子目录已有索引库时只挂链接，不重复维护子目录数据。 |
 | **低上下文导航** | 提供 overview、tree、query、get、resolve、diff 等轻量工具。 |
 | **符号索引** | 支持 Python AST 符号，JavaScript/TypeScript、C/C++、Pascal 和通用文本轻量符号提取。 |
-| **代码搜索** | 支持源码内容和符号名称搜索，同时支持正则匹配。 |
-| **语义搜索** | 通过自然语言找到最相关的符号，基于本地 ONNX Embedding 模型，无网络依赖。 |
+| **代码搜索** | 支持源码内容和符号名称搜索，同时支持正则匹配；符号搜索按匹配质量排序，无直接命中时自动按子词放宽。 |
+| **语义搜索** | 通过自然语言找到最相关的符号，基于本地 ONNX Embedding 模型，无网络依赖；词法与向量混合排序，长符号分块嵌入保证尾部内容可搜。 |
 | **自动刷新** | 文件变更时自动增量更新索引，无需手动重建。 |
 | **质量检查** | 基于持久索引缓存报告嵌套过深、疑似悬空代码和不可达代码。 |
 | **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
@@ -48,9 +48,9 @@
 | **导航** | `auto_index_file()` | 返回单个索引文件记录，`detail="summary"` 给出 import、符号和复杂度摘要，`detail="full"` 给出完整记录。 |
 | **导航** | `auto_index_resolve_path()` | 按文件名或路径片段解析候选文件。 |
 | **搜索** | `auto_index_text_search()` | 对源码进行 literal 或 regex 搜索。 |
-| **搜索** | `auto_index_symbol_search()` | 按名称、签名、类型搜索符号。 |
+| **搜索** | `auto_index_symbol_search()` | 按名称、签名、类型搜索符号，结果按匹配质量排序：精确名 > 名前缀 > 名子串 > 签名；查询无直接命中时自动拆分子词（camelCase/snake_case）放宽匹配，`match_mode` 字段标明当次匹配方式。 |
 | **搜索** | `auto_index_symbol_body()` | 返回指定符号的源码片段。 |
-| **语义搜索** | `auto_index_semantic_search()` | 自然语言语义搜索，默认使用仓库随附 ONNX 模型，返回最相似的符号及行范围。 |
+| **语义搜索** | `auto_index_semantic_search()` | 自然语言语义搜索，默认使用仓库随附 ONNX 模型，返回最相似的符号及行范围；排序为词法与向量相似度混合，返回项含 `vector_score`/`lexical_score` 分量。 |
 | **语义搜索** | `auto_index_embedding_status()` | 报告语义 Embedding 后端是否启用及向量数量；`build_timer` 给出语义向量构建的实时计时。 |
 | **质量检查** | `auto_index_quality_check()` | 检查代码质量，报告嵌套深度过深、悬空代码或不可达代码等问题。 |
 | **漂移检查** | `auto_index_diff_filesystem()` | 对比索引与当前文件系统的新增、删除、变化。 |
@@ -61,7 +61,7 @@
 
 > [!NOTE]
 > **已知局限**
-> `auto_index_symbol_search()` 按名称/签名模糊匹配，子类 signature 含基类名时可能排在基类定义之前；精确读符号体请用 `auto_index_symbol_body()`。`kind="dangling"` 默认 `include_low_confidence=false`，配置/文档类 orphan 低置信项不展示。不可达检测：Python AST 路径为 high 置信；C/JS 等为大括号启发式 medium 置信，嵌套块内可能误报或漏报。
+> `kind="dangling"` 默认 `include_low_confidence=false`，配置/文档类 orphan 低置信项不展示。不可达检测：Python AST 路径为 high 置信；C/JS 等为大括号启发式 medium 置信，嵌套块内可能误报或漏报。僵尸代码检测按调用关系分析，函数仅被作为参数传递（如 `sort(key=fn)`）时可能误报未使用。
 
 ---
 
@@ -75,6 +75,8 @@ pip install -e ".[semantic]"
 ```
 
 默认使用内置 MiniLM ONNX 模型（约 90MB）进行 Embedding 推理，纯本地计算，无网络依赖。可通过 `AUTO_INDEX_EMBEDDING_MODEL` 环境变量指定自定义模型目录（须包含 `model.onnx` 和 `tokenizer.json`）。
+
+排序为混合评分：向量余弦相似度为主，查询与符号名/签名的词法重合度校正排名，直接点名标识符的查询会得到明确加权。超出模型截断窗口的长符号自动按重叠窗口分块，每块独立向量，搜索按符号聚合，尾部内容不再丢失。
 
 
 ---
@@ -141,7 +143,7 @@ Windows 一键安装后，可以参考安装脚本生成的 `mcp-client-config.w
 
 ## 测试
 
-本地测试以 pytest 为准（无 GitHub Actions CI）：
+本地测试以 pytest 为准（无 GitHub Actions CI）。现行用例在 `tests/`（`oldtest/` 为历史归档，不参与默认收集）：
 
 ```bash
 python -m pytest -q

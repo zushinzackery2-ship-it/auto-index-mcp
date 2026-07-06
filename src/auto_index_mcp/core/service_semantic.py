@@ -42,7 +42,7 @@ class ServiceSemanticMixin(ServiceBase):
             return _building(self.ensure_embedding_background(), self.embedding_background)
         safe_limit = max(1, min(int(limit), 100))
         hits = indexer.search(query, safe_limit, min_score)
-        embedding = self._partial_embedding_status(count)
+        embedding = self._partial_embedding_status(indexer, count)
         result: dict[str, Any] = {
             "format": "auto_index_semantic_search",
             "model": indexer.backend.name,
@@ -76,19 +76,24 @@ class ServiceSemanticMixin(ServiceBase):
             "enabled": True,
             "model": indexer.backend.name,
             "vector_count": count,
+            "embedded_symbol_count": _embedded_symbol_count(indexer),
         }
         if self.embedding_background is not None:
             result["embedding_background"] = self.embedding_background.status()
         result["build_timer"] = timer_or_idle(self.embedding_background, None)
         return result
 
-    def _partial_embedding_status(self, vector_count: int) -> dict[str, Any] | None:
+    def _partial_embedding_status(self, indexer: SymbolEmbedder, vector_count: int) -> dict[str, Any] | None:
         background = self.embedding_background
         if background is None or not background.is_running() or self.store is None:
             return None
+        # Long symbols carry several window vectors, so progress compares the
+        # distinct embedded symbols against the index's symbol total; the raw
+        # vector count is still reported for the storage-level view.
         return {
             "status": "partial",
             "vector_count": vector_count,
+            "embedded_symbol_count": _embedded_symbol_count(indexer),
             "total_symbol_count": _symbol_count(self.store),
             "background": background.status(),
             "build_timer": background.timer(),
@@ -98,6 +103,13 @@ class ServiceSemanticMixin(ServiceBase):
 def _embedding_vector_count(indexer: SymbolEmbedder) -> int:
     try:
         return indexer.count()
+    except Exception:
+        return 0
+
+
+def _embedded_symbol_count(indexer: SymbolEmbedder) -> int:
+    try:
+        return indexer.count_symbols()
     except Exception:
         return 0
 
