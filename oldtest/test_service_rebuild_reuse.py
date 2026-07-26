@@ -82,7 +82,7 @@ def test_enable_wait_window_does_not_wait_for_embedding_model_load(
         return None
 
     monkeypatch.setattr(
-        "auto_index_mcp.core.service_watcher.create_embedder",
+        "auto_index_mcp.core.service_embedding.create_embedder",
         slow_create_embedder,
     )
     monkeypatch.setenv("AUTO_INDEX_EMBEDDING_MODEL", str(model_dir))
@@ -218,6 +218,9 @@ def test_rebuild_lock_contention_does_not_wait_or_rescan(tmp_path: Path, monkeyp
 
         def release(self) -> None:
             pass
+
+        def state_info(self) -> dict[str, object] | None:
+            return None
 
     service = AutoIndexService(index_root=tmp_path / "index")
     service.enable(str(project), rebuild=False)

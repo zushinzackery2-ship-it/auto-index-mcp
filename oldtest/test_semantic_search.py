@@ -53,7 +53,7 @@ def _make_model_dir(path: Path) -> Path:
 
 def _install_baghash(monkeypatch, dim: int = 128) -> None:
     monkeypatch.setattr(
-        "auto_index_mcp.core.service_watcher.create_embedder",
+        "auto_index_mcp.core.service_embedding.create_embedder",
         lambda env=None: BagHashEmbedder(dim=dim),
     )
 
@@ -282,7 +282,7 @@ def test_embedding_batches_pending_symbols_across_files(monkeypatch, tmp_path: P
 
     backend = CountingEmbedder()
     monkeypatch.setattr(
-        "auto_index_mcp.core.service_watcher.create_embedder",
+        "auto_index_mcp.core.service_embedding.create_embedder",
         lambda env=None: backend,
     )
     _make_project(tmp_path)
@@ -317,7 +317,7 @@ def test_fingerprint_change_invalidates_stored_vectors(monkeypatch, tmp_path: Pa
 
     def install(fingerprint: str) -> None:
         monkeypatch.setattr(
-            "auto_index_mcp.core.service_watcher.create_embedder",
+            "auto_index_mcp.core.service_embedding.create_embedder",
             lambda env=None: FingerprintedBagHash(fingerprint),
         )
 

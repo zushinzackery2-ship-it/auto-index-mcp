@@ -11,6 +11,6 @@ def _disable_default_embedding_backend(
     if request.node.get_closest_marker("allow_default_embedder"):
         return
     monkeypatch.setattr(
-        "auto_index_mcp.core.service_watcher.create_embedder",
+        "auto_index_mcp.core.service_embedding.create_embedder",
         lambda env=None: None,
     )

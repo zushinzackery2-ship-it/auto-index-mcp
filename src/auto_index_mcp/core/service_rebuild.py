@@ -79,6 +79,10 @@ class ServiceRebuildMixin(ServiceBase):
                 result["status"] = "indexing-in-other-process"
                 result["rebuild"] = False
                 result["message"] = "another auto-index process is still rebuilding this project"
+                # Holder pid/liveness/heartbeat-age lets callers distinguish a
+                # real concurrent build from a lock that is about to be
+                # reclaimed, instead of trusting this message blindly.
+                result["build_lock"] = lock.state_info()
                 return result
             return self._rebuild_now(indexer, context)
         finally:

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import project_index_root
+from .service_embedding import ServiceEmbeddingMixin
 from .service_ignore import ServiceIgnoreMixin
 from .service_navigation import ServiceNavigationMixin
 from .service_index_state import ServiceIndexStateMixin
@@ -26,6 +27,7 @@ class AutoIndexService(
     ServiceQualityMixin,
     ServiceSemanticMixin,
     ServiceRebuildMixin,
+    ServiceEmbeddingMixin,
     ServiceWatcherMixin,
 ):
     """Single-root code index service.
@@ -48,9 +50,24 @@ class AutoIndexService(
         self.cancel_auto_watch_after_build()
         if self.root_path and self.root_path != root:
             self.stop_watcher()
+        index_root = self.index_root_override or project_index_root(root)
+        if self._reusable_enable_context(root, index_root):
+            # Re-enable on the unchanged root: keep the live stores, watcher
+            # and embedder. Recreating the stores here would issue a schema
+            # write per call, which under multi-agent enable polling is pure
+            # cross-process write-lock churn; only state another process may
+            # have changed (persisted ignore config) is refreshed.
+            self.enabled = True
+            self._load_ignore_config_from_store()
+            self._invalidate_view_cache()
+            if refresh_embedder and self.embedding_indexer is None:
+                self._refresh_embedder()
+            if rebuild:
+                return self.rebuild_sync()
+            return self.status()
         self.root_path = root
         self.enabled = True
-        self.index_root = self.index_root_override or project_index_root(root)
+        self.index_root = index_root
         self.store = IndexStore(self._db_path(root))
         self.store.initialize()
         self.embedding_store = EmbeddingStore(self.index_root / "embeddings.db")
@@ -65,6 +82,15 @@ class AutoIndexService(
         if rebuild:
             return self.rebuild_sync()
         return self.status()
+
+    def _reusable_enable_context(self, root: Path, index_root: Path) -> bool:
+        return (
+            self.root_path == root
+            and self.index_root == index_root
+            and self.store is not None
+            and self.embedding_store is not None
+            and self.store.db_path.exists()
+        )
 
     def enable_reusing_index(
         self,

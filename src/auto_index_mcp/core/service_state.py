@@ -159,7 +159,7 @@ class ServiceBase:
     ) -> dict[str, Any]:  # ServiceWatcherMixin
         raise NotImplementedError
 
-    def ensure_embedding_background(self) -> dict[str, Any]:  # ServiceWatcherMixin
+    def ensure_embedding_background(self) -> dict[str, Any]:  # ServiceEmbeddingMixin
         raise NotImplementedError
 
     def _embed_after_full_rebuild(
@@ -167,11 +167,21 @@ class ServiceBase:
         root: Path,
         store: IndexStore | None = None,
         indexer: SymbolEmbedder | None = None,
-    ) -> dict[str, Any] | None:  # ServiceWatcherMixin
+    ) -> dict[str, Any] | None:  # ServiceEmbeddingMixin
         raise NotImplementedError
 
     def _create_embedding_indexer(
         self,
         embedding_store: EmbeddingStore | None = None,
-    ) -> SymbolEmbedder | None:  # ServiceWatcherMixin
+    ) -> SymbolEmbedder | None:  # ServiceEmbeddingMixin
+        raise NotImplementedError
+
+    def _embed_after_incremental(
+        self,
+        root: Path,
+        store: IndexStore,
+        previous: Any,
+        current: Any,
+        result: dict[str, Any],
+    ) -> None:  # ServiceEmbeddingMixin
         raise NotImplementedError

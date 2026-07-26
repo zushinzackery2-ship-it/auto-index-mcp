@@ -3,12 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .background_indexer import BackgroundIndexer, PHASE_EMBEDDING
 from .config import DEFAULT_WATCH_DEBOUNCE_SECONDS
 from .service_state import ServiceBase
-from ..embedding.backend import create_embedder, resolve_embedding_model_path
-from ..embedding.embedding_store import EmbeddingStore
-from ..embedding.indexer import SymbolEmbedder
 from ..indexing.snapshot import snapshot_from_index, take_watch_snapshot, update_watch_snapshot
 from ..indexing.updater import IndexUpdater
 from ..indexing.store import IndexStore
@@ -16,32 +12,12 @@ from ..indexing.watcher import FileEventWatcher, make_event_filter
 
 
 class ServiceWatcherMixin(ServiceBase):
-    """Filesystem-watcher lifecycle and embedding upkeep.
+    """Filesystem-watcher lifecycle.
 
-    Manages the event-driven incremental watcher plus the full and incremental
-    symbol-embedding passes. Shared state lives in ServiceBase; the rebuild
-    entrypoint comes from ServiceRebuildMixin through the shared MRO.
+    Manages the event-driven incremental watcher. Shared state lives in
+    ServiceBase; the rebuild entrypoint and the incremental embedding hook
+    come from their mixins through the shared MRO.
     """
-
-    def ensure_embedding_background(self) -> dict[str, Any]:
-        root, store = self._ready_context()
-        embedding_store = self.embedding_store
-        if self.embedding_indexer is not None:
-            try:
-                if self.embedding_indexer.count() > 0:
-                    return {"state": "ready", "model": self.embedding_indexer.backend.name}
-            except Exception:
-                pass
-        with self._embedding_lock:
-            existing = self.embedding_background
-            if existing is not None and existing.is_running():
-                return existing.status()
-            worker = BackgroundIndexer(
-                lambda background: self._load_and_embed_project(background, root, store, embedding_store)
-            )
-            self.embedding_background = worker
-        worker.start()
-        return worker.status()
 
     def start_watcher(self, debounce_seconds: float = DEFAULT_WATCH_DEBOUNCE_SECONDS, wait_ready: bool = False) -> dict[str, Any]:
         root, store = self._ready_context()
@@ -126,128 +102,3 @@ class ServiceWatcherMixin(ServiceBase):
             return result
 
         return apply
-
-    def _refresh_embedder(self) -> None:
-        if self.store is None or self.embedding_store is None:
-            self.embedding_indexer = None
-            return
-        self.embedding_indexer = self._create_embedding_indexer()
-
-    def _create_embedding_indexer(self, embedding_store: EmbeddingStore | None = None) -> SymbolEmbedder | None:
-        store = embedding_store if embedding_store is not None else self.embedding_store
-        if store is None:
-            return None
-        backend = create_embedder()
-        return SymbolEmbedder(backend, store) if backend is not None else None
-
-    def _load_and_embed_project(
-        self,
-        background: BackgroundIndexer,
-        root: Path,
-        store: IndexStore,
-        embedding_store: EmbeddingStore | None = None,
-    ) -> dict[str, Any]:
-        background.set_phase(PHASE_EMBEDDING)
-        indexer = self._create_embedding_indexer(embedding_store)
-        if indexer is None:
-            return {
-                "status": "embedding-unavailable",
-                "model": None,
-                "error": (
-                    "embedding model unavailable; install semantic dependencies "
-                    "and keep models/minilm-onnx, or set AUTO_INDEX_EMBEDDING_MODEL"
-                ),
-            }
-        if self.root_path is not None and self.root_path.resolve() == root.resolve() and self.store is store:
-            self.embedding_indexer = indexer
-        try:
-            count = indexer.count()
-            if count > 0:
-                return {
-                    "status": "embedding-ready",
-                    "model": indexer.backend.name,
-                    "vector_count": count,
-                }
-            result = indexer.embed_project(root, store.all_symbols())
-            result["status"] = "embedded"
-            return result
-        except Exception as exc:
-            self.last_errors.append(f"embedding-load: {exc}")
-            raise
-
-    def _embed_after_full_rebuild(
-        self,
-        root: Path,
-        store: IndexStore | None = None,
-        indexer: SymbolEmbedder | None = None,
-    ) -> dict[str, Any] | None:
-        indexer = indexer or self.embedding_indexer
-        store = store or self.store
-        if store is None:
-            return None
-        embedding_store = self.embedding_store
-        with self._embedding_lock:
-            existing = self.embedding_background
-            if existing is not None and existing.is_running():
-                model = _embedding_model_name(indexer)
-                return {"status": "embedding-in-background", "model": model}
-            if indexer is None:
-                worker = BackgroundIndexer(
-                    lambda background: self._load_and_embed_project(background, root, store, embedding_store)
-                )
-                model = _embedding_model_name(None)
-            else:
-                worker = BackgroundIndexer(
-                    lambda background: self._run_full_embedding(background, root, store, indexer)
-                )
-                model = _embedding_model_name(indexer)
-            self.embedding_background = worker
-        worker.start()
-        return {"status": "embedding-in-background", "model": model}
-
-    def _run_full_embedding(
-        self,
-        background: BackgroundIndexer,
-        root: Path,
-        store: IndexStore,
-        indexer: SymbolEmbedder,
-    ) -> dict[str, Any]:
-        background.set_phase(PHASE_EMBEDDING)
-        try:
-            return indexer.embed_project(root, store.all_symbols())
-        except Exception as exc:
-            self.last_errors.append(f"embedding-rebuild: {exc}")
-            raise
-
-    def _embed_after_incremental(self, root: Path, store: IndexStore, previous, current, result: dict[str, Any]) -> None:
-        indexer = self.embedding_indexer
-        if indexer is None:
-            return
-        status = result.get("status")
-        if status in ("structural-rebuild", "indexed", "indexing-in-other-process", "shared-index-current"):
-            return
-        if status != "incremental":
-            return
-        added, deleted, modified = current.changed_files(previous)
-        changed = sorted(set(added) | set(modified))
-        if changed:
-            grouped: dict[str, list[dict[str, Any]]] = {}
-            for symbol in store.symbols_for_files(changed):
-                grouped.setdefault(symbol["file_path"], []).append(symbol)
-            if grouped:
-                try:
-                    indexer.embed_files(root, grouped)
-                except Exception as exc:
-                    self.last_errors.append(f"embedding-incremental: {exc}")
-        if deleted:
-            try:
-                indexer.delete_files(deleted)
-            except Exception as exc:
-                self.last_errors.append(f"embedding-delete: {exc}")
-
-
-def _embedding_model_name(indexer: SymbolEmbedder | None) -> str | None:
-    if indexer is not None:
-        return indexer.backend.name
-    model_path = resolve_embedding_model_path()
-    return model_path.name if model_path is not None else None
