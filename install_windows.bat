@@ -130,6 +130,9 @@ echo.
 echo This script updates the user AUTO_INDEX_EMBEDDING_MODEL environment variable.
 echo Restart an already-running MCP client so it can inherit the new environment.
 echo This script does not modify MCP client settings and does not start a backend service.
+echo.
+echo Optional: pre-build the index for a project so the first AI session starts instantly:
+echo "%VENV_PY%" -m auto_index_mcp build ^<project-path^>
 goto done
 
 :write_config

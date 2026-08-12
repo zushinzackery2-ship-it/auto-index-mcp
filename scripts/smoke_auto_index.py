@@ -10,12 +10,13 @@ def main() -> None:
     service = AutoIndexService(index_root=project / ".smoke-index")
     print(service.enable(str(project), rebuild=True))
     print(service.overview(limit=5))
-    print(service.query(text="AutoIndexService", limit=5))
+    print(service.find_files(query="AutoIndexService", limit=5))
     print(service.file_summary("src/auto_index_mcp/core/service.py"))
     print(service.symbol_search(text="AutoIndexService", limit=5))
-    print(service.symbol_body("src/auto_index_mcp/core/service.py", "AutoIndexService"))
+    print(service.symbol_body("AutoIndexService", "src/auto_index_mcp/core/service.py"))
+    print(service.symbol_refs("AutoIndexService", direction="callers"))
     print(service.text_search("AutoIndexService", limit=5))
-    print(service.resolve_path("service.py"))
+    print(service.find_files(query="service.py"))
     print(service.diff_filesystem())
 
 

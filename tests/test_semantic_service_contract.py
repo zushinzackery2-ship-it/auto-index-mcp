@@ -65,7 +65,7 @@ def test_semantic_search_clamps_limit(service) -> None:
 
 def test_symbol_search_response_contract(service) -> None:
     result = service.symbol_search(text="compute")
-    assert result["format"] == "auto_index_symbol_search_indexed"
+    assert result["format"] == "auto_index_symbol_search_v2"
     assert result["match_mode"] == "ranked"
     assert "cursor" in result
     for item in result["items"]:

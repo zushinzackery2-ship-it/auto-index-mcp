@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 from .pagination import PageRequest
-from .navigation_format import presentable_symbol
+from .navigation_format import MAX_PRESENTED_CALLERS, compact_symbol
 from .path_filters import filter_indexed_files
 from .service_state import ServiceBase
 from .subtoken import split_identifier
+from .tool_errors import file_not_found, symbol_not_found
 from ..indexing.symbol_query import (
     RANK_EXACT_NAME,
     RANK_NAME_PREFIX,
@@ -23,6 +24,10 @@ _MATCH_LABELS = {
     RANK_SIGNATURE: "signature",
 }
 
+# Same-name definitions across a project are common (methods, overloads);
+# refs answers for a handful of them at once instead of forcing a path first.
+MAX_REF_DEFINITIONS = 5
+
 
 class ServiceSearchMixin(ServiceBase):
     def text_search(
@@ -30,7 +35,7 @@ class ServiceSearchMixin(ServiceBase):
         pattern: str,
         case_sensitive: bool = True,
         regex: bool = False,
-        limit: int = 80,
+        limit: int = 20,
         file_pattern: str | None = None,
         context_lines: int = 0,
         exclude_paths: list[str] | None = None,
@@ -56,10 +61,10 @@ class ServiceSearchMixin(ServiceBase):
         if context_lines > 0:
             matches = ContextLoader(view, self.root_path).attach(matches, context_lines)
         return self._with_index_status(
-            {"format": "auto_index_text_search_indexed", "backend": backend, "items": matches}
+            {"format": "auto_index_text_search_v2", "backend": backend, "items": matches}
         )
 
-    def symbol_search(self, text: str = "", kind: str = "", limit: int = 80, cursor: str | None = None) -> dict[str, Any]:
+    def symbol_search(self, text: str = "", kind: str = "", limit: int = 20, cursor: str | None = None) -> dict[str, Any]:
         self._require_store()
         page = PageRequest.from_cursor(cursor, limit)
         rows = self.view.query_symbols(text, kind, page.fetch_limit, page.offset)
@@ -77,7 +82,7 @@ class ServiceSearchMixin(ServiceBase):
         items = [_present_symbol(row) for row in rows[:page.limit]]
         return self._with_index_status(
             {
-                "format": "auto_index_symbol_search_indexed",
+                "format": "auto_index_symbol_search_v2",
                 "match_mode": match_mode,
                 "items": items,
                 "cursor": next_cursor,
@@ -92,50 +97,148 @@ class ServiceSearchMixin(ServiceBase):
             return True
         return not self.view.query_symbols(text, kind, 1, 0)
 
-    def symbol_body(self, path: str, symbol_name: str) -> dict[str, Any]:
+    def symbol_body(self, symbol_name: str, path: str = "", line: int = 0) -> dict[str, Any]:
+        """Source code of one symbol; ``path`` narrows same-name definitions.
+
+        Without ``path`` the whole index is searched by exact name, so the
+        common "show me function X" flow is a single call. ``line`` picks one
+        of several same-name definitions inside a file.
+        """
         self._require_ready()
         if self.root_path is None:
             raise RuntimeError("auto-index root is not configured")
-        if not path or not symbol_name:
-            raise ValueError("path and symbol_name are required")
-        lookup = self.view.get_file(path)
-        if lookup.item is None:
-            not_ready = self._not_ready_response()
-            if not_ready is not None:
-                return not_ready
-            raise KeyError(f"indexed file not found: {path}")
-        matches = [symbol for symbol in lookup.item["symbols"] if symbol["name"] == symbol_name]
-        if not matches:
-            not_ready = self._not_ready_response()
-            if not_ready is not None:
-                return not_ready
-            raise KeyError(f"symbol not found: {symbol_name}")
+        if not symbol_name:
+            raise ValueError("symbol_name is required")
+        matches, error = self._locate_symbols(symbol_name, path)
+        if error is not None:
+            return error
+        if line:
+            narrowed = [m for m in matches if m["line"] <= line <= max(m["line"], m.get("end_line", m["line"]))]
+            matches = narrowed or matches
         if len(matches) > 1:
             return self._with_index_status(
                 {
                     "format": "auto_index_symbol_body_ambiguous",
-                    "candidates": [presentable_symbol(match) for match in matches],
+                    "candidates": [compact_symbol(match) for match in matches],
+                    "hint": "several definitions share this name; pass path (and line) to pick one",
                 }
             )
         symbol = matches[0]
+        file_path = symbol["file_path"]
+        lookup = self.view.get_file(file_path)
+        if lookup.item is None:
+            return file_not_found(file_path, self._path_candidates(file_path))
         lines = self.view.read_indexed_text(self.root_path, lookup.item).splitlines()
         start = max(1, symbol["line"])
         end = min(len(lines), symbol["end_line"])
         code = "\n".join(lines[start - 1:end])
         return self._with_index_status(
             {
-                "format": "auto_index_symbol_body_full",
-                "symbol": presentable_symbol(symbol),
-                "path": path,
+                "format": "auto_index_symbol_body_v2",
+                "path": file_path,
+                "name": symbol["name"],
+                "kind": symbol.get("kind"),
+                "line": start,
+                "end_line": end,
                 "code": code,
             }
         )
 
+    def symbol_refs(
+        self,
+        symbol_name: str,
+        path: str = "",
+        direction: str = "both",
+        limit: int = MAX_PRESENTED_CALLERS,
+    ) -> dict[str, Any]:
+        """Call-graph neighborhood of a symbol: who calls it, what it calls.
+
+        This is the persistent index's find-references surface; the data was
+        previously buried inside every search row.
+        """
+        self._require_ready()
+        if not symbol_name:
+            raise ValueError("symbol_name is required")
+        if direction not in ("callers", "callees", "both"):
+            raise ValueError("direction must be one of: callers, callees, both")
+        matches, error = self._locate_symbols(symbol_name, path)
+        if error is not None:
+            return error
+        safe_limit = max(1, min(int(limit), 200))
+        items = []
+        for symbol in matches[:MAX_REF_DEFINITIONS]:
+            entry = compact_symbol(symbol)
+            if direction in ("callers", "both"):
+                callers = list(symbol.get("called_by") or [])
+                entry["callers"] = callers[:safe_limit]
+                entry["caller_count"] = len(callers)
+            if direction in ("callees", "both"):
+                callees = list(symbol.get("calls") or [])
+                entry["callees"] = callees[:safe_limit]
+                entry["callee_count"] = len(callees)
+            items.append(entry)
+        return self._with_index_status(
+            {
+                "format": "auto_index_symbol_refs_v2",
+                "direction": direction,
+                "items": items,
+                "definition_count": len(matches),
+            }
+        )
+
+    def _locate_symbols(
+        self,
+        symbol_name: str,
+        path: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        """Exact-name symbol rows, optionally scoped to one file.
+
+        On a miss, returns a structured error carrying near-name candidates
+        so the caller can self-correct without another round trip.
+        """
+        if path:
+            resolved, lookup = self._lookup_indexed_file(path)
+            if lookup.item is None:
+                not_ready = self._not_ready_response()
+                if not_ready is not None:
+                    return [], not_ready
+                return [], file_not_found(path, self._path_candidates(path))
+            matches = [
+                dict(symbol, file_path=resolved)
+                for symbol in lookup.item["symbols"]
+                if symbol["name"] == symbol_name
+            ]
+            if not matches:
+                matches = [
+                    dict(symbol, file_path=resolved)
+                    for symbol in lookup.item["symbols"]
+                    if symbol["name"].lower() == symbol_name.lower()
+                ]
+            if matches:
+                return matches, None
+            candidates = [
+                compact_symbol(dict(symbol, file_path=resolved))
+                for symbol in lookup.item["symbols"]
+                if symbol_name.lower() in symbol["name"].lower()
+            ][:5]
+            return [], symbol_not_found(symbol_name, resolved, candidates)
+        rows = self.view.query_symbols(symbol_name, "", 100, 0)
+        matches = [row for row in rows if row["name"] == symbol_name]
+        if not matches:
+            matches = [row for row in rows if row["name"].lower() == symbol_name.lower()]
+        if matches:
+            return matches, None
+        not_ready = self._not_ready_response()
+        if not_ready is not None:
+            return [], not_ready
+        candidates = [compact_symbol(row) for row in rows[:5]]
+        return [], symbol_not_found(symbol_name, "", candidates)
+
 
 def _present_symbol(row: dict[str, Any]) -> dict[str, Any]:
-    """Replace the internal match_rank tier with a human-readable label."""
-    shaped = presentable_symbol(row)
-    rank = shaped.pop("match_rank", None)
+    """Compact search row plus a human-readable match tier."""
+    shaped = compact_symbol(row)
+    rank = row.get("match_rank")
     if rank is not None:
         shaped["match"] = _MATCH_LABELS.get(int(rank), "subtoken")
     return shaped

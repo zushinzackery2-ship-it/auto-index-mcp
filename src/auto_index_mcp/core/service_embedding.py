@@ -31,6 +31,8 @@ class ServiceEmbeddingMixin(ServiceBase):
 
     def ensure_embedding_background(self) -> dict[str, Any]:
         root, store = self._ready_context()
+        if not self.semantic_enabled:
+            return {"status": "embedding-disabled"}
         embedding_store = self.embedding_store
         if self.embedding_indexer is not None:
             try:
@@ -56,11 +58,17 @@ class ServiceEmbeddingMixin(ServiceBase):
         self.embedding_indexer = self._create_embedding_indexer()
 
     def _create_embedding_indexer(self, embedding_store: EmbeddingStore | None = None) -> SymbolEmbedder | None:
+        if not self.semantic_enabled:
+            return None
         store = embedding_store if embedding_store is not None else self.embedding_store
         if store is None:
             return None
         backend = create_embedder()
-        return SymbolEmbedder(backend, store) if backend is not None else None
+        if backend is None:
+            return None
+        indexer = SymbolEmbedder(backend, store)
+        indexer.progress = self.embedding_progress
+        return indexer
 
     def _load_and_embed_project(
         self,
@@ -113,6 +121,8 @@ class ServiceEmbeddingMixin(ServiceBase):
         store: IndexStore | None = None,
         indexer: SymbolEmbedder | None = None,
     ) -> dict[str, Any] | None:
+        if not self.semantic_enabled:
+            return {"status": "embedding-disabled", "model": None}
         indexer = indexer or self.embedding_indexer
         store = store or self.store
         if store is None:

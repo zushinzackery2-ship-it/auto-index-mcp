@@ -1,4 +1,9 @@
-"""Value-reference tracking: functions passed as data count as used."""
+"""Value-reference tracking: functions passed as data count as used.
+
+The call graph is exposed through ``symbol_refs`` (compact search rows no
+longer embed ``called_by``); these tests pin both the tracking semantics and
+that tool-facing surface.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +11,10 @@ from pathlib import Path
 from typing import Any
 
 
-def _symbol(summary: dict[str, Any], name: str) -> dict[str, Any]:
-    return next(item for item in summary["symbols"] if item["name"] == name)
+def _refs(service: Any, name: str, path: str = "", **kwargs: Any) -> dict[str, Any]:
+    result = service.symbol_refs(name, path, **kwargs)
+    assert result["format"] == "auto_index_symbol_refs_v2"
+    return result["items"][0]
 
 
 def _finding_symbols(report: dict[str, Any]) -> set[str]:
@@ -27,8 +34,7 @@ def test_sort_key_reference_creates_caller_edge(tmp_path: Path, make_service, wr
     )
     service = make_service(project)
 
-    summary = service.file_summary("mod.py")
-    assert "run" in _symbol(summary, "_order_key")["called_by"]
+    assert "run" in _refs(service, "_order_key", "mod.py")["callers"]
     assert "_order_key" not in _finding_symbols(service.dangling_check())
 
 
@@ -58,10 +64,9 @@ def test_value_reference_forms_create_edges(tmp_path: Path, make_service, write_
     )
     service = make_service(project)
 
-    summary = service.file_summary("mod.py")
-    assert "dispatch" in _symbol(summary, "_handler")["called_by"]
-    assert "pick" in _symbol(summary, "_picked")["called_by"]
-    assert "give" in _symbol(summary, "_given")["called_by"]
+    assert "dispatch" in _refs(service, "_handler")["callers"]
+    assert "pick" in _refs(service, "_picked")["callers"]
+    assert "give" in _refs(service, "_given")["callers"]
     assert _finding_symbols(service.dangling_check()).isdisjoint({"_handler", "_picked", "_given"})
 
 
@@ -77,8 +82,9 @@ def test_def_line_parameters_are_not_references(tmp_path: Path, make_service, wr
     )
     service = make_service(project)
 
-    summary = service.file_summary("mod.py")
-    assert _symbol(summary, "_maybe_dead")["called_by"] == []
+    refs = _refs(service, "_maybe_dead", "mod.py")
+    assert refs["callers"] == []
+    assert refs["caller_count"] == 0
     assert "_maybe_dead" in _finding_symbols(service.dangling_check())
 
 
@@ -94,8 +100,7 @@ def test_same_file_caller_recorded_once(tmp_path: Path, make_service, write_file
     )
     service = make_service(project)
 
-    summary = service.file_summary("mod.py")
-    assert _symbol(summary, "helper")["called_by"] == ["run"]
+    assert _refs(service, "helper", "mod.py")["callers"] == ["run"]
 
 
 def test_cross_file_caller_stays_qualified(tmp_path: Path, make_service, write_file) -> None:
@@ -104,8 +109,26 @@ def test_cross_file_caller_stays_qualified(tmp_path: Path, make_service, write_f
     write_file(project / "b.py", "def helper():\n    return True\n")
     service = make_service(project)
 
-    summary = service.file_summary("b.py")
-    assert _symbol(summary, "helper")["called_by"] == ["a.py::run"]
+    assert _refs(service, "helper", "b.py")["callers"] == ["a.py::run"]
+
+
+def test_refs_direction_filters_sides(tmp_path: Path, make_service, write_file) -> None:
+    project = tmp_path / "proj"
+    write_file(
+        project / "mod.py",
+        "def helper():\n"
+        "    return 1\n"
+        "\n"
+        "def run():\n"
+        "    return helper()\n",
+    )
+    service = make_service(project)
+
+    callers_only = _refs(service, "helper", direction="callers")
+    assert "callers" in callers_only and "callees" not in callers_only
+    callees_only = _refs(service, "run", direction="callees")
+    assert "callees" in callees_only and "callers" not in callees_only
+    assert "helper" in callees_only["callees"]
 
 
 def test_conftest_fixtures_belong_to_test_scope(tmp_path: Path, make_service, write_file) -> None:
@@ -118,7 +141,7 @@ def test_conftest_fixtures_belong_to_test_scope(tmp_path: Path, make_service, wr
     assert "_seed_fixture" in _finding_symbols(service.dangling_check(include_tests=True))
 
 
-def test_called_by_preview_is_capped_with_total(tmp_path: Path, make_service, write_file) -> None:
+def test_caller_list_is_capped_with_total(tmp_path: Path, make_service, write_file) -> None:
     project = tmp_path / "proj"
     callers = "".join(
         f"def caller_{index:02d}():\n    return hub()\n\n" for index in range(30)
@@ -126,17 +149,28 @@ def test_called_by_preview_is_capped_with_total(tmp_path: Path, make_service, wr
     write_file(project / "mod.py", "def hub():\n    return 1\n\n" + callers)
     service = make_service(project)
 
-    hub = _symbol(service.file_summary("mod.py"), "hub")
-    assert len(hub["called_by"]) == 25
-    assert hub["called_by_total"] == 30
-    assert "refs" not in hub
+    hub = _refs(service, "hub", "mod.py")
+    assert len(hub["callers"]) == 25
+    assert hub["caller_count"] == 30
+
+    widened = _refs(service, "hub", "mod.py", limit=100)
+    assert len(widened["callers"]) == 30
+
+
+def test_search_rows_stay_compact(tmp_path: Path, make_service, write_file) -> None:
+    project = tmp_path / "proj"
+    write_file(
+        project / "mod.py",
+        "def hub():\n    return 1\n\ndef run():\n    return hub()\n",
+    )
+    service = make_service(project)
 
     searched = next(
         item for item in service.symbol_search(text="hub")["items"] if item["name"] == "hub"
     )
-    assert len(searched["called_by"]) == 25
-    assert searched["called_by_total"] == 30
-    assert "refs" not in searched
+    assert "called_by" not in searched
+    assert "calls" not in searched
+    assert {"name", "kind", "line", "end_line", "signature", "path"} <= set(searched)
 
 
 def test_full_detail_keeps_raw_record(tmp_path: Path, make_service, write_file) -> None:

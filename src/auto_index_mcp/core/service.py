@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import project_index_root
+from .timefmt import iso_time
+from .tool_errors import ENABLE_HINT
 from .service_embedding import ServiceEmbeddingMixin
 from .service_ignore import ServiceIgnoreMixin
 from .service_navigation import ServiceNavigationMixin
@@ -147,10 +149,13 @@ class AutoIndexService(
         return result
 
     def status(self) -> dict[str, Any]:
+        """Compact index health: one level of nesting, ISO timestamps, no
+        duplicated background result blobs (LLM callers read this a lot)."""
         store = self.store
         meta = store.get_metadata_map() if store else {}
         file_count = int(meta.get("file_count") or 0)
         total_file_count = int(meta.get("total_file_count") or file_count)
+        timers = self.build_timers()
         result: dict[str, Any] = {
             "enabled": self.enabled,
             "root": str(self.root_path) if self.root_path else None,
@@ -158,20 +163,43 @@ class AutoIndexService(
             "file_count": file_count,
             "total_file_count": total_file_count,
             "child_index_count": int(meta.get("child_index_count") or 0),
-            "updated_at": meta.get("updated_at"),
-            "last_error_count": len(self.last_errors),
-            "last_errors": self.last_errors[:10],
+            "updated_at": iso_time(meta.get("updated_at")),
             "watcher": self.watcher_status(),
-            "embedding": {
-                "enabled": self.embedding_indexer is not None,
-                "model": self.embedding_indexer.backend.name if self.embedding_indexer is not None else None,
-            },
-            "build_timers": self.build_timers(),
+            "embedding": self._compact_embedding_status(timers["embedding"]),
+            "index_build": _compact_timer(timers["index"]),
         }
-        if self.background is not None:
-            result["background_index"] = self.background.status()
-        if self.embedding_background is not None:
-            result["embedding_background"] = self.embedding_background.status()
+        if self.last_errors:
+            result["error_count"] = len(self.last_errors)
+            result["errors"] = self.last_errors[:5]
+        if store is None or self.root_path is None:
+            result["hint"] = ENABLE_HINT
+        return result
+
+    def _compact_embedding_status(self, timer: dict[str, Any]) -> dict[str, Any]:
+        """Semantic-vector state merged into status (was a separate tool)."""
+        indexer = self.embedding_indexer
+        result: dict[str, Any] = {
+            "enabled": indexer is not None,
+            "model": indexer.backend.name if indexer is not None else None,
+        }
+        if not self.semantic_enabled:
+            result["state"] = "disabled"
+            return result
+        if timer.get("running"):
+            result["state"] = "building"
+            result["elapsed_seconds"] = timer.get("elapsed_seconds")
+            return result
+        if indexer is None:
+            result["state"] = "unavailable"
+            return result
+        try:
+            count = indexer.count()
+        except Exception as exc:
+            result["state"] = "error"
+            result["error"] = str(exc)
+            return result
+        result["vector_count"] = count
+        result["state"] = "ready" if count > 0 else "empty"
         return result
 
     def clear(self, delete_file: bool = False) -> dict[str, Any]:
@@ -202,3 +230,12 @@ class AutoIndexService(
         self.tree_progress.clear()
         self._invalidate_view_cache()
         return self.status()
+
+
+def _compact_timer(timer: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "state": timer.get("state"),
+        "phase": timer.get("phase"),
+        "running": bool(timer.get("running")),
+        "elapsed_seconds": timer.get("elapsed_seconds"),
+    }

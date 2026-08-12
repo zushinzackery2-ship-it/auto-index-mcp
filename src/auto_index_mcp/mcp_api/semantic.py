@@ -1,30 +1,31 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from ..core.service import AutoIndexService
+from .bootstrap import ensure_enabled
+from .guard import run_tool
 
 
 def register_semantic_tools(mcp: FastMCP, service: AutoIndexService) -> None:
     @mcp.tool()
-    def auto_index_semantic_search(
+    async def auto_index_semantic_search(
         query: str,
         limit: int = 10,
         min_score: float = 0.0,
+        ctx: Optional[Context] = None,
     ) -> dict[str, Any]:
-        """Natural-language semantic search over indexed symbols.
-
-        Embeds the query and returns the most semantically similar symbols by
-        cosine similarity, with file paths and line ranges. Uses the bundled
-        ONNX model or ``AUTO_INDEX_EMBEDDING_MODEL`` when provided; without a
-        usable model it reports unavailable instead of degrading to keyword
-        search.
-        """
-        return service.semantic_search(query, limit, min_score)
-
-    @mcp.tool()
-    def auto_index_embedding_status() -> dict[str, Any]:
-        """Report whether a semantic embedding backend is active and its vector count."""
-        return service.embedding_status()
+        """Describe behavior in natural language and get the most relevant
+        symbols ("where is retry backoff handled"). Use when you do not know
+        the identifier; otherwise auto_index_symbol_search is more precise.
+        Ranking blends vector cosine with name/signature overlap. The bundled
+        MiniLM model is English-centric: phrase queries in English for best
+        recall, or point AUTO_INDEX_EMBEDDING_MODEL at a multilingual ONNX
+        model for Chinese. First call after a rebuild may report vectors
+        still building; embedding state is visible in auto_index_status()."""
+        blocked = await ensure_enabled(service, ctx)
+        if blocked is not None:
+            return blocked
+        return run_tool(service.semantic_search, query, limit, min_score)

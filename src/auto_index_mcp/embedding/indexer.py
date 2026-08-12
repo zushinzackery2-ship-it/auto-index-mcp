@@ -38,6 +38,9 @@ class SymbolEmbedder:
         self.backend = backend
         self.conn_provider = conn_provider
         self.store = SymbolEmbeddingStore()
+        # Optional (done, total, reused) hook fired per embedding batch;
+        # drives CLI progress bars without touching the pipeline itself.
+        self.progress: Any = None
         # Stored vectors are only valid for the exact text->vector mapping that
         # produced them. The storage key therefore folds in every input of that
         # mapping beyond the model name: the backend's own fingerprint (e.g.
@@ -135,6 +138,8 @@ class SymbolEmbedder:
             entries_by_file,
             remaining_by_file,
         )
+        total_pending = len(pending_vectors)
+        self._report_progress(0, total_pending, reused)
         for chunk in _chunks(pending_vectors, EMBED_BATCH_SIZE):
             vectors = self.backend.embed([item[3] for item in chunk])
             completed: set[str] = set()
@@ -160,10 +165,20 @@ class SymbolEmbedder:
                 entries_by_file,
                 sorted(completed),
             )
+            self._report_progress(embedded, total_pending, reused)
         # ``model`` is display-facing: the backend name without the storage
         # fingerprint suffix, matching every other status/report surface.
         # ``embedded``/``reused`` count window vectors, not symbols.
         return {"embedded": embedded, "reused": reused, "files": files, "model": self.backend.name}
+
+    def _report_progress(self, done: int, total: int, reused: int) -> None:
+        callback = self.progress
+        if callback is None:
+            return
+        try:
+            callback(done, total, reused)
+        except Exception:  # noqa: BLE001 - progress display must never break embedding
+            pass
 
 
 def _collect_file_entries(

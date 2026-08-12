@@ -66,6 +66,11 @@ class TreeProgress:
         with self._lock:
             self._files[path] = _TreeFile(path, name, parent, language)
 
+    def count(self) -> int:
+        """Files discovered so far; polled by CLI progress reporting."""
+        with self._lock:
+            return len(self._files)
+
     def snapshot(self, root_path: str = "", depth: int = 2, limit: int = 120) -> dict[str, Any] | None:
         with self._lock:
             if self._root is None or not self._folders:

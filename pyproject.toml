@@ -21,7 +21,7 @@ semantic = [
 ]
 
 [project.scripts]
-auto-index-mcp = "auto_index_mcp.server:main"
+auto-index-mcp = "auto_index_mcp.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

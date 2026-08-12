@@ -24,7 +24,7 @@ def run_self_quality_check(project: Path | None = None) -> dict[str, Any]:
     enable = service.enable(str(project), rebuild=True)
     nesting = service.nesting_check(max_depth=4, exclude_paths=DEFAULT_EXCLUDES)
     dangling = service.dangling_check(exclude_paths=DANGLING_EXCLUDES)
-    resolve = service.resolve_path("service.py")
+    resolve = service.find_files(query="service.py")
     search = service.text_search("AutoIndexService", limit=5)
 
     report = {
@@ -38,7 +38,7 @@ def run_self_quality_check(project: Path | None = None) -> dict[str, Any]:
         },
         "nesting_summary": nesting["summary"],
         "dangling_summary": dangling["summary"],
-        "resolve_path_items": len(resolve["items"]),
+        "find_files_items": len(resolve["items"]),
         "text_search_items": len(search["items"]),
         "text_search_backend": search["backend"],
     }
@@ -47,8 +47,8 @@ def run_self_quality_check(project: Path | None = None) -> dict[str, Any]:
         failures.append(f"enable status={enable.get('status')!r}")
     if enable.get("error_count"):
         failures.append(f"enable error_count={enable.get('error_count')}")
-    if report["resolve_path_items"] < 1:
-        failures.append("resolve_path returned no items")
+    if report["find_files_items"] < 1:
+        failures.append("find_files returned no items")
     if report["text_search_items"] < 1:
         failures.append("text_search returned no items")
     report["ok"] = not failures

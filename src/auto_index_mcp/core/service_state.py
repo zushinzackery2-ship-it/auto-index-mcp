@@ -13,11 +13,12 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .background_indexer import BackgroundIndexer
 from .config import project_index_root
 from .ignore_config import IgnoreConfig
+from .path_normalize import normalize_input_path
 from .tree_progress import TreeProgress
 from ..embedding.embedding_store import EmbeddingStore
 from ..embedding.indexer import SymbolEmbedder
@@ -65,6 +66,10 @@ class ServiceBase:
         # Guards check-then-act on the embedding background handle so two callers
         # never spawn duplicate embedding passes over the same store.
         self._embedding_lock = threading.Lock()
+        # CLI/pre-build hooks: opt out of semantic vectors entirely, and an
+        # optional (done, total, reused) callback for embedding progress bars.
+        self.semantic_enabled = True
+        self.embedding_progress: Callable[[int, int, int], None] | None = None
 
     # ---- shared infrastructure -------------------------------------------------
 
@@ -110,6 +115,56 @@ class ServiceBase:
         assert self.root_path is not None
         assert self.store is not None
         return self.root_path, self.store
+
+    def _lookup_indexed_file(self, path: str) -> tuple[str, Any]:
+        """Tolerant point lookup for AI-supplied paths.
+
+        Normalizes the input (backslashes, absolute-inside-root), then falls
+        back to a case-insensitive scan, then to a unique path-suffix match so
+        a bare file name resolves when unambiguous.
+        Returns ``(resolved_path, FileLookup)``.
+        """
+        normalized = normalize_input_path(path, self.root_path)
+        lookup = self.view.get_file(normalized)
+        if lookup.item is not None:
+            return normalized, lookup
+        lowered = normalized.lower()
+        if lowered:
+            suffix_hits: list[str] = []
+            for header in self.view.file_headers():
+                candidate = header["path"].lower()
+                if candidate == lowered:
+                    return header["path"], self.view.get_file(header["path"])
+                if candidate.endswith("/" + lowered):
+                    suffix_hits.append(header["path"])
+            if len(suffix_hits) == 1:
+                return suffix_hits[0], self.view.get_file(suffix_hits[0])
+        return normalized, lookup
+
+    def _path_candidates(self, path: str, limit: int = 5) -> list[str]:
+        """Closest indexed paths for a failed lookup, best match first."""
+        needle = normalize_input_path(path, self.root_path).lower()
+        if not needle:
+            return []
+        name = needle.rsplit("/", 1)[-1]
+        stem = name.rsplit(".", 1)[0]
+        scored: list[tuple[int, str]] = []
+        for header in self.view.file_headers():
+            candidate = header["path"].lower()
+            candidate_name = header["name"].lower()
+            if candidate == needle or candidate.endswith("/" + needle):
+                score = 0
+            elif candidate_name == name:
+                score = 1
+            elif name and name in candidate_name:
+                score = 2
+            elif stem and stem in candidate:
+                score = 3
+            else:
+                continue
+            scored.append((score, header["path"]))
+        scored.sort(key=lambda pair: (pair[0], len(pair[1]), pair[1]))
+        return [item for _, item in scored[:limit]]
 
     # ---- cross-mixin contracts ---------------------------------------------------
     # Concrete implementations live in the named mixin (or AutoIndexService) and

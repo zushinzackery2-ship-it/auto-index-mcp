@@ -31,14 +31,18 @@ class ServiceIndexStateMixin(ServiceBase):
         if indexer is None:
             return {
                 "status": "idle",
-                "background_index": None,
-                "build_timers": self.build_timers(),
+                "index_build": _compact_timer_view(self.build_timers()["index"]),
             }
-        return {
+        timer = indexer.timer()
+        result: dict[str, Any] = {
             "status": "indexing-in-background",
-            "background_index": indexer.status(),
-            "build_timers": self.build_timers(),
+            "index_build": _compact_timer_view(timer),
+            "hint": "index is building in the background; poll auto_index_status() and retry shortly",
         }
+        error = indexer.status().get("error")
+        if error:
+            result["error"] = error
+        return result
 
     def _has_indexed_data(self) -> bool:
         store = self.store
@@ -61,8 +65,6 @@ class ServiceIndexStateMixin(ServiceBase):
             "phase": snap["phase"],
             "ready": ready,
             "stale": ready and state == STATE_RUNNING,
-            "root": str(self.root_path) if self.root_path else None,
-            "started_at": snap["started_at"],
             "elapsed_seconds": snap["elapsed_seconds"],
             "error": snap["error"],
         }
@@ -87,4 +89,20 @@ class ServiceIndexStateMixin(ServiceBase):
 
     @staticmethod
     def _not_ready_envelope(status: dict[str, Any]) -> dict[str, Any]:
-        return {"format": "auto_index_not_ready", "items": [], "index_status": status}
+        elapsed = status.get("elapsed_seconds")
+        running_for = f" (running for {elapsed:.0f}s)" if isinstance(elapsed, (int, float)) else ""
+        return {
+            "format": "auto_index_not_ready",
+            "items": [],
+            "index_status": status,
+            "hint": f"index is still building{running_for}; retry shortly or check auto_index_status()",
+        }
+
+
+def _compact_timer_view(timer: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "state": timer.get("state"),
+        "phase": timer.get("phase"),
+        "running": bool(timer.get("running")),
+        "elapsed_seconds": timer.get("elapsed_seconds"),
+    }

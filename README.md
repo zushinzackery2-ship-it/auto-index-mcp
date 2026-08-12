@@ -4,7 +4,7 @@
 
 **面向编码 Agent 的持久化 MCP 代码索引器**
 
-*SQLite 持久索引、低上下文代码导航、符号级搜索、事件驱动自动更新*
+*SQLite 持久索引、低上下文代码导航、符号级搜索与调用图、事件驱动自动更新*
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue?style=flat-square)
 ![MCP](https://img.shields.io/badge/MCP-Compatible-green?style=flat-square)
@@ -20,44 +20,39 @@
 | 功能 | 说明 |
 |:-----|:-----|
 | **持久索引** | 将文件、符号、import、元数据写入 SQLite，MCP 进程重启后仍可复用。 |
+| **冷启动自动化** | 工具首次调用时自动从 MCP 客户端 `roots` 或 `AUTO_INDEX_PROJECT_PATH` 环境变量识别项目根，无需手动 enable。 |
+| **CLI 预建索引** | `auto-index-mcp build` 一次性同步建库（含语义向量、带进度条），AI 首次会话即刻可用。 |
 | **精确增量更新** | 普通文件新增、修改、删除只更新受影响记录，不做整库重建。 |
 | **嵌套工作区** | 父目录发现子目录已有索引库时只挂链接，不重复维护子目录数据。 |
-| **低上下文导航** | 提供 overview、tree、query、get、resolve、diff 等轻量工具。 |
-| **符号索引** | 支持 Python AST 符号，JavaScript/TypeScript、C/C++、Pascal 和通用文本轻量符号提取。 |
-| **代码搜索** | 支持源码内容和符号名称搜索，同时支持正则匹配；符号搜索按匹配质量排序，无直接命中时自动按子词放宽。 |
-| **语义搜索** | 通过自然语言找到最相关的符号，基于本地 ONNX Embedding 模型，无网络依赖；词法与向量混合排序，长符号分块嵌入保证尾部内容可搜。 |
+| **符号级导航** | 符号搜索按匹配质量排序，`symbol_body` 按名取源码，`symbol_refs` 给出调用图（查找引用）。 |
+| **路径容错** | 输入路径自动归一化：反斜杠、项目内绝对路径、大小写、唯一文件名均可解析。 |
+| **结构化错误** | 错误以 `{error, hint, candidates}` 返回，附近似候选，Agent 可自愈重试。 |
+| **语义搜索** | 自然语言找符号，本地 ONNX Embedding，词法与向量混合排序，长符号分块嵌入。 |
 | **自动刷新** | 文件变更时自动增量更新索引，无需手动重建。 |
 | **质量检查** | 基于持久索引缓存报告嵌套过深、疑似悬空代码和不可达代码。 |
 | **MCP Resource** | 通过 `files://{file_path}` 暴露当前索引项目内的文件内容。 |
 
 ---
 
-## 核心 API
+## 核心 API（13 个工具）
 
 | 分类 | API | 说明 |
 |:-----|:----|:-----|
-| **生命周期** | `auto_index_enable()` | 设置项目根目录，默认复用已有索引，可显式重建。 |
-| **生命周期** | `auto_index_disable()` | 停用当前索引状态并停止自动刷新。 |
-| **生命周期** | `auto_index_status()` | 返回索引状态，包括文件数量、更新时间、错误信息及后台任务进度。 |
-| **生命周期** | `auto_index_ignore()` | 配置索引排除规则，支持忽略大文件或特定目录。 |
-| **生命周期** | `auto_index_rebuild()` | 派发后台全量扫描并重写持久索引，请通过 `auto_index_status()` 观察进度。 |
-| **生命周期** | `auto_index_clear()` | 清空索引数据，可选择删除 SQLite 文件。 |
-| **导航** | `auto_index_overview()` | 返回语言分布、目录分布、样例文件等紧凑概览。 |
-| **导航** | `auto_index_tree_get()` | 返回目录级摘要、语言构成和样例文件。 |
-| **导航** | `auto_index_query()` | 按文本、语言、父目录和游标查询索引文件。 |
-| **导航** | `auto_index_file()` | 返回单个索引文件记录，`detail="summary"` 给出 import、符号和复杂度摘要，`detail="full"` 给出完整记录。 |
-| **导航** | `auto_index_resolve_path()` | 按文件名或路径片段解析候选文件。 |
-| **搜索** | `auto_index_text_search()` | 对源码进行 literal 或 regex 搜索。 |
-| **搜索** | `auto_index_symbol_search()` | 按名称、签名、类型搜索符号，结果按匹配质量排序：精确名 > 名前缀 > 名子串 > 签名；查询无直接命中时自动拆分子词（camelCase/snake_case）放宽匹配，`match_mode` 字段标明当次匹配方式。 |
-| **搜索** | `auto_index_symbol_body()` | 返回指定符号的源码片段。 |
-| **语义搜索** | `auto_index_semantic_search()` | 自然语言语义搜索，默认使用仓库随附 ONNX 模型，返回最相似的符号及行范围；排序为词法与向量相似度混合，返回项含 `vector_score`/`lexical_score` 分量。 |
-| **语义搜索** | `auto_index_embedding_status()` | 报告语义 Embedding 后端是否启用及向量数量；`build_timer` 给出语义向量构建的实时计时。 |
-| **质量检查** | `auto_index_quality_check()` | 检查代码质量，报告嵌套深度过深、悬空代码或不可达代码等问题。 |
-| **漂移检查** | `auto_index_diff_filesystem()` | 对比索引与当前文件系统的新增、删除、变化。 |
-| **自动刷新** | `auto_index_watcher_start()` | 非阻塞启动文件系统事件驱动的自动刷新。 |
-| **自动刷新** | `auto_index_watcher_stop()` | 停止文件系统事件驱动的自动刷新。 |
+| **生命周期** | `auto_index_enable()` | 绑定项目根目录；`root_path` 可省略（自动探测），默认复用已有索引。 |
+| **生命周期** | `auto_index_status()` | 紧凑索引健康态：文件/向量数、watcher、构建进度，ISO 时间戳。 |
+| **生命周期** | `auto_index_manage(action=...)` | 运维统一入口：`rebuild` / `clear` / `watch_start` / `watch_stop` / `disable` / `diff` / `ignore_*`。 |
+| **导航** | `auto_index_overview()` | 首过概览：语言分布、目录分布、按目录轮转的代表性样例（入口文件优先，测试/归档目录降权）。 |
+| **导航** | `auto_index_tree_get()` | 目录级摘要：文件数、语言构成、样例文件名。 |
+| **导航** | `auto_index_files()` | 模糊文件查找：路径子串、裸文件名、glob、符号名回退，可按语言/目录过滤。 |
+| **导航** | `auto_index_file()` | 单文件索引记录：import、符号行区间、复杂度；`detail="full"` 附调用图与嵌套数据。 |
+| **搜索** | `auto_index_text_search()` | 源码 literal/regex 搜索，返回紧凑 path/line 命中。 |
+| **搜索** | `auto_index_symbol_search()` | 符号定义搜索：精确名 > 名前缀 > 名子串 > 签名，无命中自动子词放宽。 |
+| **搜索** | `auto_index_symbol_body()` | 按名取符号源码；`path` 可省略（全库解析，歧义时返回候选）。 |
+| **搜索** | `auto_index_symbol_refs()` | 调用图（查找引用）：callers / callees，改函数前看影响面。 |
+| **语义** | `auto_index_semantic_search()` | 自然语言语义搜索，词法与向量混合排序。 |
+| **质量** | `auto_index_quality_check()` | 嵌套过深、悬空代码、不可达代码检查。 |
 
-可通过 `auto_index_enable(rebuild=True)` 强制全量重建索引，或使用 `auto_index_rebuild()` 后台重建。所有 API 详细参数见各工具的在线帮助。
+所有路径参数为项目相对正斜杠格式；反斜杠、项目内绝对路径会自动归一化，未命中时错误里附近似候选。错误统一为 `{error, hint, candidates?}` 结构，不抛裸协议异常。
 
 > [!NOTE]
 > **已知局限**
@@ -65,6 +60,37 @@
 
 ---
 
+## CLI 预建索引（推荐）
+
+MCP 会话首次建库的等待可以完全消除：提前手动建好，AI 连上即复用。
+
+```bat
+cd D:\your\project
+auto-index-mcp build
+```
+
+```bat
+auto-index-mcp build D:\your\project --rebuild
+auto-index-mcp build D:\your\project --no-semantic
+auto-index-mcp status D:\your\project
+```
+
+`build` 为一次性命令：同步扫描建库（实时计数），随后同步构建语义向量（精确百分比进度条），完成即退出（exit code 0/1）。与运行中的 MCP 进程通过跨进程构建锁互斥，不会重复扫描。`status` 只读打印已有索引摘要。
+
+不带子命令时 `auto-index-mcp` 即为 MCP server（stdio），现有客户端配置无需变更。
+
+---
+
+## 冷启动解析顺序
+
+任何工具在索引未绑定时被调用，按以下顺序自动解析项目根：
+
+1. 启动参数 `--project-path`；
+2. 环境变量 `AUTO_INDEX_PROJECT_PATH`；
+3. MCP 客户端 `roots` 能力（Cursor / Claude Code 等自动上报工作区）；
+4. 全部失败时返回结构化错误，提示调用 `auto_index_enable(root_path=...)`。
+
+---
 
 ## 语义搜索
 
@@ -76,8 +102,11 @@ pip install -e ".[semantic]"
 
 默认使用内置 MiniLM ONNX 模型（约 90MB）进行 Embedding 推理，纯本地计算，无网络依赖。可通过 `AUTO_INDEX_EMBEDDING_MODEL` 环境变量指定自定义模型目录（须包含 `model.onnx` 和 `tokenizer.json`）。
 
-排序为混合评分：向量余弦相似度为主，查询与符号名/签名的词法重合度校正排名，直接点名标识符的查询会得到明确加权。超出模型截断窗口的长符号自动按重叠窗口分块，每块独立向量，搜索按符号聚合，尾部内容不再丢失。
+排序为混合评分：向量余弦相似度为主，查询与符号名/签名的词法重合度校正排名。超出模型截断窗口的长符号自动按重叠窗口分块，每块独立向量，尾部内容不丢失。
 
+> [!IMPORTANT]
+> **中文查询局限**
+> 内置 MiniLM 为英文模型，中文查询主要依赖词法兜底，向量召回有限。中文场景建议用英文描述查询，或通过 `AUTO_INDEX_EMBEDDING_MODEL` 指向多语言 ONNX 模型（如 bge-small-zh、multilingual-MiniLM）。
 
 ---
 
@@ -112,7 +141,7 @@ python -m auto_index_mcp.server --project-path /path/to/project
 ```
 
 ```bash
-auto-index-mcp --project-path /path/to/project
+auto-index-mcp serve --project-path /path/to/project
 ```
 
 传入 `--project-path` 时默认启动文件监听。一次性校验场景可加 `--no-watch` 禁用监听。

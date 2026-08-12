@@ -13,7 +13,7 @@ class ServiceQualityMixin(ServiceBase):
         self,
         max_depth: int = 4,
         languages: list[str] | None = None,
-        limit: int = 200,
+        limit: int = 50,
         exclude_paths: list[str] | None = None,
         active_only: bool = False,
     ) -> dict[str, Any]:
@@ -28,7 +28,7 @@ class ServiceQualityMixin(ServiceBase):
         self,
         include_low_confidence: bool = False,
         include_tests: bool = False,
-        limit: int = 200,
+        limit: int = 50,
         exclude_paths: list[str] | None = None,
         active_only: bool = False,
     ) -> dict[str, Any]:

@@ -107,7 +107,7 @@ def test_browse_mode_keeps_path_order_and_no_match_field(service) -> None:
     result = service.symbol_search(text="")
     assert result["match_mode"] == "all"
     items = result["items"]
-    assert items == sorted(items, key=lambda item: (item["file_path"].lower(), item["line"]))
+    assert items == sorted(items, key=lambda item: (item["path"].lower(), item["line"]))
     assert all("match" not in item for item in items)
 
 

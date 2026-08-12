@@ -20,6 +20,7 @@ from .quality_dangling import with_project_quality_findings
 from .rebuild_context import RebuildContext
 from .service_rebuild_ignore import config_ignore_metadata, service_ignore_fingerprint
 from .service_state import ServiceBase
+from .timefmt import iso_time
 from .tree_progress import TreeProgress
 from ..indexing.analysis import resolve_project_callers
 from ..indexing.active_sources import annotate_active_sources
@@ -230,7 +231,7 @@ class ServiceRebuildMixin(ServiceBase):
                 "started_at": start,
                 "finished_at": end,
             }
-        return {
+        result: dict[str, Any] = {
             "status": "indexed",
             "root": scan.root,
             "file_count": len(records),
@@ -238,15 +239,25 @@ class ServiceRebuildMixin(ServiceBase):
             "child_index_count": len(children),
             "skipped": scan.skipped,
             "reused": scan.reused,
-            "auto_ignored_paths": oversized.auto_ignored_paths,
-            "oversized_paths": scan.oversized_paths,
-            "privileged_paths": sorted(set(oversized.privileged_paths + scan.privileged_paths)),
-            "error_count": len(scan.errors),
             "elapsed_seconds": round(end - start, 3),
             "index_path": str(store.db_path),
-            "updated_at": store.get_metadata_map().get("updated_at"),
+            "updated_at": iso_time(store.get_metadata_map().get("updated_at")),
             "embedding": embedding_meta,
         }
+        # Empty diagnostic lists are noise for LLM callers; include them only
+        # when they carry information.
+        privileged = sorted(set(oversized.privileged_paths + scan.privileged_paths))
+        for key, value in (
+            ("auto_ignored_paths", oversized.auto_ignored_paths),
+            ("oversized_paths", scan.oversized_paths),
+            ("privileged_paths", privileged),
+        ):
+            if value:
+                result[key] = value
+        if scan.errors:
+            result["error_count"] = len(scan.errors)
+            result["errors"] = scan.errors[:5]
+        return result
 
     def _index_is_fresh(self) -> bool:
         if self.root_path is None:

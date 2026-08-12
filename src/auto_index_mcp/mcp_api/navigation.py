@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from ..core.service import AutoIndexService
+from .bootstrap import ensure_enabled
+from .guard import run_tool
 
 
 def register_navigation_tools(mcp: FastMCP, service: AutoIndexService) -> None:
@@ -14,42 +16,68 @@ def register_navigation_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         return service.file_content(file_path)
 
     @mcp.tool()
-    def auto_index_overview(limit: int = 30) -> dict[str, Any]:
-        """Return a compact codebase overview for first-pass context gathering."""
-        return service.overview(limit)
-
-    @mcp.tool()
-    def auto_index_tree_get(root_path: str = "", depth: int = 2, limit: int = 120) -> dict[str, Any]:
-        """Return a compact folder tree with file counts, language mix, and samples."""
-        return service.tree_get(root_path, depth, limit)
-
-    @mcp.tool()
-    def auto_index_query(
-        text: str = "",
-        languages: list[str] | None = None,
-        parent: str = "",
-        limit: int = 80,
-        cursor: str | None = None,
+    async def auto_index_overview(
+        limit: int = 20,
+        ctx: Optional[Context] = None,
     ) -> dict[str, Any]:
-        """Query indexed files by text, language, parent path, and cursor."""
-        return service.query(text, languages, parent, limit, cursor)
+        """First look at an unknown codebase: language mix, top directories,
+        and a directory-balanced sample of representative files (entry points
+        first, test/archive dirs last). Cheaper than walking the tree; drill
+        into a directory afterwards with auto_index_tree_get."""
+        blocked = await ensure_enabled(service, ctx)
+        if blocked is not None:
+            return blocked
+        return run_tool(service.overview, limit)
 
     @mcp.tool()
-    def auto_index_file(path: str, detail: Literal["summary", "full"] = "summary") -> dict[str, Any]:
-        """Return one indexed file record.
-
-        ``detail="summary"`` (default) returns imports, symbols and lightweight
-        complexity; ``detail="full"`` returns the complete persisted file record.
-        """
-        return service.file_summary(path) if detail == "summary" else service.get(path)
+    async def auto_index_tree_get(
+        dir: str = "",
+        depth: int = 2,
+        limit: int = 50,
+        ctx: Optional[Context] = None,
+    ) -> dict[str, Any]:
+        """Folder-level summary under ``dir`` (project-relative, "" = root):
+        per-folder file counts, language mix, and sample file names. Use to
+        map structure before reading files; raise ``depth`` to split large
+        folders further."""
+        blocked = await ensure_enabled(service, ctx)
+        if blocked is not None:
+            return blocked
+        return run_tool(service.tree_get, dir, depth, limit)
 
     @mcp.tool()
-    def auto_index_resolve_path(path: str, limit: int = 20) -> dict[str, Any]:
-        """Resolve a fuzzy file name or path into indexed candidates."""
-        return service.resolve_path(path, limit)
+    async def auto_index_files(
+        query: str = "",
+        dir: str = "",
+        languages: list[str] | None = None,
+        limit: int = 20,
+        cursor: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> dict[str, Any]:
+        """Find files when the exact path is unknown. ``query`` matches path
+        substrings, bare file names, globs (src/**/*.py), or an exact symbol
+        name as fallback; combine with ``dir``/``languages`` filters. Empty
+        query lists files under ``dir``. Returns compact rows with top symbol
+        names."""
+        blocked = await ensure_enabled(service, ctx)
+        if blocked is not None:
+            return blocked
+        return run_tool(service.find_files, query, dir, languages, limit, cursor)
 
     @mcp.tool()
-    def auto_index_diff_filesystem() -> dict[str, Any]:
-        """Compare the persisted index with the current filesystem."""
-        return service.diff_filesystem()
-
+    async def auto_index_file(
+        path: str,
+        detail: Literal["summary", "full"] = "summary",
+        ctx: Optional[Context] = None,
+    ) -> dict[str, Any]:
+        """One file's indexed record without reading the source: imports,
+        symbols with line ranges, and complexity. ``path`` is tolerant
+        (backslashes and absolute paths inside the project are normalized);
+        misses return close candidates. detail="full" adds call-graph and
+        nesting data per symbol."""
+        blocked = await ensure_enabled(service, ctx)
+        if blocked is not None:
+            return blocked
+        if detail == "summary":
+            return run_tool(service.file_summary, path)
+        return run_tool(service.get, path)

@@ -5,6 +5,7 @@ from typing import Any
 
 from .config import DEFAULT_WATCH_DEBOUNCE_SECONDS
 from .service_state import ServiceBase
+from .timefmt import iso_time
 from ..indexing.snapshot import snapshot_from_index, take_watch_snapshot, update_watch_snapshot
 from ..indexing.updater import IndexUpdater
 from ..indexing.store import IndexStore
@@ -79,9 +80,20 @@ class ServiceWatcherMixin(ServiceBase):
         return self.watcher_status()
 
     def watcher_status(self) -> dict[str, Any]:
+        """Compact watcher view for tool responses (full detail stays on the
+        watcher object itself)."""
         if not self.watcher:
             return {"running": False}
-        return self.watcher.status()
+        status = self.watcher.status()
+        compact: dict[str, Any] = {
+            "running": status["running"],
+            "ready": status["ready"],
+            "change_count": status["change_count"],
+            "last_update_at": iso_time(status.get("last_update_at")),
+        }
+        if status.get("last_error"):
+            compact["last_error"] = status["last_error"]
+        return compact
 
     def _make_watch_updater(self, root: Path, store: IndexStore):
         # The watcher runs on its own daemon thread, so a structural rebuild it
