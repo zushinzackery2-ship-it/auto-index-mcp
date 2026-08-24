@@ -24,6 +24,7 @@ from ..embedding.embedding_store import EmbeddingStore
 from ..embedding.indexer import SymbolEmbedder
 from ..indexing.store import IndexStore
 from ..indexing.watcher import FileEventWatcher
+from ..registry import IndexRegistry
 from ..workspace.view import WorkspaceView
 
 # View cache TTL - must be <= WorkspaceView cache TTL for consistency
@@ -70,6 +71,9 @@ class ServiceBase:
         # optional (done, total, reused) callback for embedding progress bars.
         self.semantic_enabled = True
         self.embedding_progress: Callable[[int, int, int], None] | None = None
+        # User-level registry of created index directories; every call on it
+        # is best-effort so bookkeeping can never break enable/build.
+        self.registry = IndexRegistry()
 
     # ---- shared infrastructure -------------------------------------------------
 

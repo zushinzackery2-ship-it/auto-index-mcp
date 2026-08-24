@@ -86,7 +86,7 @@ async def ensure_enabled(
         )
     from .lifecycle import start_or_defer_auto_watch
 
-    result = service.enable_reusing_index(str(root))
+    result = service.enable_reusing_index(str(root), source="cold-start")
     start_or_defer_auto_watch(service, result)
     return None
 

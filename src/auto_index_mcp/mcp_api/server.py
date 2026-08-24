@@ -91,6 +91,7 @@ def main(argv: list[str] | None = None) -> None:
                 project_path,
                 rebuild=args.rebuild and not args.no_rebuild,
                 wait_seconds=DEFAULT_ENABLE_REBUILD_WAIT_SECONDS,
+                source="cli-serve",
             )
             if not args.no_watch:
                 start_or_defer_auto_watch(_service, result)

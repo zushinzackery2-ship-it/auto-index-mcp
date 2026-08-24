@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 INDEX_VERSION = 7
@@ -76,3 +77,25 @@ TEXT_EXTENSIONS = set(LANGUAGE_BY_EXTENSION)
 
 def project_index_root(root: Path) -> Path:
     return root / ".auto-index-mcp"
+
+
+REGISTRY_DIR_ENV = "AUTO_INDEX_REGISTRY_DIR"
+
+
+def registry_directory() -> Path:
+    """Per-user state directory holding the index registry.
+
+    Resolution order: ``AUTO_INDEX_REGISTRY_DIR`` (test isolation and
+    explicit overrides), ``%LOCALAPPDATA%`` on Windows, then
+    ``$XDG_STATE_HOME`` with the ``~/.local/state`` fallback on POSIX.
+    """
+    override = os.environ.get(REGISTRY_DIR_ENV, "").strip()
+    if override:
+        return Path(override)
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+        return base / "auto-index-mcp"
+    xdg_state = os.environ.get("XDG_STATE_HOME", "").strip()
+    base = Path(xdg_state) if xdg_state else Path.home() / ".local" / "state"
+    return base / "auto-index-mcp"

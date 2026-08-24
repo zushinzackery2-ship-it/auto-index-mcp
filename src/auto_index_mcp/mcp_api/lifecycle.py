@@ -18,6 +18,7 @@ ManageAction = Literal[
     "watch_stop",
     "disable",
     "diff",
+    "registry",
     "ignore_status",
     "ignore_add",
     "ignore_replace",
@@ -67,6 +68,7 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
                 root,
                 rebuild,
                 wait_seconds=DEFAULT_ENABLE_REBUILD_WAIT_SECONDS,
+                source="mcp-enable",
             )
             if auto_watch:
                 start_or_defer_auto_watch(service, result)
@@ -95,7 +97,9 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         action: "rebuild" full rescan in background | "clear" wipe indexed
         data (delete_file=true also removes the db) | "watch_start" /
         "watch_stop" filesystem auto-refresh | "disable" detach |
-        "diff" index-vs-filesystem drift | "ignore_status" / "ignore_add" /
+        "diff" index-vs-filesystem drift | "registry" read-only list of every
+        index this user's tool has created (clean up with the
+        ``auto-index-mcp clean`` CLI) | "ignore_status" / "ignore_add" /
         "ignore_replace" / "ignore_clear" gitignore-style runtime patterns
         (``patterns`` list; target="privileged" edits the oversized-file
         allow-list instead).
@@ -116,10 +120,20 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
             return run_tool(service.disable)
         if action == "diff":
             return run_tool(service.diff_filesystem)
+        if action == "registry":
+            return run_tool(_registry_snapshot)
         if action.startswith("ignore_"):
             mode = action.removeprefix("ignore_")
             return run_tool(service.configure_ignore, patterns, mode, target)
         return invalid_argument(f"unknown action: {action}")
+
+    def _registry_snapshot() -> dict[str, Any]:
+        """Read-only registry listing; deletion stays CLI-only on purpose."""
+        registry = service.registry
+        return {
+            "registry_path": str(registry.path()),
+            "entries": registry.verify(),
+        }
 
 
 def start_or_defer_auto_watch(

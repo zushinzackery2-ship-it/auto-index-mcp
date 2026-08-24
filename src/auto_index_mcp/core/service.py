@@ -19,6 +19,7 @@ from .service_watcher import ServiceWatcherMixin
 from .tree_progress import TreeProgress
 from ..embedding.embedding_store import EmbeddingStore
 from ..indexing.store import IndexStore
+from ..registry import write_index_markers
 
 
 class AutoIndexService(
@@ -45,6 +46,7 @@ class AutoIndexService(
         root_path: str,
         rebuild: bool = True,
         refresh_embedder: bool = True,
+        source: str = "mcp-enable",
     ) -> dict[str, Any]:
         root = Path(root_path).resolve()
         if not root.exists() or not root.is_dir():
@@ -62,6 +64,7 @@ class AutoIndexService(
             self.enabled = True
             self._load_ignore_config_from_store()
             self._invalidate_view_cache()
+            self.registry.touch(root)
             if refresh_embedder and self.embedding_indexer is None:
                 self._refresh_embedder()
             if rebuild:
@@ -72,6 +75,7 @@ class AutoIndexService(
         self.index_root = index_root
         self.store = IndexStore(self._db_path(root))
         self.store.initialize()
+        self._register_index(root, index_root, source)
         self.embedding_store = EmbeddingStore(self.index_root / "embeddings.db")
         self.embedding_store.initialize()
         self._load_ignore_config_from_store()
@@ -94,21 +98,35 @@ class AutoIndexService(
             and self.store.db_path.exists()
         )
 
+    def _register_index(self, root: Path, index_root: Path, source: str) -> None:
+        """Best-effort registry upsert + marker drop; never fails enable."""
+        try:
+            self.registry.register(
+                root,
+                index_root,
+                source=source,
+                ephemeral=self.index_root_override is not None,
+            )
+            write_index_markers(index_root, root)
+        except Exception:  # noqa: BLE001 - bookkeeping must not break enable
+            pass
+
     def enable_reusing_index(
         self,
         root_path: str,
         rebuild: bool = False,
         wait_seconds: float = 0.0,
+        source: str = "mcp-enable",
     ) -> dict[str, Any]:
         root = Path(root_path).resolve()
         if self._enable_already_running(root):
             return self._already_running_enable_status()
         if rebuild:
             # Explicit forced rebuild: dispatch to background thread and return immediately.
-            self.enable(str(root), rebuild=False, refresh_embedder=False)
+            self.enable(str(root), rebuild=False, refresh_embedder=False, source=source)
             return self._start_background_rebuild(wait_seconds=wait_seconds)
         db_existed = self._db_path(root).exists()
-        result = self.enable(str(root), rebuild=False, refresh_embedder=False)
+        result = self.enable(str(root), rebuild=False, refresh_embedder=False, source=source)
         if db_existed and self.can_reuse_index_for(root):
             # Reused a fresh index: build the vector store now (non-blocking) so
             # semantic search is ready without waiting for a first query to
@@ -168,6 +186,8 @@ class AutoIndexService(
             "embedding": self._compact_embedding_status(timers["embedding"]),
             "index_build": _compact_timer(timers["index"]),
         }
+        if self.root_path is not None:
+            result["registered"] = self.registry.is_registered(self.root_path)
         if self.last_errors:
             result["error_count"] = len(self.last_errors)
             result["errors"] = self.last_errors[:5]
@@ -223,6 +243,8 @@ class AutoIndexService(
                 self.embedding_store.delete_file()
                 self.embedding_store = None
             self.embedding_indexer = None
+            if self.root_path is not None:
+                self.registry.unregister(self.root_path)
         else:
             store.clear()
             if self.embedding_store is not None:

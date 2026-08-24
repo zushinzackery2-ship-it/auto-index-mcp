@@ -6,6 +6,10 @@ Subcommands:
                     a later MCP session attaches instantly instead of paying
                     the first-build wait.
     status [path]   read-only summary of an existing index, no server started.
+    list            print every index recorded in the user-level registry.
+    clean ...       delete registered index directories (orphans/ephemeral by
+                    default); --scan adopts pre-existing indexes into the
+                    registry.
     serve ...       run the MCP server (also the default with no subcommand,
                     so existing MCP client configs keep working unchanged).
 """
@@ -29,6 +33,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_build(args[1:])
     if args and args[0] == "status":
         return _run_status(args[1:])
+    if args and args[0] == "list":
+        return _run_list(args[1:])
+    if args and args[0] == "clean":
+        return _run_clean(args[1:])
     if args and args[0] == "serve":
         args = args[1:]
     from .mcp_api.server import main as serve_main
@@ -70,7 +78,12 @@ def _run_build(argv: list[str]) -> int:
         # Wiring the embedder up front routes a post-rebuild embedding pass
         # through the no-skip path, so changed symbols always re-embed
         # (unchanged windows are still reused via their text hash).
-        service.enable(str(root), rebuild=False, refresh_embedder=not args.no_semantic)
+        service.enable(
+            str(root),
+            rebuild=False,
+            refresh_embedder=not args.no_semantic,
+            source="cli-build",
+        )
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -261,6 +274,193 @@ def _read_vector_summary(db_path: Path) -> tuple[int | None, list[str]]:
         return int(count), sorted(set(models))
     except sqlite3.DatabaseError:
         return None, []
+
+
+# ---- list -------------------------------------------------------------------
+
+
+def _run_list(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="auto-index-mcp list",
+        description="List every index recorded in the user-level registry.",
+    )
+    parser.parse_args(argv)
+
+    from .core.timefmt import iso_time
+    from .registry import IndexRegistry, index_dir_size
+
+    registry = IndexRegistry()
+    entries = registry.verify()
+    print(f"registry: {registry.path()}")
+    if not entries:
+        print("no registered indexes")
+        return 0
+    for entry in entries:
+        flags = []
+        if entry["orphan"]:
+            flags.append("orphan")
+        if entry.get("ephemeral"):
+            flags.append("ephemeral")
+        size = index_dir_size(entry["index_dir"]) if entry["index_exists"] else 0
+        note = f"  [{', '.join(flags)}]" if flags else ""
+        print(f"{entry['root']}{note}")
+        print(f"    index:         {entry['index_dir']}  ({_human_size(size)})")
+        print(f"    last attached: {iso_time(entry.get('last_attached_at'))}"
+              f"  source: {entry.get('source', '?')}")
+    return 0
+
+
+def _human_size(size: int) -> str:
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024.0 or unit == "GiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024.0
+    return f"{int(size)} B"
+
+
+# ---- clean ------------------------------------------------------------------
+
+
+def _run_clean(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="auto-index-mcp clean",
+        description=(
+            "Delete index directories recorded in the registry. With no "
+            "selector this cleans orphaned and ephemeral entries only."
+        ),
+    )
+    parser.add_argument("targets", nargs="*", help="project roots whose indexes should be removed")
+    parser.add_argument("--all", action="store_true", help="select every registered index")
+    parser.add_argument("--orphans", action="store_true", help="select entries whose project or index is gone")
+    parser.add_argument("--ephemeral", action="store_true", help="select entries built at an overridden index location")
+    parser.add_argument("--older-than", default=None, metavar="AGE",
+                        help="only entries not attached for AGE (e.g. 30d, 12h; bare number = days)")
+    parser.add_argument("--scan", default=None, metavar="DIR",
+                        help="scan DIR for existing indexes and adopt them into the registry (no deletion)")
+    parser.add_argument("--dry-run", action="store_true", help="print what would happen without deleting")
+    parser.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
+    args = parser.parse_args(argv)
+
+    from .registry import IndexRegistry
+
+    registry = IndexRegistry()
+    if args.scan is not None:
+        return _clean_scan(registry, args.scan)
+
+    try:
+        max_age = _parse_age(args.older_than) if args.older_than else None
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    candidates = _clean_candidates(registry, args, max_age)
+    if not candidates:
+        print("nothing to clean")
+        return 0
+    for candidate in candidates:
+        marker = " (index already gone; registry entry only)" if not candidate["index_exists"] else ""
+        print(f"clean: {candidate['root']} -> {candidate['index_dir']}{marker}")
+    if args.dry_run:
+        print(f"dry run: {len(candidates)} entries selected, nothing deleted")
+        return 0
+    if not args.yes and not _confirm(f"delete {len(candidates)} index directories? [y/N] "):
+        print("aborted")
+        return 1
+    return _clean_apply(registry, candidates)
+
+
+def _clean_scan(registry: Any, base: str) -> int:
+    base_path = Path(base).resolve()
+    if not base_path.is_dir():
+        print(f"error: not a directory: {base_path}", file=sys.stderr)
+        return 1
+    adopted = registry.scan_and_adopt(base_path)
+    for entry in adopted:
+        print(f"adopted: {entry['root']} -> {entry['index_dir']}")
+    print(f"scan: {len(adopted)} new indexes registered under {base_path}")
+    return 0
+
+
+def _clean_candidates(registry: Any, args: Any, max_age: float | None) -> list[dict[str, Any]]:
+    from .registry import registry_key
+
+    entries = registry.verify()
+    target_keys = {registry_key(Path(target)) for target in args.targets}
+    use_default = not (args.targets or args.all or args.orphans or args.ephemeral)
+    # An explicit --older-than alone means "everything old enough", not the
+    # orphans+ephemeral safety default.
+    if use_default and max_age is not None:
+        selected = entries
+    elif use_default:
+        selected = [entry for entry in entries if entry["orphan"] or entry.get("ephemeral")]
+    else:
+        selected = [
+            entry for entry in entries
+            if args.all
+            or entry["key"] in target_keys
+            or (args.orphans and entry["orphan"])
+            or (args.ephemeral and entry.get("ephemeral"))
+        ]
+    if max_age is not None:
+        cutoff = time.time() - max_age
+        selected = [
+            entry for entry in selected
+            if float(entry.get("last_attached_at") or 0.0) < cutoff
+        ]
+    return selected
+
+
+def _clean_apply(registry: Any, candidates: list[dict[str, Any]]) -> int:
+    from .registry import build_lock_active, is_safe_to_delete, remove_index_dir
+
+    failures = 0
+    for entry in candidates:
+        index_dir = Path(entry["index_dir"])
+        if not entry["index_exists"]:
+            registry.unregister(entry["root"])
+            print(f"unregistered: {entry['root']} (index was already gone)")
+            continue
+        if build_lock_active(index_dir):
+            print(f"skipped: {entry['root']} (a build is currently running there)")
+            continue
+        if not is_safe_to_delete(index_dir, entry["root"]):
+            failures += 1
+            print(
+                f"refused: {index_dir} does not verify as an auto-index-mcp "
+                f"index for {entry['root']}"
+            )
+            continue
+        removed, notes = remove_index_dir(index_dir)
+        registry.unregister(entry["root"])
+        state = "removed" if removed else "cleaned (directory kept)"
+        print(f"{state}: {index_dir}")
+        for note in notes:
+            print(f"    {note}")
+    return 1 if failures else 0
+
+
+def _parse_age(text: str) -> float:
+    """Duration in seconds from '30d' / '12h' / '45m' / '90s' (bare = days)."""
+    import re
+
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([smhdw]?)", text.strip().lower())
+    if match is None:
+        raise ValueError(f"invalid --older-than value: {text!r} (expected e.g. 30d, 12h)")
+    value = float(match.group(1))
+    unit = match.group(2) or "d"
+    seconds = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0, "w": 604800.0}[unit]
+    return value * seconds
+
+
+def _confirm(prompt: str) -> bool:
+    if not sys.stdin.isatty():
+        print("refusing to delete without -y on a non-interactive terminal", file=sys.stderr)
+        return False
+    try:
+        return input(prompt).strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
 
 
 # ---- progress rendering ----------------------------------------------------

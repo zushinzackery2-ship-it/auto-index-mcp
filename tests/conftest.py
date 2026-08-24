@@ -13,6 +13,15 @@ from auto_index_mcp.embedding.backend import BagHashEmbedder
 
 
 @pytest.fixture(autouse=True)
+def _isolated_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Registry writes land in a per-test directory, never the user's state dir."""
+    monkeypatch.setenv("AUTO_INDEX_REGISTRY_DIR", str(tmp_path_factory.mktemp("registry")))
+
+
+@pytest.fixture(autouse=True)
 def _disable_default_embedding_backend(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
