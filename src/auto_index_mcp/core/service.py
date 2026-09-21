@@ -14,12 +14,13 @@ from .service_quality import ServiceQualityMixin
 from .service_rebuild import ServiceRebuildMixin
 from .service_search import ServiceSearchMixin
 from .service_semantic import ServiceSemanticMixin
-from .service_state import ServiceBase
 from .service_watcher import ServiceWatcherMixin
 from .tree_progress import TreeProgress
+from .maintenance import clear_index
 from ..embedding.embedding_store import EmbeddingStore
 from ..indexing.store import IndexStore
 from ..registry import write_index_markers
+from ..runtime.diagnostics import close_logging, configure_logging
 
 
 class AutoIndexService(
@@ -53,7 +54,15 @@ class AutoIndexService(
             raise ValueError(f"root_path is not a directory: {root_path}")
         self.cancel_auto_watch_after_build()
         if self.root_path and self.root_path != root:
+            self.enabled = False
+            self._cancel_background_work()
             self.stop_watcher()
+            self.embedding_indexer = None
+            self.embedding_background = None
+            self.background = None
+            self._ignore_config_dirty = False
+            from .ignore_config import IgnoreConfig
+            self._ignore_config = IgnoreConfig()
         index_root = self.index_root_override or project_index_root(root)
         if self._reusable_enable_context(root, index_root):
             # Re-enable on the unchanged root: keep the live stores, watcher
@@ -70,14 +79,15 @@ class AutoIndexService(
             if rebuild:
                 return self.rebuild_sync()
             return self.status()
-        self.root_path = root
+        self.log_path = configure_logging(index_root)
+        store = IndexStore(self._db_path(root))
+        store.initialize()
+        embedding_store = EmbeddingStore(index_root / "embeddings.db")
+        embedding_store.initialize()
+        self.root_path, self.index_root = root, index_root
+        self.store, self.embedding_store = store, embedding_store
         self.enabled = True
-        self.index_root = index_root
-        self.store = IndexStore(self._db_path(root))
-        self.store.initialize()
         self._register_index(root, index_root, source)
-        self.embedding_store = EmbeddingStore(self.index_root / "embeddings.db")
-        self.embedding_store.initialize()
         self._load_ignore_config_from_store()
         self.tree_progress = TreeProgress()
         if refresh_embedder:
@@ -126,14 +136,15 @@ class AutoIndexService(
             self.enable(str(root), rebuild=False, refresh_embedder=False, source=source)
             return self._start_background_rebuild(wait_seconds=wait_seconds)
         db_existed = self._db_path(root).exists()
-        result = self.enable(str(root), rebuild=False, refresh_embedder=False, source=source)
+        self.enable(str(root), rebuild=False, refresh_embedder=False, source=source)
         if db_existed and self.can_reuse_index_for(root):
             # Reused a fresh index: build the vector store now (non-blocking) so
             # semantic search is ready without waiting for a first query to
             # trigger a lazy build.
-            self.ensure_embedding_background()
+            if self.semantic_auto_start or self.embedding_indexer is not None:
+                self.ensure_embedding_background()
             return self.status()
-        return self._start_background_rebuild(wait_seconds=wait_seconds)
+        return self._start_background_rebuild(wait_seconds=wait_seconds, reuse_if_fresh=True)
 
     def _enable_already_running(self, root: Path) -> bool:
         background = self.background
@@ -157,14 +168,22 @@ class AutoIndexService(
         return result
 
     def disable(self) -> dict[str, Any]:
+        self.enabled = False
+        self._cancel_background_work()
         self.cancel_auto_watch_after_build()
         self.stop_watcher()
         self.tree_progress.clear()
-        self.enabled = False
         result = self.status()
+        self.embedding_indexer = None
+        close_logging(getattr(self, "log_path", None))
         if self.background is not None and self.background.is_running():
             result["warning"] = "background index build still running on its daemon thread"
         return result
+
+    def _cancel_background_work(self) -> None:
+        for worker in (self.background, self.embedding_background):
+            if worker is not None:
+                worker.cancelled.set()
 
     def status(self) -> dict[str, Any]:
         """Compact index health: one level of nesting, ISO timestamps, no
@@ -178,6 +197,7 @@ class AutoIndexService(
             "enabled": self.enabled,
             "root": str(self.root_path) if self.root_path else None,
             "index_path": str(store.db_path) if store else None,
+            "log_path": getattr(self, "log_path", None),
             "file_count": file_count,
             "total_file_count": total_file_count,
             "child_index_count": int(meta.get("child_index_count") or 0),
@@ -210,7 +230,7 @@ class AutoIndexService(
             result["elapsed_seconds"] = timer.get("elapsed_seconds")
             return result
         if indexer is None:
-            result["state"] = "unavailable"
+            result["state"] = "on-demand"
             return result
         try:
             count = indexer.count()
@@ -223,35 +243,7 @@ class AutoIndexService(
         return result
 
     def clear(self, delete_file: bool = False) -> dict[str, Any]:
-        if self.background is not None and self.background.is_running():
-            result = self.status()
-            result["status"] = "clear-skipped-background-running"
-            result["message"] = "background index build is still running; clear was not started"
-            return result
-        if self.embedding_background is not None and self.embedding_background.is_running():
-            result = self.status()
-            result["status"] = "clear-skipped-embedding-running"
-            result["message"] = "embedding build is still running; clear was not started"
-            return result
-        store = self._store_context()
-        if delete_file:
-            self.stop_watcher()
-            store.delete_file()
-            self.store = None
-            self.enabled = False
-            if self.embedding_store is not None:
-                self.embedding_store.delete_file()
-                self.embedding_store = None
-            self.embedding_indexer = None
-            if self.root_path is not None:
-                self.registry.unregister(self.root_path)
-        else:
-            store.clear()
-            if self.embedding_store is not None:
-                self.embedding_store.clear()
-        self.tree_progress.clear()
-        self._invalidate_view_cache()
-        return self.status()
+        return clear_index(self, delete_file)
 
 
 def _compact_timer(timer: dict[str, Any]) -> dict[str, Any]:

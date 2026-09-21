@@ -17,6 +17,7 @@ class RebuildContext:
     store: IndexStore
     embedding_indexer: SymbolEmbedder | None
     ignore_config: IgnoreConfig
+    reuse_if_fresh: bool = False
 
     @property
     def key(self) -> tuple[Path, Path]:

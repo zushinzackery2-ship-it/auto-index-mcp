@@ -45,6 +45,7 @@ def initialize_schema(conn: sqlite3.Connection, set_metadata: Any) -> None:
     ensure_symbol_columns(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_symbols_file_line ON symbols(file_path, line, id)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS symbol_nesting (
@@ -93,10 +94,13 @@ def ensure_file_columns(conn: sqlite3.Connection) -> None:
     additions = {
         "quality_findings": "TEXT NOT NULL DEFAULT '[]'",
         "active_source": "INTEGER NOT NULL DEFAULT 1",
+        "symbol_count": "INTEGER NOT NULL DEFAULT 0",
     }
     for name, definition in additions.items():
         if name not in columns:
             conn.execute(f"ALTER TABLE files ADD COLUMN {name} {definition}")
+            if name == "symbol_count":
+                conn.execute("UPDATE files SET symbol_count=json_array_length(symbols)")
 
 
 def ensure_symbol_columns(conn: sqlite3.Connection) -> None:

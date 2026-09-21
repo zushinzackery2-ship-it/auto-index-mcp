@@ -18,6 +18,8 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+import anyio
+
 from mcp.server.fastmcp import Context
 
 from ..core.service import AutoIndexService
@@ -56,7 +58,8 @@ async def roots_from_client(ctx: Optional[Context]) -> list[Path]:
     if ctx is None:
         return []
     try:
-        result = await ctx.session.list_roots()
+        with anyio.fail_after(3.0):
+            result = await ctx.session.list_roots()
     except Exception:  # noqa: BLE001 - clients without roots support raise here
         return []
     found: list[Path] = []
@@ -76,7 +79,7 @@ async def ensure_enabled(
     Returns None when the service is usable, otherwise a structured error
     the tool should return as-is.
     """
-    if service.store is not None and service.root_path is not None:
+    if service.enabled and service.store is not None and service.root_path is not None:
         return None
     root = await resolve_project_root(service, ctx)
     if root is None:
@@ -85,10 +88,17 @@ async def ensure_enabled(
             "from the environment or the MCP client"
         )
     from .lifecycle import start_or_defer_auto_watch
+    from .guard import run_service
 
-    result = service.enable_reusing_index(str(root), source="cold-start")
-    start_or_defer_auto_watch(service, result)
-    return None
+    def attach():
+        if service.enabled and service.store is not None:
+            return dict(enabled=True)
+        result = service.enable_reusing_index(str(root), source="cold-start")
+        start_or_defer_auto_watch(service, result)
+        return result
+
+    result = await run_service(service, attach)
+    return result if "error" in result else None
 
 
 async def resolve_project_root(

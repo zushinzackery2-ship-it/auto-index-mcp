@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +66,7 @@ def _record_to_item(record: FileRecord) -> dict[str, Any]:
         "path": record.path,
         "language": record.language,
         "imports": record.imports,
-        "symbols": [asdict(symbol) for symbol in record.symbols],
+        "symbols": [vars(symbol) for symbol in record.symbols],
         "quality_findings": record.quality_findings,
     }
 

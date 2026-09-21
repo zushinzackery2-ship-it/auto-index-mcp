@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+import os
 from dataclasses import replace
 from pathlib import Path
 
 from ..core._utils import is_relative_to
 from ..core.models import FileRecord
+from ..core.ignore_rules import IgnoreRules
 
 C_FAMILY_LANGUAGES = {"c", "cpp"}
 
 
 def annotate_active_sources(root: Path, records: list[FileRecord]) -> list[FileRecord]:
+    if not any(record.language in C_FAMILY_LANGUAGES for record in records):
+        return records
     active = discover_active_source_paths(root)
     if not active:
         return records
@@ -26,10 +30,13 @@ def annotate_active_sources(root: Path, records: list[FileRecord]) -> list[FileR
 def discover_active_source_paths(root: Path) -> set[str]:
     root = root.resolve()
     active: set[str] = set()
-    for project in root.rglob("*.vcxproj"):
-        if ".auto-index-mcp" in project.parts:
-            continue
-        active.update(_read_vcxproj_sources(root, project))
+    rules = IgnoreRules.from_root(root)
+    for directory, names, files in os.walk(root):
+        current = Path(directory)
+        names[:] = [name for name in names if not rules.should_prune_dir(current / name)]
+        for name in files:
+            if name.lower().endswith(".vcxproj"):
+                active.update(_read_vcxproj_sources(root, current / name))
     return active
 
 

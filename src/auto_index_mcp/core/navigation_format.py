@@ -127,7 +127,7 @@ def _sample_priority(item: dict[str, Any]) -> tuple[int, int, str]:
         entry_rank = 0
     else:
         entry_rank = 1
-    symbol_count = len(item.get("symbols") or [])
+    symbol_count = item.get("symbol_count", len(item.get("symbols") or []))
     return (entry_rank, -symbol_count, item["path"])
 
 

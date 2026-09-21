@@ -10,6 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from ..core.config import DEFAULT_ENABLE_REBUILD_WAIT_SECONDS
 from ..core.service import AutoIndexService
+from ..runtime.parent_lifetime import watch_parent
 from .bootstrap import PROJECT_PATH_ENV
 from .lifecycle import register_lifecycle_tools, start_or_defer_auto_watch
 from .navigation import register_navigation_tools
@@ -84,6 +85,8 @@ def _register_shutdown_hooks() -> None:
 def main(argv: list[str] | None = None) -> None:
     _register_shutdown_hooks()
     args = _parse_args(argv)
+    if args.transport == "stdio":
+        watch_parent()
     project_path = args.project_path or os.environ.get(PROJECT_PATH_ENV, "").strip() or None
     try:
         if project_path:

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.config import INDEX_VERSION
-from ..indexing.locator import INDEX_DB_NAME, INDEX_DIR_NAME, iter_index_databases
+from ..indexing.locator import iter_index_databases
 from ..indexing.metadata_reader import DEFAULT_METADATA_READER, IndexMetadataReader
 
 

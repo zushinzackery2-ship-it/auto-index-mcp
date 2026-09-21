@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .commands.progress import Progress as _Progress, bar as _bar
+
 _BAR_WIDTH = 20
 
 
@@ -262,7 +264,7 @@ def _read_vector_summary(db_path: Path) -> tuple[int | None, list[str]]:
     if not db_path.exists():
         return None, []
     try:
-        uri = f"file:{db_path.as_posix()}?mode=ro"
+        uri = db_path.resolve().as_uri() + "?mode=ro"
         with sqlite3.connect(uri, uri=True) as conn:
             count = conn.execute("SELECT COUNT(*) FROM symbol_embeddings").fetchone()[0]
             models = [
@@ -461,87 +463,6 @@ def _confirm(prompt: str) -> bool:
         return input(prompt).strip().lower() in ("y", "yes")
     except (EOFError, KeyboardInterrupt):
         return False
-
-
-# ---- progress rendering ----------------------------------------------------
-
-
-def _bar(fraction: float) -> str:
-    filled = int(max(0.0, min(1.0, fraction)) * _BAR_WIDTH)
-    return "[" + "#" * filled + "-" * (_BAR_WIDTH - filled) + "]"
-
-
-class _Progress:
-    """Console progress with graceful degradation.
-
-    TTY: single self-overwriting line via carriage returns (plain ASCII, safe
-    on Windows GBK consoles). Non-TTY (CI, redirects): milestone lines only,
-    one per 10% step, so logs are not flooded. ``--quiet`` silences updates
-    but keeps final summary lines.
-    """
-
-    def __init__(self, quiet: bool) -> None:
-        self.quiet = quiet
-        self.tty = (not quiet) and sys.stdout.isatty()
-        self._lock = threading.Lock()
-        self._last_width = 0
-        self._milestone = -1
-        self._embed_state: tuple[int, int, int] | None = None
-        self._embed_started: float | None = None
-
-    def update(self, text: str, fraction: float | None = None) -> None:
-        if self.quiet:
-            return
-        with self._lock:
-            if self.tty:
-                pad = max(0, self._last_width - len(text))
-                sys.stdout.write("\r" + text + " " * pad)
-                sys.stdout.flush()
-                self._last_width = len(text)
-                return
-            if fraction is None:
-                return
-            bucket = int(max(0.0, min(1.0, fraction)) * 10)
-            if bucket > self._milestone:
-                self._milestone = bucket
-                print(text, flush=True)
-
-    def line(self, text: str) -> None:
-        with self._lock:
-            if self.tty and self._last_width:
-                sys.stdout.write("\r" + " " * self._last_width + "\r")
-                self._last_width = 0
-            self._milestone = -1
-            print(text, flush=True)
-
-    # Called from the embedding worker thread per batch.
-    def embedding_update(self, done: int, total: int, reused: int) -> None:
-        if self._embed_started is None:
-            self._embed_started = time.time()
-        self._embed_state = (done, total, reused)
-        self._render_embedding()
-
-    # Called from the main thread while waiting, to keep the timer ticking.
-    def tick_embedding(self) -> None:
-        if self._embed_state is not None:
-            self._render_embedding()
-
-    def _render_embedding(self) -> None:
-        state = self._embed_state
-        if state is None:
-            return
-        done, total, reused = state
-        elapsed = time.time() - (self._embed_started or time.time())
-        if total <= 0:
-            self.update(f"embedding: all vectors up to date (reused {reused})  {elapsed:.1f}s", 1.0)
-            return
-        fraction = done / total
-        bar = _bar(fraction)
-        self.update(
-            f"{bar} embedding {done}/{total} vectors {fraction * 100:.0f}%  "
-            f"{elapsed:.1f}s (reused {reused})",
-            fraction,
-        )
 
 
 if __name__ == "__main__":

@@ -142,9 +142,32 @@ pip install -e ".[semantic]"
 
 排序为混合评分：向量余弦相似度为主，查询与符号名/签名的词法重合度校正排名。超出模型截断窗口的长符号自动按重叠窗口分块，每块独立向量，尾部内容不丢失。
 
+默认运行模式是按需语义索引：普通导航不会加载 ONNX 模型，首次语义搜索时才启动向量构建。需要启动后立即构建时设置 `AUTO_INDEX_SEMANTIC_MODE=eager`；不需要语义功能时设置 `AUTO_INDEX_SEMANTIC_MODE=off`。模型推理默认限制为单个 CPU 线程，并使用有界批处理，适合与多个 Agent 共用一台机器。
+
+服务日志按进程写入项目索引目录的 `logs/server-<pid>.log`，单文件最多 512 KiB，最多保留 32 个进程日志。`auto_index_status()` 会返回当前日志路径、构建阶段、锁持有者和 watcher owner/standby 状态。
+
 > [!IMPORTANT]
 > **中文查询局限**
 > 内置 MiniLM 为英文模型，中文查询主要依赖词法兜底，向量召回有限。中文场景建议用英文描述查询，或通过 `AUTO_INDEX_EMBEDDING_MODEL` 指向多语言 ONNX 模型（如 bge-small-zh、multilingual-MiniLM）。
+
+---
+
+## 目录结构
+
+```text
+auto-index-mcp/
+├── src/auto_index_mcp/
+│   ├── core/          服务状态、构建、watcher、质量检查
+│   ├── indexing/      SQLite 索引、进程锁、扫描和增量更新
+│   ├── embedding/     可选 ONNX 向量索引与流式检索
+│   ├── mcp_api/       MCP 工具和结构化错误边界
+│   ├── search/        文本搜索与有界源码缓存
+│   ├── workspace/     多索引工作区视图
+│   └── runtime/       日志与 stdio 父进程生命周期
+├── tests/             当前回归测试
+├── oldtest/           历史兼容测试归档
+└── scripts/stress/    并发与资源压测
+```
 
 ---
 

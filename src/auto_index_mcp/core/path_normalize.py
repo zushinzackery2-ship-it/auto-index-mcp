@@ -23,8 +23,11 @@ def normalize_input_path(path: str, root: Path | None = None) -> str:
     """
     cleaned = path.strip().strip("'\"").strip()
     cleaned = cleaned.replace("\\", "/")
+    unc = cleaned.startswith("//")
     while "//" in cleaned:
         cleaned = cleaned.replace("//", "/")
+    if unc:
+        cleaned = "/" + cleaned
     while cleaned.startswith("./"):
         cleaned = cleaned[2:]
     if root is not None and is_absolute_like(cleaned):

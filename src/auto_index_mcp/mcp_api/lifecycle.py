@@ -9,7 +9,7 @@ from ..core.config import DEFAULT_ENABLE_REBUILD_WAIT_SECONDS, DEFAULT_WATCH_DEB
 from ..core.service import AutoIndexService
 from ..core.tool_errors import invalid_argument, not_enabled
 from .bootstrap import ensure_enabled, resolve_project_root
-from .guard import run_tool
+from .guard import run_service
 
 ManageAction = Literal[
     "rebuild",
@@ -74,14 +74,14 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
                 start_or_defer_auto_watch(service, result)
             return result
 
-        return run_tool(_enable)
+        return await run_service(service, _enable)
 
     @mcp.tool()
-    def auto_index_status() -> dict[str, Any]:
+    async def auto_index_status() -> dict[str, Any]:
         """Index health in one compact payload: root, file/vector counts,
         watcher state, and build progress. Call when results look stale or a
         tool reported the index was still building."""
-        return run_tool(service.status)
+        return await run_service(service, service.status)
 
     @mcp.tool()
     async def auto_index_manage(
@@ -109,22 +109,22 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
             if blocked is not None:
                 return blocked
         if action == "rebuild":
-            return run_tool(service.rebuild)
+            return await run_service(service, service.rebuild)
         if action == "clear":
-            return run_tool(service.clear, delete_file)
+            return await run_service(service, service.clear, delete_file)
         if action == "watch_start":
-            return run_tool(service.start_watcher, debounce_seconds)
+            return await run_service(service, service.start_watcher, debounce_seconds)
         if action == "watch_stop":
-            return run_tool(service.stop_watcher)
+            return await run_service(service, service.stop_watcher)
         if action == "disable":
-            return run_tool(service.disable)
+            return await run_service(service, service.disable)
         if action == "diff":
-            return run_tool(service.diff_filesystem)
+            return await run_service(service, service.diff_filesystem)
         if action == "registry":
-            return run_tool(_registry_snapshot)
+            return await run_service(service, _registry_snapshot)
         if action.startswith("ignore_"):
             mode = action.removeprefix("ignore_")
-            return run_tool(service.configure_ignore, patterns, mode, target)
+            return await run_service(service, service.configure_ignore, patterns, mode, target)
         return invalid_argument(f"unknown action: {action}")
 
     def _registry_snapshot() -> dict[str, Any]:

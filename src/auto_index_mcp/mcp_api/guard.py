@@ -9,6 +9,9 @@ dictionary with an ``error`` code and an actionable ``hint`` instead.
 from __future__ import annotations
 
 from typing import Any, Callable
+import logging
+
+import anyio
 
 from ..core.tool_errors import (
     ENABLE_HINT,
@@ -29,4 +32,14 @@ def run_tool(fn: Callable[..., dict[str, Any]], *args: Any, **kwargs: Any) -> di
     except RuntimeError as exc:
         return error_response("not-enabled", str(exc), hint=ENABLE_HINT)
     except Exception as exc:  # noqa: BLE001 - last-resort structured surface
+        logging.getLogger(__name__).exception("tool failed function=%s", getattr(fn, "__name__", repr(fn)))
         return internal_error(exc)
+
+
+async def run_service(service: Any, fn: Callable, *args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Serialize service requests off the MCP loop; protocol traffic stays live."""
+    def invoke():
+        with service._request_lock:
+            return run_tool(fn, *args, **kwargs)
+
+    return await anyio.to_thread.run_sync(invoke)

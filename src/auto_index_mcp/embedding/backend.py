@@ -4,6 +4,9 @@ import hashlib
 import math
 import os
 import re
+import threading
+import logging
+from weakref import WeakValueDictionary
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -12,7 +15,7 @@ _TOKEN_RE = re.compile(r"[a-z0-9_]+")
 _BUNDLED_MODEL_DIR = Path("models") / "minilm-onnx"
 _REQUIRED_MODEL_FILES = ("model.onnx", "tokenizer.json")
 _EMBEDDING_THREADS_ENV = "AUTO_INDEX_EMBEDDING_THREADS"
-_AUTO_THREAD_CAP = 3
+_AUTO_THREAD_CAP = 1
 _EMBEDDING_MAX_LENGTH_ENV = "AUTO_INDEX_EMBEDDING_MAX_LENGTH"
 # Default picked from measured token coverage on real symbol texts (head +
 # body slice): 64 fully covers ~15% of symbols, 128 ~48%, 192 ~67%, 256 ~78%.
@@ -83,7 +86,8 @@ class BagHashEmbedder:
         return out
 
 
-_EMBEDDER_CACHE: dict[tuple[Path, int], EmbeddingBackend] = {}
+_EMBEDDER_CACHE: WeakValueDictionary = WeakValueDictionary()
+_CACHE_LOCK = threading.Lock()
 
 
 def _has_model_files(path: Path) -> bool:
@@ -167,7 +171,14 @@ def create_embedder(env: dict[str, str] | None = None) -> EmbeddingBackend | Non
     if path is None:
         return None
     max_length = resolve_embedding_max_length(env)
-    cache_key = (path.resolve(), max_length)
+    threads = resolve_embedding_threads(env)
+    files = tuple((path / name).stat().st_mtime_ns for name in _REQUIRED_MODEL_FILES)
+    cache_key = (path.resolve(), max_length, threads, files)
+    with _CACHE_LOCK:
+        return _cached_backend(cache_key, path, max_length, threads)
+
+
+def _cached_backend(cache_key, path, max_length, threads):
     cached = _EMBEDDER_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -179,9 +190,10 @@ def create_embedder(env: dict[str, str] | None = None) -> EmbeddingBackend | Non
         backend = OnnxEmbedder(
             path,
             max_length=max_length,
-            intra_op_num_threads=resolve_embedding_threads(env),
+            intra_op_num_threads=threads,
         )
     except Exception:
+        logging.getLogger(__name__).exception("embedding backend creation failed")
         return None
     _EMBEDDER_CACHE[cache_key] = backend
     return backend

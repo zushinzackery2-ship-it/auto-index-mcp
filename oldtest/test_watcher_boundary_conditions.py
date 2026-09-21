@@ -42,7 +42,7 @@ def test_watcher_file_created_and_deleted_before_ready(tmp_path: Path) -> None:
         ephemeral.unlink()
 
         assert _wait_until(lambda: service.watcher_status()["ready"] is True)
-        assert service.resolve_path("ephemeral.py")["items"] == []
+        assert service.find_files("ephemeral.py")["items"] == []
     finally:
         service.stop_watcher()
 

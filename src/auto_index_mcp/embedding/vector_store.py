@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import array
+import heapq
 import sqlite3
 from typing import Any, Iterable
 
@@ -44,8 +45,10 @@ def _score_rows(
 
         matrix = np.frombuffer(b"".join(row["vector"] for row in rows), dtype=np.float32)
         if dim > 0 and matrix.size == len(rows) * dim:
-            scores = matrix.reshape(len(rows), dim).astype(np.float64) @ np.asarray(
-                query_vector, dtype=np.float64
+            scores = np.einsum(
+                "ij,j->i", matrix.reshape(len(rows), dim),
+                np.asarray(query_vector, dtype=np.float64), dtype=np.float64,
+                optimize=False,
             )
             return [
                 (float(scores[index]), rows[index])
@@ -129,7 +132,7 @@ class SymbolEmbeddingStore:
                     entry.get("end_line", 0),
                     entry.get("signature", ""),
                     entry.get("complexity", 1),
-                    encode_vector(entry["vector"]),
+                    entry["vector"] if isinstance(entry["vector"], bytes) else encode_vector(entry["vector"]),
                 ),
             )
 
@@ -173,22 +176,14 @@ class SymbolEmbeddingStore:
         limit: int,
         min_score: float = 0.0,
     ) -> list[dict[str, Any]]:
-        rows = conn.execute(
+        cursor = conn.execute(
             "SELECT file_path, symbol_name, symbol_line, kind, end_line, "
             "signature, complexity, vector "
-            "FROM symbol_embeddings WHERE model_name=?",
+            "FROM symbol_embeddings WHERE model_name=? "
+            "ORDER BY file_path, symbol_name, symbol_line, chunk_index",
             (model_name,),
-        ).fetchall()
-        scored = _score_rows(query_vector, rows, min_score)
-        # A long symbol contributes several window vectors; its relevance is
-        # the best window's score, and it must surface once, not per window.
-        best: dict[tuple[str, str, int], tuple[float, Any]] = {}
-        for score, row in scored:
-            key = (row["file_path"], row["symbol_name"], row["symbol_line"])
-            current = best.get(key)
-            if current is None or score > current[0]:
-                best[key] = (score, row)
-        ranked = sorted(best.values(), key=lambda item: item[0], reverse=True)
+        )
+        ranked = _stream_top_symbols(cursor, query_vector, max(1, limit), min_score)
         hits: list[dict[str, Any]] = []
         for score, row in ranked[: max(1, limit)]:
             hits.append(
@@ -204,3 +199,31 @@ class SymbolEmbeddingStore:
                 }
             )
         return hits
+
+
+def _stream_top_symbols(cursor, query_vector, limit, min_score):
+    heap = []
+    current_key = None
+    best = None
+    sequence = 0
+
+    def keep(item, order):
+        if item is None:
+            return
+        entry = (item[0], -order, item[1])
+        if len(heap) < limit:
+            heapq.heappush(heap, entry)
+        elif entry[:2] > heap[0][:2]:
+            heapq.heapreplace(heap, entry)
+
+    while rows := cursor.fetchmany(256):
+        for score, row in _score_rows(query_vector, rows, min_score):
+            key = (row["file_path"], row["symbol_name"], row["symbol_line"])
+            if key != current_key:
+                keep(best, sequence)
+                sequence += 1
+                current_key, best = key, (score, row)
+            elif best is None or score > best[0]:
+                best = (score, row)
+    keep(best, sequence)
+    return [(score, row) for score, _, row in sorted(heap, key=lambda item: item[:2], reverse=True)]

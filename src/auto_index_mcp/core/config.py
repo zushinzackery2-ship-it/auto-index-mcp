@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-INDEX_VERSION = 7
+INDEX_VERSION = 8
 DEFAULT_WATCH_DEBOUNCE_SECONDS = 0.25
 DEFAULT_ENABLE_REBUILD_WAIT_SECONDS = 3.0
 DEFAULT_MAX_SOURCE_BYTES = 2 * 1024 * 1024

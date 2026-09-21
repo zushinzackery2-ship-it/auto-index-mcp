@@ -58,7 +58,7 @@ def test_oversized_source_is_auto_ignored_and_reported(tmp_path: Path) -> None:
     assert result["file_count"] == 0
     assert result["auto_ignored_paths"] == ["dump.cs"]
     assert service.ignore_status()["auto_patterns"] == ["/dump.cs"]
-    assert service.resolve_path("dump.cs")["items"] == []
+    assert service.find_files("dump.cs")["items"] == []
 
 
 def test_privileged_patterns_index_oversized_dump(tmp_path: Path) -> None:
@@ -135,7 +135,7 @@ def test_lifecycle_registers_ignore_tool() -> None:
     fake = FakeMcp()
     register_lifecycle_tools(fake, object())  # type: ignore[arg-type]
 
-    assert "auto_index_ignore" in fake.names
+    assert "auto_index_manage" in fake.names
 
 
 def _write_child_index(root: Path) -> None:

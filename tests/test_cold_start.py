@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import anyio
-import pytest
 
 from auto_index_mcp.core.service import AutoIndexService
 from auto_index_mcp.mcp_api.bootstrap import (

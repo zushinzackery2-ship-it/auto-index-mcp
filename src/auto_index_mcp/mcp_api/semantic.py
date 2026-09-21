@@ -6,7 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from ..core.service import AutoIndexService
 from .bootstrap import ensure_enabled
-from .guard import run_tool
+from .guard import run_service
 
 
 def register_semantic_tools(mcp: FastMCP, service: AutoIndexService) -> None:
@@ -28,4 +28,4 @@ def register_semantic_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         blocked = await ensure_enabled(service, ctx)
         if blocked is not None:
             return blocked
-        return run_tool(service.semantic_search, query, limit, min_score)
+        return await run_service(service, service.semantic_search, query, limit, min_score)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Iterator
 
 from ..core.config import TEXT_EXTENSIONS
 from ..core.ignore_rules import IgnoreRules
@@ -88,6 +89,8 @@ def update_watch_snapshot(
             continue
         if rel in {"", "."}:
             return take_watch_snapshot(root, boundaries, own_db_path, ignore_patterns)
+        if path.name == ".gitignore":
+            return take_watch_snapshot(root, boundaries, own_db_path, ignore_patterns)
         if is_own_database_path(path, own_db):
             continue
         if is_under_boundary(path, boundaries):
@@ -140,8 +143,7 @@ def _iter_source_files(
     root: Path,
     boundary_roots: list[Path],
     ignore_rules: IgnoreRules,
-) -> list[Path]:
-    files: list[Path] = []
+) -> Iterator[Path]:
     for dir_path, dir_names, file_names in os.walk(root):
         current = Path(dir_path)
         dir_names[:] = [
@@ -152,8 +154,7 @@ def _iter_source_files(
         for name in file_names:
             path = current / name
             if _is_indexable_source(path, boundary_roots, ignore_rules):
-                files.append(path)
-    return files
+                yield path
 
 
 def _replace_subtree(

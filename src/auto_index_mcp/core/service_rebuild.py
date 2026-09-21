@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ from .background_indexer import (
     STATE_DONE,
 )
 from .index_policy import can_reuse_index, can_start_auto_watch_policy
-from .oversized_sources import scan_oversized_sources
+from .ignore_config import exact_path_pattern
 from .quality_dangling import with_project_quality_findings
 from .rebuild_context import RebuildContext
 from .service_rebuild_ignore import config_ignore_metadata, service_ignore_fingerprint
@@ -65,17 +66,13 @@ class ServiceRebuildMixin(ServiceBase):
         context: RebuildContext,
         indexer: BackgroundIndexer | None = None,
     ) -> dict[str, Any]:
-        """Acquire the cross-process BuildLock, then run the rebuild.
-
-        Shared by the synchronous path and the background worker so multi-process
-        contention is handled identically: if another process holds the lock,
-        report that an external build is in flight instead of blocking or racing
-        a duplicate scan.
-        """
+        """Acquire the writer lease before checking freshness and rebuilding."""
         lock = BuildLock(context.index_root / "index.build.lock")
         acquired = lock.try_acquire()
         try:
             if not acquired:
+                if indexer is not None:
+                    indexer.set_phase("waiting-for-writer")
                 result = self.status()
                 result["status"] = "indexing-in-other-process"
                 result["rebuild"] = False
@@ -85,12 +82,14 @@ class ServiceRebuildMixin(ServiceBase):
                 # reclaimed, instead of trusting this message blindly.
                 result["build_lock"] = lock.state_info()
                 return result
+            if context.reuse_if_fresh and can_reuse_index(context.store, context.root, service_ignore_fingerprint(self, context.root)):
+                return dict(status="indexed", reused=True, file_count=context.store.get_metadata_map().get("file_count", 0))
             return self._rebuild_now(indexer, context)
         finally:
             lock.release()
 
-    def _start_background_rebuild(self, wait_seconds: float = 0.0) -> dict[str, Any]:
-        context = self._rebuild_context()
+    def _start_background_rebuild(self, wait_seconds: float = 0.0, reuse_if_fresh: bool = False) -> dict[str, Any]:
+        context = replace(self._rebuild_context(), reuse_if_fresh=reuse_if_fresh)
         existing = self.background
         if existing is not None and existing.is_running() and self._background_context_key == context.key:
             completed = existing.wait(max(0.0, wait_seconds))
@@ -109,7 +108,16 @@ class ServiceRebuildMixin(ServiceBase):
         return self._background_status()
 
     def _run_rebuild_locked(self, indexer: BackgroundIndexer, context: RebuildContext) -> dict[str, Any]:
-        return self._rebuild_with_lock(context, indexer)
+        revision = context.store.get_metadata_map().get("updated_at")
+        result = self._rebuild_with_lock(context, indexer)
+        while result.get("status") == "indexing-in-other-process" and self._context_is_current(context):
+            updated = context.store.get_metadata_map().get("updated_at")
+            if (context.reuse_if_fresh or updated != revision) and can_reuse_index(context.store, context.root, service_ignore_fingerprint(self, context.root)):
+                return dict(status="indexed", reused=True, file_count=context.store.get_metadata_map().get("file_count", 0))
+            if indexer.cancelled.wait(0.5):
+                return dict(status="cancelled")
+            result = self._rebuild_with_lock(context, indexer)
+        return result
 
     def request_auto_watch_after_build(self) -> None:
         self._auto_watch_after_build = True
@@ -177,32 +185,32 @@ class ServiceRebuildMixin(ServiceBase):
             ignore_patterns=ignore_patterns,
         )
         boundary_roots = [Path(child.root) for child in children]
-        oversized = scan_oversized_sources(
-            root,
-            ignore_config,
-            boundary_roots,
-        )
-        ignore_config = ignore_config.with_auto_patterns(oversized.auto_patterns)
-        if self._context_is_current(context):
-            self.replace_ignore_config(ignore_config, dirty=True)
-        auto_patterns = ignore_config.auto_patterns
         try:
             scan = SourceScanner(
                 str(root),
                 extra_excludes=ignore_patterns,
-                auto_excludes=auto_patterns,
+                auto_excludes=ignore_config.auto_patterns,
                 privileged_patterns=privileged_patterns,
                 existing_records=existing,
                 boundary_roots=boundary_roots,
                 tree_progress=progress,
+                cancelled=indexer.cancelled if indexer is not None else None,
             ).scan()
         finally:
             progress.finish()
+        existing.clear()
+        ignore_config = ignore_config.with_auto_patterns([exact_path_pattern(path) for path in scan.oversized_paths])
+        if self._context_is_current(context):
+            self.replace_ignore_config(ignore_config, dirty=True)
         if indexer is not None:
+            indexer.check_cancelled()
             indexer.set_phase(PHASE_ANALYZING)
         active_records = annotate_active_sources(root, scan.records)
         records = with_project_quality_findings(resolve_project_callers(active_records))
+        scan = replace(scan, records=[])
+        del active_records
         if indexer is not None:
+            indexer.check_cancelled()
             indexer.set_phase(PHASE_WRITING)
         children_dicts = child_indexes_to_dicts(children)
         total_file_count = len(records) + sum(child.file_count for child in children)
@@ -218,7 +226,7 @@ class ServiceRebuildMixin(ServiceBase):
             self.last_errors = scan.errors[:50]
         if indexer is not None:
             indexer.set_phase(PHASE_EMBEDDING)
-        embedding_meta = self._embed_after_full_rebuild(root, store, context.embedding_indexer)
+        embedding_meta = self._embed_after_full_rebuild(root, store, context.embedding_indexer) if self._context_is_current(context) else None
         end = time.time()
         if indexer is None:
             # Synchronous rebuild has no BackgroundIndexer handle; record its
@@ -246,9 +254,9 @@ class ServiceRebuildMixin(ServiceBase):
         }
         # Empty diagnostic lists are noise for LLM callers; include them only
         # when they carry information.
-        privileged = sorted(set(oversized.privileged_paths + scan.privileged_paths))
+        privileged = scan.privileged_paths
         for key, value in (
-            ("auto_ignored_paths", oversized.auto_ignored_paths),
+            ("auto_ignored_paths", scan.oversized_paths),
             ("oversized_paths", scan.oversized_paths),
             ("privileged_paths", privileged),
         ):

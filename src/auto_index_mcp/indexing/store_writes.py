@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import asdict
 from typing import Any
 
 from ..core.models import FileRecord
 
 
 def insert_many(conn: sqlite3.Connection, records: list[FileRecord]) -> None:
+    for start in range(0, len(records), 64):
+        _insert_batch(conn, records[start:start + 64])
+
+
+def _insert_batch(conn: sqlite3.Connection, records: list[FileRecord]) -> None:
     if not records:
         return
     file_rows = []
@@ -28,10 +32,11 @@ def insert_many(conn: sqlite3.Connection, records: list[FileRecord]) -> None:
                 record.sha1,
                 record.line_count,
                 json.dumps(record.imports),
-                json.dumps([asdict(symbol) for symbol in record.symbols]),
+                json.dumps([vars(symbol) for symbol in record.symbols]),
                 json.dumps(record.quality_findings),
                 1 if record.active_source else 0,
                 record.snippet,
+                len(record.symbols),
             )
         )
         fts_rows.append(
@@ -76,8 +81,8 @@ def insert_many(conn: sqlite3.Connection, records: list[FileRecord]) -> None:
                 )
             )
     conn.executemany(
-        "INSERT INTO files(path, name, parent, extension, language, size, mtime_ns, sha1, line_count, imports, symbols, quality_findings, active_source, snippet) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO files(path, name, parent, extension, language, size, mtime_ns, sha1, line_count, imports, symbols, quality_findings, active_source, snippet, symbol_count) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         file_rows,
     )
     conn.executemany(

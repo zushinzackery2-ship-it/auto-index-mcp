@@ -13,6 +13,7 @@ from .store_schema import initialize_schema
 from .store_rows import file_row_to_dict
 from .store_writes import delete_file_rows, insert_child_indexes, insert_many
 from .symbol_query import query_ranked, query_relaxed
+from .locking.schema import schema_lock
 
 _CORRUPTION_TOKENS = (
     "malformed",
@@ -44,8 +45,14 @@ class IndexStore:
         return self.database.connect_readonly()
 
     def initialize(self) -> None:
-        with self.connect() as conn:
-            initialize_schema(conn, self.set_metadata)
+        if self.db_path.exists():
+            with self.read_connect() as conn:
+                if conn.execute("PRAGMA user_version").fetchone()[0] == 3:
+                    return
+        with schema_lock(self.db_path):
+            with self.connect() as conn:
+                initialize_schema(conn, self.set_metadata)
+                conn.execute("PRAGMA user_version=3")
 
     def replace_all(
         self,
@@ -107,22 +114,18 @@ class IndexStore:
             Path(str(self.db_path) + suffix).unlink(missing_ok=True)
 
     def replace_files(self, records: list[FileRecord]) -> None:
-        if not records:
-            return
-        with self.connect() as conn:
-            for record in records:
-                self._delete_file(conn, record.path)
-            insert_many(conn, records)
-            self._refresh_file_count(conn)
-            self.set_metadata(conn, "version", INDEX_VERSION)
-            self.set_metadata(conn, "updated_at", time.time())
+        self.apply_files(records, [])
 
     def delete_files(self, paths: list[str]) -> None:
-        if not paths:
+        self.apply_files([], paths)
+
+    def apply_files(self, records: list[FileRecord], paths: list[str]) -> None:
+        if not records and not paths:
             return
         with self.connect() as conn:
-            for path in paths:
+            for path in set(paths) | {record.path for record in records}:
                 self._delete_file(conn, path)
+            insert_many(conn, records)
             self._refresh_file_count(conn)
             self.set_metadata(conn, "version", INDEX_VERSION)
             self.set_metadata(conn, "updated_at", time.time())
@@ -157,6 +160,8 @@ class IndexStore:
     def delete_file(self) -> None:
         if self.db_path.exists():
             self.db_path.unlink()
+        for suffix in ("-wal", "-shm"):
+            Path(str(self.db_path) + suffix).unlink(missing_ok=True)
 
     def get_metadata_map(self) -> dict[str, Any]:
         with self.read_connect() as conn:
@@ -175,13 +180,16 @@ class IndexStore:
 
     def all_files(self) -> list[dict[str, Any]]:
         with self.read_connect() as conn:
-            rows = conn.execute("SELECT * FROM files ORDER BY path").fetchall()
-        return [file_row_to_dict(row) for row in rows]
+            return [file_row_to_dict(row) for row in conn.execute("SELECT * FROM files ORDER BY path")]
 
     def file_headers(self) -> list[dict[str, Any]]:
         with self.read_connect() as conn:
-            rows = conn.execute("SELECT path, name, parent, extension, language, size, mtime_ns, line_count, active_source FROM files ORDER BY path").fetchall()
+            rows = conn.execute("SELECT path, name, parent, extension, language, size, mtime_ns, line_count, active_source, symbol_count FROM files ORDER BY path").fetchall()
         return [dict(row) for row in rows]
+
+    def file_fingerprints(self):
+        with self.read_connect() as conn:
+            return [dict(row) for row in conn.execute("SELECT path, size, mtime_ns, sha1 FROM files")]
 
     def search_targets(self) -> list[dict[str, Any]]:
         with self.read_connect() as conn:
@@ -194,12 +202,22 @@ class IndexStore:
         return [dict(row) for row in rows]
 
     def all_symbols(self) -> list[dict[str, Any]]:
-        with self.read_connect() as conn:
-            rows = conn.execute(
-                "SELECT file_path, name, kind, line, end_line, signature, complexity "
-                "FROM symbols ORDER BY file_path, line"
-            ).fetchall()
-        return [dict(row) for row in rows]
+        return list(self.iter_symbols())
+
+    def iter_symbols(self):
+        cursor = ("", -1, -1)
+        while True:
+            with self.read_connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, file_path, name, kind, line, end_line, signature, complexity FROM symbols "
+                    "WHERE (file_path, line, id) > (?, ?, ?) ORDER BY file_path, line, id LIMIT 256", cursor,
+                ).fetchall()
+            if not rows:
+                return
+            for row in rows:
+                item = dict(row)
+                cursor = (item["file_path"], item["line"], item.pop("id"))
+                yield item
 
     def symbols_for_files(self, paths: list[str]) -> list[dict[str, Any]]:
         """Symbol rows for the given file paths only (incremental embedding)."""
@@ -263,6 +281,8 @@ class IndexStore:
     def _refresh_file_count(self, conn: sqlite3.Connection) -> None:
         count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
         self.set_metadata(conn, "file_count", count)
+        children = conn.execute("SELECT COALESCE(SUM(file_count), 0) FROM child_indexes").fetchone()[0]
+        self.set_metadata(conn, "total_file_count", count + children)
 
     def set_metadata(self, conn: sqlite3.Connection, key: str, value: Any) -> None:
         conn.execute(

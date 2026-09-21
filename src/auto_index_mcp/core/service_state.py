@@ -11,6 +11,7 @@ the stubs below.
 from __future__ import annotations
 
 import threading
+import os
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -35,6 +36,7 @@ class ServiceBase:
     """Single home of the service state plus the smallest shared helpers."""
 
     def __init__(self, index_root: Path | None = None) -> None:
+        self._request_lock = threading.RLock()
         self.index_root_override = index_root
         self.index_root: Path | None = index_root
         self.root_path: Path | None = None
@@ -67,9 +69,14 @@ class ServiceBase:
         # Guards check-then-act on the embedding background handle so two callers
         # never spawn duplicate embedding passes over the same store.
         self._embedding_lock = threading.Lock()
+        self._watcher_lock = threading.RLock()
         # CLI/pre-build hooks: opt out of semantic vectors entirely, and an
         # optional (done, total, reused) callback for embedding progress bars.
-        self.semantic_enabled = True
+        semantic_mode = os.environ.get("AUTO_INDEX_SEMANTIC_MODE", "on-demand").strip().lower()
+        if semantic_mode not in ("on-demand", "eager", "off"):
+            raise ValueError("AUTO_INDEX_SEMANTIC_MODE must be on-demand, eager, or off")
+        self.semantic_enabled = semantic_mode != "off"
+        self.semantic_auto_start = semantic_mode == "eager"
         self.embedding_progress: Callable[[int, int, int], None] | None = None
         # User-level registry of created index directories; every call on it
         # is best-effort so bookkeeping can never break enable/build.

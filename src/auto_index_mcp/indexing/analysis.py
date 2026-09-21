@@ -92,13 +92,15 @@ def _caller_maps(
     local_callers: dict[tuple[int, int], list[str]] = {}
     project_callers: dict[tuple[int, int], list[str]] = {}
     for record_index, record in enumerate(records):
-        local_names = {symbol.name for symbol in record.symbols}
+        local_locations = dict()
+        for symbol_index, symbol in enumerate(record.symbols):
+            local_locations.setdefault(symbol.name, []).append((record_index, symbol_index))
         for symbol in record.symbols:
             project_caller = f"{record.path}::{symbol.name}"
             # Value references count as usage edges exactly like calls: a
             # function handed to sort(key=...) or stored in a table has a user.
             for call in dict.fromkeys(symbol.calls + symbol.refs):
-                _record_local_call(local_callers, symbol_locations, call, symbol.name, local_names, record_index)
+                _record_local_call(local_callers, local_locations, call, symbol.name)
                 _record_project_call(project_callers, symbol_locations, call, project_caller, record_index)
     return local_callers, project_callers
 
@@ -108,14 +110,11 @@ def _record_local_call(
     locations_by_name: dict[str, list[tuple[int, int]]],
     call: str,
     caller_name: str,
-    local_names: set[str],
-    record_index: int,
 ) -> None:
-    if call not in local_names or call == caller_name:
+    if call == caller_name:
         return
-    for location in locations_by_name[call]:
-        if location[0] == record_index:
-            callers.setdefault(location, []).append(caller_name)
+    for location in locations_by_name.get(call, []):
+        callers.setdefault(location, []).append(caller_name)
 
 
 def _record_project_call(
@@ -157,11 +156,13 @@ def _complexity(cleaned_body: list[str]) -> int:
 
 def _calls(cleaned_body: list[str], own_name: str) -> list[str]:
     calls: list[str] = []
+    seen: set[str] = set()
     for line in cleaned_body:
         for name in CALL_RE.findall(line):
             if name == own_name or name in CONTROL_NAMES:
                 continue
-            if name not in calls:
+            if name not in seen:
+                seen.add(name)
                 calls.append(name)
     return calls
 

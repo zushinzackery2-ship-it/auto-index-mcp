@@ -11,12 +11,16 @@ from mcp.client.stdio import stdio_client
 
 REQUIRED_TOOLS = {
     "auto_index_enable",
-    "auto_index_ignore",
+    "auto_index_manage",
     "auto_index_status",
     "auto_index_text_search",
     "auto_index_symbol_search",
     "auto_index_semantic_search",
-    "auto_index_embedding_status",
+    "auto_index_files",
+    "auto_index_overview",
+    "auto_index_tree_get",
+    "auto_index_symbol_body",
+    "auto_index_symbol_refs",
     "auto_index_file",
     "auto_index_quality_check",
 }

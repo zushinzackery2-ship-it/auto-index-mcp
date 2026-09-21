@@ -26,6 +26,8 @@ class ServiceSemanticMixin(ServiceBase):
         self._require_ready()
         if not query.strip():
             raise ValueError("query is required")
+        if not self.semantic_enabled:
+            return _unavailable("semantic search is disabled by AUTO_INDEX_SEMANTIC_MODE=off")
         if self.store is None:
             return _unavailable("embedding store is unavailable")
         indexer = self.embedding_indexer
@@ -38,6 +40,8 @@ class ServiceSemanticMixin(ServiceBase):
                 )
             return _building(self.ensure_embedding_background(), self.embedding_background)
         count = _embedding_vector_count(indexer)
+        if not self._vectors_current(self.store, indexer):
+            self.ensure_embedding_background()
         if count <= 0:
             return _building(self.ensure_embedding_background(), self.embedding_background)
         safe_limit = max(1, min(int(limit), 100))

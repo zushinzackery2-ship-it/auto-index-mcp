@@ -3,8 +3,8 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import threading
 from collections.abc import Iterator
-from dataclasses import asdict
 from pathlib import Path
 
 from ..core.config import (
@@ -41,6 +41,7 @@ class SourceScanner:
         existing_records: dict[str, dict] | None = None,
         boundary_roots: list[Path] | None = None,
         tree_progress: TreeProgress | None = None,
+        cancelled: threading.Event | None = None,
     ) -> None:
         self.root = Path(root).resolve()
         self.extra_excludes = extra_excludes or []
@@ -51,6 +52,7 @@ class SourceScanner:
         self.boundary_roots = [path.resolve() for path in boundary_roots or []]
         self.ignore_rules = IgnoreRules.from_root(self.root, self.extra_excludes)
         self.tree_progress = tree_progress
+        self.cancelled = cancelled
         self.oversized_paths: list[str] = []
         self.privileged_paths: list[str] = []
 
@@ -62,6 +64,8 @@ class SourceScanner:
         seen_targets: set[Path] = set()
 
         for path in self._iter_files():
+            if self.cancelled is not None and self.cancelled.is_set():
+                raise InterruptedError("source scan cancelled")
             try:
                 # Resolve and stat exactly once per file; both are real syscalls
                 # on Windows and everything downstream reuses these results.
@@ -171,7 +175,7 @@ class SourceScanner:
             cleaned,
         )
         quality_findings = file_quality_findings(
-            {"path": rel, "language": language, "symbols": [asdict(symbol) for symbol in symbols]},
+            {"path": rel, "language": language, "symbols": [vars(symbol) for symbol in symbols]},
             text,
             cleaned,
         )
@@ -189,7 +193,7 @@ class SourceScanner:
             sha1=hashlib.sha1(data).hexdigest(),
             line_count=len(lines),
             imports=imports[:80],
-            symbols=symbols[:120],
+            symbols=symbols,
             quality_findings=quality_findings,
             active_source=True,
             snippet="\n".join(lines[:40]),

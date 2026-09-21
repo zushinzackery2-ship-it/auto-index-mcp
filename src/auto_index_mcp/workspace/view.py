@@ -6,28 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from ..indexing.scanner import SourceScanner
 from ..indexing.store import IndexStore
 from ..core.text_decode import read_text_file
 from .discovery import read_index_metadata
 from .safety import ensure_relative_to
+from .filesystem import diff_local
+from .ranking import ranked_symbol_key
 
 # Cache configuration - short TTL for incremental update responsiveness
 _CACHE_TTL_SECONDS = 0.5
-
-
-def _ranked_symbol_sort_key(item: dict[str, Any]) -> tuple[int, int, str, int]:
-    """Relevance order for text-driven symbol queries.
-
-    ``match_rank`` comes from the store's tiered scoring; shorter names break
-    ties because they are the more precise hit for the same tier.
-    """
-    return (
-        int(item.get("match_rank", 99)),
-        len(item.get("name", "")),
-        item["file_path"].lower(),
-        item["line"],
-    )
 
 
 @dataclass(frozen=True)
@@ -58,7 +45,7 @@ class WorkspaceView:
         self._cache_lock = threading.Lock()
 
     def all_files(self) -> list[dict[str, Any]]:
-        return self._cached_files("all_files", lambda: self._load_all_files())
+        return self._load_all_files()
 
     def child_indexes(self) -> list[dict[str, Any]]:
         return self._active_child_indexes()
@@ -110,6 +97,8 @@ class WorkspaceView:
             self._active_children = None
 
     def query(self, text: str, languages: list[str], parent: str, limit: int, offset: int) -> list[dict[str, Any]]:
+        if not self._active_child_indexes():
+            return self.store.query(text, languages, parent, limit, offset)
         rows = self.store.query(text, languages, parent, limit + offset, 0)
         for child in self._active_child_indexes():
             child_parent = self._child_parent_filter(child, parent)
@@ -120,6 +109,8 @@ class WorkspaceView:
         return sorted(rows, key=lambda item: item["path"].lower())[offset:offset + limit]
 
     def query_symbols(self, text: str, kind: str, limit: int, offset: int) -> list[dict[str, Any]]:
+        if not self._active_child_indexes():
+            return self.store.query_symbols(text, kind, limit, offset)
         rows = self.store.query_symbols(text, kind, limit + offset, 0)
         for child in self._active_child_indexes():
             child_rows = self._child_view(child).query_symbols(text, kind, limit + offset, 0)
@@ -127,17 +118,19 @@ class WorkspaceView:
         # Text queries carry a match_rank tier from the store; merged
         # parent/child rows re-sort on it so relevance survives the merge.
         if text:
-            rows.sort(key=_ranked_symbol_sort_key)
+            rows.sort(key=ranked_symbol_key)
         else:
             rows.sort(key=lambda item: (item["file_path"].lower(), item["line"]))
         return rows[offset:offset + limit]
 
     def query_symbols_relaxed(self, subtokens: list[str], kind: str, limit: int, offset: int) -> list[dict[str, Any]]:
+        if not self._active_child_indexes():
+            return self.store.query_symbols_relaxed(subtokens, kind, limit, offset)
         rows = self.store.query_symbols_relaxed(subtokens, kind, limit + offset, 0)
         for child in self._active_child_indexes():
             child_rows = self._child_view(child).query_symbols_relaxed(subtokens, kind, limit + offset, 0)
             rows.extend(self._prefixed_symbols(child, child_rows))
-        rows.sort(key=_ranked_symbol_sort_key)
+        rows.sort(key=ranked_symbol_key)
         return rows[offset:offset + limit]
 
     def get_file(self, path: str) -> FileLookup:
@@ -174,18 +167,7 @@ class WorkspaceView:
 
     def diff_filesystem(self, root: Path) -> dict[str, list[str]]:
         children = self._active_child_indexes()
-        scan = SourceScanner(
-            str(root),
-            extra_excludes=self.ignore_patterns,
-            auto_excludes=self.auto_ignore_patterns,
-            privileged_patterns=self.privileged_patterns,
-            boundary_roots=[Path(child["root"]) for child in children],
-        ).scan()
-        indexed = {item["path"]: item for item in self.store.all_files()}
-        current = {item.path: item for item in scan.records}
-        added = list(set(current) - set(indexed))
-        deleted = list(set(indexed) - set(current))
-        changed = [path for path in set(current) & set(indexed) if current[path].sha1 != indexed[path]["sha1"]]
+        added, deleted, changed = diff_local(self, root, children)
         for child in children:
             child_diff = self._child_view(child).diff_filesystem(Path(child["root"]))
             added.extend(f"{child['path']}/{path}" for path in child_diff["added"])

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import threading
 import time
+import logging
 from typing import Any, Callable
 
 # Rebuild phases reported by the worker via set_phase(). They mirror the stages
 # of _rebuild_now so a polling caller can see where a long build currently sits.
 PHASE_IDLE = "idle"
+logger = logging.getLogger(__name__)
 PHASE_SCANNING = "scanning"
 PHASE_ANALYZING = "analyzing"
 PHASE_WRITING = "writing"
@@ -41,6 +43,7 @@ class BackgroundIndexer:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._done = threading.Event()
+        self.cancelled = threading.Event()
         self._state = STATE_IDLE
         self._phase = PHASE_IDLE
         self._started_at: float | None = None
@@ -55,6 +58,7 @@ class BackgroundIndexer:
                 return
             self._state = STATE_RUNNING
             self._phase = PHASE_SCANNING
+            self.cancelled.clear()
             self._started_at = time.time()
             self._finished_at = None
             self._error = None
@@ -75,13 +79,21 @@ class BackgroundIndexer:
     def _run(self) -> None:
         result: dict[str, Any] | None = None
         try:
+            logger.info("build started")
             result = self._work(self)
             with self._lock:
                 self._last_result = result
                 self._state = STATE_DONE
                 self._phase = PHASE_DONE
                 self._finished_at = time.time()
+            logger.info("build completed status=%s elapsed=%.3fs", result.get("status"), self._finished_at - self._started_at)
+        except InterruptedError:
+            with self._lock:
+                self._state = "cancelled"
+                self._finished_at = time.time()
+            logger.info("build cancelled")
         except Exception as exc:  # noqa: BLE001 - surfaced via status().error
+            logger.exception("build failed")
             with self._lock:
                 self._error = str(exc)
                 self._state = STATE_ERROR
@@ -99,11 +111,17 @@ class BackgroundIndexer:
     def set_phase(self, phase: str) -> None:
         with self._lock:
             if self._state == STATE_RUNNING:
-                self._phase = phase
+                if self._phase != phase:
+                    self._phase = phase
+                    logger.info("build phase=%s", phase)
+
+    def check_cancelled(self) -> None:
+        if self.cancelled.is_set():
+            raise InterruptedError("background work cancelled")
 
     def is_running(self) -> bool:
         with self._lock:
-            return self._thread is not None and self._thread.is_alive()
+            return self._state == STATE_RUNNING
 
     def wait(self, timeout: float | None = None) -> bool:
         """Block until the worker finishes. Returns False on timeout."""

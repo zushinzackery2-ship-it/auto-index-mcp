@@ -6,7 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from ..core.service import AutoIndexService
 from .bootstrap import ensure_enabled
-from .guard import run_tool
+from .guard import run_service
 
 
 def register_navigation_tools(mcp: FastMCP, service: AutoIndexService) -> None:
@@ -27,7 +27,7 @@ def register_navigation_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         blocked = await ensure_enabled(service, ctx)
         if blocked is not None:
             return blocked
-        return run_tool(service.overview, limit)
+        return await run_service(service, service.overview, limit)
 
     @mcp.tool()
     async def auto_index_tree_get(
@@ -43,7 +43,7 @@ def register_navigation_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         blocked = await ensure_enabled(service, ctx)
         if blocked is not None:
             return blocked
-        return run_tool(service.tree_get, dir, depth, limit)
+        return await run_service(service, service.tree_get, dir, depth, limit)
 
     @mcp.tool()
     async def auto_index_files(
@@ -62,7 +62,7 @@ def register_navigation_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         blocked = await ensure_enabled(service, ctx)
         if blocked is not None:
             return blocked
-        return run_tool(service.find_files, query, dir, languages, limit, cursor)
+        return await run_service(service, service.find_files, query, dir, languages, limit, cursor)
 
     @mcp.tool()
     async def auto_index_file(
@@ -79,5 +79,5 @@ def register_navigation_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         if blocked is not None:
             return blocked
         if detail == "summary":
-            return run_tool(service.file_summary, path)
-        return run_tool(service.get, path)
+            return await run_service(service, service.file_summary, path)
+        return await run_service(service, service.get, path)

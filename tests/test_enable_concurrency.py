@@ -12,11 +12,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import threading
-import time
 from pathlib import Path
 
-from auto_index_mcp.core import service_embedding
 from auto_index_mcp.core.service import AutoIndexService
 from auto_index_mcp.embedding.backend import BagHashEmbedder
 from auto_index_mcp.indexing.build_lock import BuildLock
@@ -46,36 +43,39 @@ def test_dead_owner_lock_reclaimed_immediately(tmp_path: Path) -> None:
 
 def test_live_owner_lock_not_reclaimed(tmp_path: Path) -> None:
     lock_path = tmp_path / "index.build.lock"
-    _plant_lock(lock_path, str(os.getpid()))
-
+    holder = BuildLock(lock_path)
+    assert holder.try_acquire()
     lock = BuildLock(lock_path)
-    assert lock.try_acquire() is False
-    assert lock_path.exists()
+    try:
+        assert lock.try_acquire() is False
+        assert lock_path.exists()
+    finally:
+        holder.release()
 
 
-def test_unparseable_token_lock_falls_back_to_stale_age(tmp_path: Path) -> None:
+def test_unparseable_metadata_does_not_block_kernel_lock(tmp_path: Path) -> None:
     lock_path = tmp_path / "index.build.lock"
     _plant_lock(lock_path, "garbage-token")
 
     fresh = BuildLock(lock_path)
-    assert fresh.try_acquire() is False
-
-    old = time.time() - 600
-    os.utime(lock_path, (old, old))
-    stale = BuildLock(lock_path, stale_seconds=1.0)
-    assert stale.try_acquire() is True
-    stale.release()
+    try:
+        assert fresh.try_acquire() is True
+    finally:
+        fresh.release()
 
 
 def test_state_info_reports_holder_liveness(tmp_path: Path) -> None:
     lock_path = tmp_path / "index.build.lock"
-    _plant_lock(lock_path, str(os.getpid()))
-
-    info = BuildLock(lock_path).state_info()
-    assert info is not None
-    assert info["holder_pid"] == os.getpid()
-    assert info["holder_alive"] is True
-    assert info["lock_age_seconds"] >= 0
+    holder = BuildLock(lock_path)
+    assert holder.try_acquire()
+    try:
+        info = BuildLock(lock_path).state_info()
+        assert info is not None
+        assert info["holder_pid"] == os.getpid()
+        assert info["holder_alive"] is True
+        assert info["lock_age_seconds"] >= 0
+    finally:
+        holder.release()
 
 
 def test_enable_reclaims_dead_owner_lock_and_builds(tmp_path: Path, write_file) -> None:
@@ -104,7 +104,8 @@ def test_enable_reports_holder_diagnostics_when_lock_held(tmp_path: Path, write_
     service = AutoIndexService(index_root=index_root)
     try:
         result = service.enable_reusing_index(str(project), rebuild=False, wait_seconds=5.0)
-        assert result["status"] == "indexing-in-other-process"
+        assert result["status"] == "indexing-in-background"
+        assert result["index_build"]["phase"] == "waiting-for-writer"
         assert result["build_lock"]["holder_pid"] == os.getpid()
         assert result["build_lock"]["holder_alive"] is True
     finally:
@@ -146,7 +147,6 @@ def test_reenable_same_root_still_dispatches_rebuild_when_stale(
 def test_full_embedding_skipped_while_other_process_holds_lock(
     tmp_path: Path, write_file, install_embedder, make_service, wait_embedding, monkeypatch
 ) -> None:
-    monkeypatch.setattr(service_embedding, "EMBEDDING_LOCK_WAIT_SECONDS", 0.2)
     install_embedder(BagHashEmbedder(dim=32))
     index_root = tmp_path / ".idx"
     index_root.mkdir()
@@ -168,19 +168,21 @@ def test_full_embedding_skipped_while_other_process_holds_lock(
     assert service.embedding_indexer.count() > 0
 
 
-def test_rebuild_embedding_waits_for_lock_release(
+def test_rebuild_embedding_retries_after_lock_release(
     tmp_path: Path, write_file, install_embedder, make_service, wait_embedding, monkeypatch
 ) -> None:
-    monkeypatch.setattr(service_embedding, "EMBEDDING_LOCK_WAIT_SECONDS", 10.0)
     install_embedder(BagHashEmbedder(dim=32))
     index_root = tmp_path / ".idx"
     index_root.mkdir()
     holder = BuildLock(index_root / "embeddings.build.lock")
     assert holder.try_acquire() is True
-    threading.Timer(0.5, holder.release).start()
 
     project = tmp_path / "proj"
     write_file(project / "code.py", CODE_PY)
     service = make_service(project)
+    result = wait_embedding(service)
+    assert result["status"] == "embedding-in-other-process"
+    holder.release()
+    service.ensure_embedding_background()
     result = wait_embedding(service)
     assert result.get("embedded", 0) > 0

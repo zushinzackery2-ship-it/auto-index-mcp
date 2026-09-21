@@ -68,7 +68,7 @@ def test_cpp_unreal_style_functions_are_indexed_with_complexity(tmp_path: Path) 
     service.enable(str(project), rebuild=True)
 
     summary = service.file_summary("InitNTDevice.cpp")
-    symbols = {symbol["name"]: symbol for symbol in summary["symbols"]}
+    symbols = {symbol["name"]: symbol for symbol in service.get("InitNTDevice.cpp")["item"]["symbols"]}
 
     assert {"NormalizeDriverImagePath", "StartKernelService"} <= set(symbols)
     assert summary["total_complexity"] >= 4

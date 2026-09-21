@@ -3,14 +3,15 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any, ContextManager
+from typing import ContextManager
 
 from ..indexing.sqlite import IndexDatabase
+from ..indexing.locking.schema import schema_lock
 
 # Bumped independently of the index schema; the vector DB owns its own lifecycle.
 # v2: chunk_index joined the primary key so long symbols can carry one vector
 # per overlapping window.
-EMBEDDING_DB_VERSION = 2
+EMBEDDING_DB_VERSION = 3
 
 
 class EmbeddingStore:
@@ -37,6 +38,17 @@ class EmbeddingStore:
         return self.database.connect_readonly()
 
     def initialize(self) -> None:
+        if self.db_path.exists():
+            with self.read_connect() as conn:
+                tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if "metadata" in tables and "symbol_embeddings" in tables:
+                    row = conn.execute("SELECT value FROM metadata WHERE key='version'").fetchone()
+                    if row and json.loads(row[0]) == EMBEDDING_DB_VERSION:
+                        return
+        with schema_lock(self.db_path):
+            self._initialize_schema()
+
+    def _initialize_schema(self):
         with self.connect() as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             _drop_pre_chunk_table(conn)
@@ -62,6 +74,10 @@ class EmbeddingStore:
                 "CREATE INDEX IF NOT EXISTS idx_symbol_embeddings_model ON symbol_embeddings(model_name)"
             )
             conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_embedding_stream ON symbol_embeddings"
+                "(model_name, file_path, symbol_name, symbol_line, chunk_index)"
+            )
+            conn.execute(
                 "INSERT INTO metadata VALUES ('version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (json.dumps(EMBEDDING_DB_VERSION),),
@@ -70,6 +86,8 @@ class EmbeddingStore:
     def clear(self) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM symbol_embeddings")
+            conn.execute("DELETE FROM metadata WHERE key LIKE 'complete:%'")
+            conn.execute("DELETE FROM metadata WHERE key='requested'")
 
     def delete_file(self) -> None:
         if self.db_path.exists():

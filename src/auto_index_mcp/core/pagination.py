@@ -17,7 +17,7 @@ class PageRequest:
             raise ValueError("offset must be >= 0")
         if page_limit < 1:
             raise ValueError("limit must be >= 1")
-        return cls(offset=page_offset, limit=page_limit)
+        return cls(offset=page_offset, limit=min(page_limit, 200))
 
     @classmethod
     def from_cursor(cls, cursor: str | None = None, limit: int = 80) -> "PageRequest":

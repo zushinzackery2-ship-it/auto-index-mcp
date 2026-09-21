@@ -125,6 +125,8 @@ def call_status(response: dict | None) -> str:
         content = result.get("content") or [{}]
         return f"tool-error:{str(content[0].get('text', ''))[:80]}"
     structured = result.get("structuredContent") or {}
+    if structured.get("error"):
+        return f"structured-error:{structured}"
     return str(structured.get("status") or ("enabled" if structured.get("enabled") else "?"))
 
 
@@ -191,11 +193,13 @@ def main() -> None:
     for lines in outputs:
         for line in lines:
             print(line, flush=True)
-            if "TIMEOUT" in line:
+            if "TIMEOUT" in line or "error:" in line:
                 hung = True
     for client in clients:
         client.kill()
     print(f"[driver] hung={hung} artifacts={tmp}", flush=True)
+    if hung:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

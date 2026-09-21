@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import logging
 from pathlib import Path
 from typing import Any, Callable
 
@@ -11,6 +12,7 @@ from watchdog.observers import Observer
 from ..core.config import DEFAULT_EXCLUDE_DIRS
 from ..core._utils import is_relative_to
 from .snapshot import WatchSnapshot
+from .build_lock import BuildLock
 
 # Directory names whose events can be dropped at the source: they are excluded
 # from indexing unconditionally, so no snapshot could ever change because of
@@ -18,6 +20,7 @@ from .snapshot import WatchSnapshot
 # under a subproject's .auto-index-mcp must keep waking the watcher; only this
 # project's own index directory is filtered (by prefix, below).
 _EVENT_IGNORED_DIR_NAMES = frozenset(DEFAULT_EXCLUDE_DIRS - {".auto-index-mcp"})
+logger = logging.getLogger(__name__)
 
 
 def make_event_filter(root: Path, own_index_dir: Path | None) -> Callable[[Path], bool]:
@@ -49,8 +52,10 @@ class FileEventWatcher:
         update_snapshot: Callable[[WatchSnapshot, set[Path]], WatchSnapshot],
         apply_changes: Callable[[WatchSnapshot, WatchSnapshot], dict[str, Any]],
         debounce_seconds: float,
-        initial_snapshot: WatchSnapshot | None = None,
+        initial_snapshot: WatchSnapshot | Callable[[], WatchSnapshot] | None = None,
         event_filter: Callable[[Path], bool] | None = None,
+        lease_path: Path | None = None,
+        maintenance: Callable[[], None] | None = None,
     ) -> None:
         self.root = root
         self.take_snapshot = take_snapshot
@@ -59,6 +64,8 @@ class FileEventWatcher:
         self.debounce_seconds = debounce_seconds
         self._initial_snapshot = initial_snapshot
         self._event_filter = event_filter
+        self._lease = BuildLock(lease_path) if lease_path else None
+        self._maintenance = maintenance
         self._observer = None
         self._worker: threading.Thread | None = None
         self._stop = threading.Event()
@@ -81,17 +88,13 @@ class FileEventWatcher:
         try:
             self.ready = False
             self.last_error = None
-            self._snapshot = self._initial_snapshot
+            self._snapshot = None
             with self._changes_lock:
                 self._changed_paths.clear()
                 self._needs_full_snapshot = True
             self._stop.clear()
             self._changed.clear()
             self._ready.clear()
-            observer = Observer()
-            observer.schedule(_ChangeHandler(self._record_event), str(self.root), recursive=True)
-            observer.start()
-            self._observer = observer
             self._worker = threading.Thread(target=self._run, name="auto-index-watcher", daemon=True)
             self._worker.start()
             self._changed.set()
@@ -110,6 +113,8 @@ class FileEventWatcher:
             self._observer.join(timeout=5.0)
         if self._worker:
             self._worker.join(timeout=5.0)
+            if self._worker.is_alive():
+                raise TimeoutError("watcher is still finishing an update; lease retained")
         self._observer = None
         self._worker = None
         self.ready = False
@@ -122,6 +127,7 @@ class FileEventWatcher:
             "running": self.is_running(),
             "ready": self.ready,
             "mode": "filesystem-events",
+            "role": "owner" if self._observer is not None else "standby",
             "debounce_seconds": self.debounce_seconds,
             "change_count": self.change_count,
             "last_update_at": self.last_update_at,
@@ -130,8 +136,41 @@ class FileEventWatcher:
         }
 
     def _run(self) -> None:
+        try:
+            self._run_leased()
+        except Exception as exc:
+            self.last_error = str(exc)
+        finally:
+            if self._observer is not None:
+                self._observer.stop()
+                self._observer.join(timeout=5.0)
+                self._observer = None
+            if self._lease is not None:
+                self._lease.release()
+            self._ready.set()
+
+    def _run_leased(self) -> None:
+        while self._lease is not None and not self._lease.try_acquire():
+            self.ready = True
+            self._ready.set()
+            if self._stop.wait(1.0):
+                return
+        if self._stop.is_set():
+            return
+        observer = Observer()
+        observer.schedule(_ChangeHandler(self._record_event), str(self.root), recursive=True)
+        observer.start()
+        self._observer = observer
+        logger.info("watcher owner root=%s", self.root)
+        self._snapshot = self._initial_snapshot() if callable(self._initial_snapshot) else self._initial_snapshot
+        self._changed.set()
         while not self._stop.is_set():
-            if not self._changed.wait(timeout=0.5):
+            if not self._changed.wait(timeout=2.0):
+                if self._maintenance is not None:
+                    try:
+                        self._maintenance()
+                    except Exception as exc:
+                        self.last_error = str(exc)
                 continue
             self._changed.clear()
             if self._stop.wait(self.debounce_seconds):
@@ -139,6 +178,8 @@ class FileEventWatcher:
             self._apply_snapshot_change()
 
     def _record_event(self, event: FileSystemEvent) -> None:
+        if event.event_type not in ("created", "modified", "deleted", "moved"):
+            return
         if event.is_directory and event.event_type == "modified":
             return
         paths = [Path(str(event.src_path))]
@@ -150,7 +191,11 @@ class FileEventWatcher:
             if not paths:
                 return
         with self._changes_lock:
-            self._changed_paths.update(paths)
+            if not self._needs_full_snapshot:
+                self._changed_paths.update(paths)
+                if len(self._changed_paths) > 4096:
+                    self._changed_paths.clear()
+                    self._needs_full_snapshot = True
         self._changed.set()
 
     def _pop_pending_changes(self) -> tuple[bool, set[Path]]:
@@ -180,11 +225,15 @@ class FileEventWatcher:
                 self.change_count += 1
                 if previous is not None:
                     self.last_result = self.apply_changes(previous, current)
+                    if self.last_result.get("status") == "indexing-in-other-process":
+                        raise RuntimeError("structural rebuild deferred; pending paths retained")
                 self._snapshot = current
                 self.last_update_at = time.time()
                 self.last_error = None
                 self.ready = True
             except Exception as exc:
+                if self.last_error != str(exc):
+                    logger.warning("watcher update deferred root=%s error=%s", self.root, exc)
                 self.last_error = str(exc)
                 self._requeue_after_error(paths)
             finally:

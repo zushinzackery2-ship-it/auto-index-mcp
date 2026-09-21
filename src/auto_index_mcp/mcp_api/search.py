@@ -6,7 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from ..core.service import AutoIndexService
 from .bootstrap import ensure_enabled
-from .guard import run_tool
+from .guard import run_service
 
 
 def register_search_tools(mcp: FastMCP, service: AutoIndexService) -> None:
@@ -30,7 +30,8 @@ def register_search_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         blocked = await ensure_enabled(service, ctx)
         if blocked is not None:
             return blocked
-        return run_tool(
+        return await run_service(
+            service,
             service.text_search,
             pattern,
             case_sensitive,
@@ -59,7 +60,7 @@ def register_search_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         blocked = await ensure_enabled(service, ctx)
         if blocked is not None:
             return blocked
-        return run_tool(service.symbol_search, text, kind, limit, cursor)
+        return await run_service(service, service.symbol_search, text, kind, limit, cursor)
 
     @mcp.tool()
     async def auto_index_symbol_body(
@@ -76,7 +77,7 @@ def register_search_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         blocked = await ensure_enabled(service, ctx)
         if blocked is not None:
             return blocked
-        return run_tool(service.symbol_body, symbol_name, path, line)
+        return await run_service(service, service.symbol_body, symbol_name, path, line)
 
     @mcp.tool()
     async def auto_index_symbol_refs(
@@ -93,4 +94,4 @@ def register_search_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         blocked = await ensure_enabled(service, ctx)
         if blocked is not None:
             return blocked
-        return run_tool(service.symbol_refs, symbol_name, path, direction, limit)
+        return await run_service(service, service.symbol_refs, symbol_name, path, direction, limit)

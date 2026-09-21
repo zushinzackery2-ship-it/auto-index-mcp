@@ -1,60 +1,53 @@
 from __future__ import annotations
 
+import sys
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 from ..core.text_decode import read_text_file
+from ..workspace.safety import ensure_relative_to
 
-_MAX_FILE_CACHE_SIZE = 1000
-_FILE_CONTENT_CACHE: dict[str, tuple[int, list[str]]] = {}
+MAX_CACHE_BYTES = 8 * 1024 * 1024
+_FILE_CONTENT_CACHE: OrderedDict[str, tuple[int, int, list[str], int]] = OrderedDict()
 _CACHE_LOCK = threading.Lock()
-_CACHE_ACCESS_ORDER: list[str] = []
+_cache_bytes = 0
 
 
 def source_path(root: Path, item: dict[str, Any]) -> Path:
     source_root = Path(item.get("source_root") or root)
-    return source_root / item.get("source_path", item["path"])
+    return ensure_relative_to(source_root / item.get("source_path", item["path"]), source_root, item["path"])
 
 
 def cached_read_lines(root: Path, item: dict[str, Any]) -> list[str]:
-    """Read file content with a small mtime-validated LRU cache."""
+    """LRU bounded by actual Python bytes, validated by mtime and size."""
+    global _cache_bytes
     path = source_path(root, item)
-    key = str(path.resolve())
-
+    key = str(path)
+    stat = path.stat()
     with _CACHE_LOCK:
         cached = _FILE_CONTENT_CACHE.get(key)
-        if cached is not None:
-            try:
-                stat = path.stat()
-                if stat.st_mtime_ns == cached[0]:
-                    _mark_recent(key)
-                    return cached[1]
-            except OSError:
-                pass
-
-    try:
-        stat = path.stat()
-        lines = read_text_file(path).splitlines()
-    except (OSError, UnicodeDecodeError):
-        return []
-
+        if cached is not None and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+            _FILE_CONTENT_CACHE.move_to_end(key)
+            return cached[2]
+    lines = read_text_file(path).splitlines()
+    size = sys.getsizeof(lines) + sum(sys.getsizeof(line) for line in lines) + sys.getsizeof(key)
     with _CACHE_LOCK:
-        while len(_FILE_CONTENT_CACHE) >= _MAX_FILE_CACHE_SIZE and _CACHE_ACCESS_ORDER:
-            oldest = _CACHE_ACCESS_ORDER.pop(0)
-            _FILE_CONTENT_CACHE.pop(oldest, None)
-        _FILE_CONTENT_CACHE[key] = (stat.st_mtime_ns, lines)
-        _CACHE_ACCESS_ORDER.append(key)
+        old = _FILE_CONTENT_CACHE.pop(key, None)
+        if old is not None:
+            _cache_bytes -= old[3]
+        if size <= MAX_CACHE_BYTES:
+            while _FILE_CONTENT_CACHE and _cache_bytes + size > MAX_CACHE_BYTES:
+                _, evicted = _FILE_CONTENT_CACHE.popitem(last=False)
+                _cache_bytes -= evicted[3]
+            _FILE_CONTENT_CACHE[key] = (stat.st_mtime_ns, stat.st_size, lines, size)
+            _cache_bytes += size
     return lines
 
 
 def clear_file_cache() -> None:
+    global _cache_bytes
     with _CACHE_LOCK:
         _FILE_CONTENT_CACHE.clear()
-        _CACHE_ACCESS_ORDER.clear()
-
-
-def _mark_recent(key: str) -> None:
-    if key in _CACHE_ACCESS_ORDER:
-        _CACHE_ACCESS_ORDER.remove(key)
-    _CACHE_ACCESS_ORDER.append(key)
+        _cache_bytes = 0

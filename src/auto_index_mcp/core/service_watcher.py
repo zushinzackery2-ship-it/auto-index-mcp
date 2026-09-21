@@ -21,6 +21,12 @@ class ServiceWatcherMixin(ServiceBase):
     """
 
     def start_watcher(self, debounce_seconds: float = DEFAULT_WATCH_DEBOUNCE_SECONDS, wait_ready: bool = False) -> dict[str, Any]:
+        with self._watcher_lock:
+            return self._start_watcher(debounce_seconds, wait_ready)
+
+    def _start_watcher(self, debounce_seconds, wait_ready):
+        if not self.enabled:
+            return self.watcher_status()
         root, store = self._ready_context()
         if debounce_seconds < 0.05:
             raise ValueError("debounce_seconds must be >= 0.05")
@@ -44,7 +50,9 @@ class ServiceWatcherMixin(ServiceBase):
             store.db_path,
             ignores,
         )
-        previous = snapshot_from_index(root, store.file_headers(), store.child_indexes())
+        # Followers hold no full project snapshot. Only the elected owner
+        # reads the persisted baseline when its worker acquires the lease.
+        previous = lambda: snapshot_from_index(root, store.file_headers(), store.child_indexes())
         self.watcher = FileEventWatcher(
             root,
             snapshot,
@@ -53,9 +61,15 @@ class ServiceWatcherMixin(ServiceBase):
             debounce_seconds,
             previous,
             event_filter=make_event_filter(root, store.db_path.parent),
+            lease_path=store.db_path.parent / "watcher.lock",
+            maintenance=lambda: self._watch_maintenance(root, store),
         )
         self.watcher.start(wait_ready=wait_ready)
         return self.watcher_status()
+
+    def _watch_maintenance(self, root, store):
+        if self.enabled and self.root_path == root and self.store is store:
+            self._maintain_embeddings()
 
     def sync_index_to_filesystem(self) -> dict[str, Any]:
         root, store = self._ready_context()
@@ -74,9 +88,10 @@ class ServiceWatcherMixin(ServiceBase):
         ).apply(previous, current)
 
     def stop_watcher(self) -> dict[str, Any]:
-        if self.watcher:
-            self.watcher.stop()
-            self.watcher = None
+        with self._watcher_lock:
+            if self.watcher:
+                self.watcher.stop()
+                self.watcher = None
         return self.watcher_status()
 
     def watcher_status(self) -> dict[str, Any]:
@@ -87,6 +102,7 @@ class ServiceWatcherMixin(ServiceBase):
         status = self.watcher.status()
         compact: dict[str, Any] = {
             "running": status["running"],
+            "role": status["role"],
             "ready": status["ready"],
             "change_count": status["change_count"],
             "last_update_at": iso_time(status.get("last_update_at")),
@@ -99,10 +115,11 @@ class ServiceWatcherMixin(ServiceBase):
         # The watcher runs on its own daemon thread, so a structural rebuild it
         # triggers should complete synchronously there rather than dispatching a
         # second background build the watcher would not wait on.
+        context = self._rebuild_context()
         updater = IndexUpdater(
             root,
             store,
-            self.rebuild_sync,
+            lambda: self._rebuild_with_lock(context),
             self.runtime_ignore_patterns(),
             self.auto_ignore_patterns(),
             self.privileged_ignore_patterns(),

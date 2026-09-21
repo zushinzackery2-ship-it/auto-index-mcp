@@ -64,6 +64,9 @@ KNOWN_INDEX_FILES = (
     "embeddings.db-journal",
     "index.build.lock",
     "embeddings.build.lock",
+    "watcher.lock",
+    "index.schema.lock",
+    "embeddings.schema.lock",
     MARKER_FILE_NAME,
     CACHEDIR_TAG_NAME,
 )
@@ -331,6 +334,7 @@ def remove_index_dir(index_dir: Path | str) -> tuple[bool, list[str]]:
             (directory / name).unlink(missing_ok=True)
         except OSError as exc:
             notes.append(f"could not delete {name}: {exc}")
+    _remove_known_logs(directory, notes)
     try:
         leftovers = [entry.name for entry in directory.iterdir()]
     except OSError:
@@ -344,6 +348,28 @@ def remove_index_dir(index_dir: Path | str) -> tuple[bool, list[str]]:
         notes.append(f"could not remove directory: {exc}")
         return False, notes
     return True, notes
+
+
+def _remove_known_logs(directory: Path, notes: list[str]) -> None:
+    logs = directory / "logs"
+    if not logs.is_dir():
+        return
+    try:
+        entries = list(logs.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.is_file() or not entry.name.startswith("server-") or ".log" not in entry.name:
+            continue
+        try:
+            entry.unlink()
+        except OSError as exc:
+            notes.append(f"could not delete logs/{entry.name}: {exc}")
+    try:
+        if not any(logs.iterdir()):
+            logs.rmdir()
+    except OSError:
+        return
 
 
 def index_dir_size(index_dir: Path | str) -> int:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
+import hashlib
+import os
 from typing import Any
 
 # Real ONNX embedding backend.
@@ -44,9 +47,19 @@ class OnnxEmbedder:
         self._measure_tokenizer: Any = None
         self._dim: int = 0
         self._name: str = self.model_dir.name or "onnx-embedder"
-        self._lazy_load()
+        self._load_lock = threading.Lock()
+        self._inference_lock = threading.Lock()
+        identity = [(str((self.model_dir / name).resolve()), (self.model_dir / name).stat().st_size,
+                     (self.model_dir / name).stat().st_mtime_ns) for name in ("model.onnx", "tokenizer.json")]
+        self._identity = hashlib.sha256(repr(identity).encode()).hexdigest()[:16]
+
+    def _ensure_loaded(self) -> None:
+        with self._load_lock:
+            if self._session is None:
+                self._lazy_load()
 
     def _lazy_load(self) -> None:
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         import onnxruntime as ort
 
         model_file = self.model_dir / "model.onnx"
@@ -71,26 +84,28 @@ class OnnxEmbedder:
         self._measure_tokenizer.no_padding()
         sess_options = ort.SessionOptions()
         sess_options.intra_op_num_threads = self.intra_op_num_threads
+        sess_options.inter_op_num_threads = 1
+        sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        sess_options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        sess_options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+        sess_options.enable_cpu_mem_arena = False
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        self._session = ort.InferenceSession(
+        session = ort.InferenceSession(
             str(model_file),
             sess_options=sess_options,
             providers=["CPUExecutionProvider"],
         )
-        self._dim = self._detect_dim()
-        if self._dim <= 0:
+        outputs = session.get_outputs()
+        shape = outputs[0].shape if outputs else []
+        dim = int(shape[-1]) if len(shape) >= 2 and isinstance(shape[-1], int) else 0
+        if dim <= 0:
             raise ValueError("failed to detect embedding dimension from ONNX model")
-
-    def _detect_dim(self) -> int:
-        outputs = self._session.get_outputs()
-        if outputs:
-            shape = outputs[0].shape
-            if shape and len(shape) >= 2 and isinstance(shape[-1], int):
-                return int(shape[-1])
-        return 0
+        self._dim = dim
+        self._session = session
 
     @property
     def dim(self) -> int:
+        self._ensure_loaded()
         return self._dim
 
     @property
@@ -109,7 +124,7 @@ class OnnxEmbedder:
         """
         return (
             f"maxlen={self.max_length};"
-            f"win={WINDOW_OVERLAP_TOKENS}x{MAX_WINDOWS_PER_TEXT}"
+            f"win={WINDOW_OVERLAP_TOKENS}x{MAX_WINDOWS_PER_TEXT};model={self._identity}"
         )
 
     def window_texts(self, text: str) -> list[str]:
@@ -120,6 +135,7 @@ class OnnxEmbedder:
         for those windows is recovered at rank time by the lexical blend, so
         the head is not duplicated into every window.
         """
+        self._ensure_loaded()
         encoded = self._measure_tokenizer.encode(text, add_special_tokens=False)
         ids = encoded.ids
         # encode() at embed time re-adds [CLS]/[SEP] inside max_length.
@@ -143,10 +159,15 @@ class OnnxEmbedder:
         return windows or [text]
 
     def embed(self, texts: list[str]) -> list[list[float]]:
+        with self._inference_lock:
+            return self._embed(texts)
+
+    def _embed(self, texts: list[str]) -> list[list[float]]:
         import numpy as np
 
         if not texts:
             return []
+        self._ensure_loaded()
         encoded = self._tokenizer.encode_batch(texts)
         input_ids = np.asarray([enc.ids for enc in encoded], dtype=np.int64)
         attention_mask = np.asarray([enc.attention_mask for enc in encoded], dtype=np.int64)

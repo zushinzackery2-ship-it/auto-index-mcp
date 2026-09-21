@@ -12,6 +12,7 @@ from .scanner import SourceScanner
 from .snapshot import WatchSnapshot
 from ..workspace.discovery import child_indexes_to_dicts, discover_child_indexes
 from .store import IndexStore
+from .build_lock import BuildLock
 from ..core.models import FileRecord, SymbolRecord
 
 
@@ -55,9 +56,19 @@ class IndexUpdater:
         self.privileged_patterns = privileged_patterns or []
 
     def apply(self, previous: WatchSnapshot, current: WatchSnapshot) -> dict[str, Any]:
+        lock = BuildLock(self.store.db_path.parent / "index.build.lock")
+        if not lock.try_acquire():
+            raise RuntimeError("index writer is busy; pending filesystem changes retained")
+        try:
+            return self._apply_locked(previous, current, lock)
+        finally:
+            lock.release()
+
+    def _apply_locked(self, previous, current, lock):
         start = time.time()
         child_added, child_deleted, child_modified = current.child_index_changes(previous)
         if child_added or child_deleted:
+            lock.release()
             result = self.rebuild()
             result["update_mode"] = "structural-rebuild"
             return result
@@ -140,8 +151,7 @@ class IndexUpdater:
     def _rewrite_changed_records(self, before: dict[str, FileRecord], after: list[FileRecord], deleted: list[str]) -> int:
         changed = [record for record in after if before.get(record.path) != record]
         existing_deleted = [path for path in deleted if path in before]
-        self.store.delete_files(existing_deleted)
-        self.store.replace_files(changed)
+        self.store.apply_files(changed, existing_deleted)
         return len(changed) + len(existing_deleted)
 
 

@@ -8,6 +8,7 @@ from .background_indexer import (
     timer_or_idle,
 )
 from .service_state import ServiceBase
+from ..indexing.build_lock import BuildLock
 
 
 class ServiceIndexStateMixin(ServiceBase):
@@ -42,6 +43,8 @@ class ServiceIndexStateMixin(ServiceBase):
         error = indexer.status().get("error")
         if error:
             result["error"] = error
+        if timer.get("phase") == "waiting-for-writer" and self.index_root is not None:
+            result["build_lock"] = BuildLock(self.index_root / "index.build.lock").state_info()
         return result
 
     def _has_indexed_data(self) -> bool:

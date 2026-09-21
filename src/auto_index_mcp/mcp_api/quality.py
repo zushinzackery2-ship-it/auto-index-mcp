@@ -6,7 +6,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from ..core.service import AutoIndexService
 from .bootstrap import ensure_enabled
-from .guard import run_tool
+from .guard import run_service
 
 
 def register_quality_tools(mcp: FastMCP, service: AutoIndexService) -> None:
@@ -47,4 +47,4 @@ def register_quality_tools(mcp: FastMCP, service: AutoIndexService) -> None:
                 return dangling  # type: ignore[return-value]
             return {"format": "auto_index_quality_check_v2", "nesting": nesting, "dangling": dangling}
 
-        return run_tool(_run)
+        return await run_service(service, _run)

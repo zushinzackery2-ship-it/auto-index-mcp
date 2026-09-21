@@ -32,7 +32,7 @@ class IndexDatabase:
 
     @contextmanager
     def connect_readonly(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(f"file:{self.db_path.resolve().as_posix()}?mode=ro", timeout=30.0, uri=True)
+        conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", timeout=30.0, uri=True)
         try:
             self._configure(conn, readonly=True)
             yield conn

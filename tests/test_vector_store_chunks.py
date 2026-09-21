@@ -155,7 +155,7 @@ def test_pre_chunk_table_is_recreated_on_initialize(tmp_path: Path) -> None:
         version = conn.execute("SELECT value FROM metadata WHERE key='version'").fetchone()[0]
     assert "chunk_index" in columns
     assert count == 0
-    assert json.loads(version) == 2
+    assert json.loads(version) == 3
 
 
 def test_service_level_chunked_semantic_search_dedups(

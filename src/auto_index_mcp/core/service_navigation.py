@@ -14,8 +14,12 @@ from .tool_errors import file_not_found
 class ServiceNavigationMixin(ServiceBase):
     def overview(self, limit: int = 20) -> dict[str, Any]:
         self._store_context()
-        files = self.view.all_files()
-        return self._with_index_status(overview_result(files, limit))
+        limit = max(1, min(int(limit), 100))
+        view = self.view
+        files = view.file_headers()
+        result = overview_result(files, limit)
+        result["samples"] = [compact_file(view.get_file(item["path"]).item or item) for item in result["samples"]]
+        return self._with_index_status(result)
 
     def tree_get(self, dir: str = "", depth: int = 2, limit: int = 50) -> dict[str, Any]:
         self._store_context()
@@ -26,8 +30,8 @@ class ServiceNavigationMixin(ServiceBase):
             if partial is not None:
                 partial["index_status"] = _partial_tree_status(status, partial)
                 return partial
-        files = self.view.all_files()
-        return self._with_index_status(tree_result(files, dir_path, depth, limit))
+        files = self.view.file_headers()
+        return self._with_index_status(tree_result(files, dir_path, max(1, min(depth, 32)), max(1, min(limit, 200))))
 
     def find_files(
         self,

@@ -129,7 +129,7 @@ def _ripgrep_batch(
 
 def _base_rg_command(pattern: str, case_sensitive: bool, regex: bool) -> list[str]:
     command = ["rg", "--json", "--line-number", "--with-filename", "--no-heading", "--color", "never"]
-    command.extend(["--path-separator", "/", "--no-ignore", "--hidden"])
+    command.extend(["--path-separator", "/", "--no-ignore", "--hidden", "--threads", "1"])
     if not regex:
         command.append("-F")
     if not case_sensitive:
