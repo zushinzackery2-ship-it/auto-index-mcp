@@ -24,10 +24,10 @@
 | **CLI 预建索引** | `auto-index-mcp build` 一次性同步建库（含语义向量、带进度条），AI 首次会话即刻可用。 |
 | **索引注册与清理** | 每次建库登记到用户级 `registry.json`，`auto-index-mcp list` / `clean` 可集中查看和安全删除散落各项目的索引。 |
 | **精确增量更新** | 普通文件新增、修改、删除只更新受影响记录，不做整库重建。 |
-| **嵌套工作区** | 父目录发现子目录已有索引库时只挂链接，不重复维护子目录数据。 |
+| **嵌套工作区** | 挂载子目录已有索引，统一聚合文件、符号和语义结果。 |
 | **符号级导航** | 符号搜索按匹配质量排序，`symbol_body` 按名取源码，`symbol_refs` 给出调用图（查找引用）。 |
 | **路径容错** | 输入路径自动归一化：反斜杠、项目内绝对路径、大小写、唯一文件名均可解析。 |
-| **结构化错误** | 错误以 `{error, hint, candidates}` 返回，附近似候选，Agent 可自愈重试。 |
+| **结构化错误** | 工具区分无命中、参数错误、依赖缺失和查询超时，并提供诊断与完整性状态。 |
 | **语义搜索** | 自然语言找符号，本地 ONNX Embedding，词法与向量混合排序，长符号分块嵌入。 |
 | **自动刷新** | 文件变更时自动增量更新索引，无需手动重建。 |
 | **质量检查** | 基于持久索引缓存报告嵌套过深、疑似悬空代码和不可达代码。 |
@@ -43,7 +43,7 @@
 | **生命周期** | `auto_index_status()` | 紧凑索引健康态：文件/向量数、watcher、构建进度，ISO 时间戳。 |
 | **生命周期** | `auto_index_manage(action=...)` | 运维统一入口：`rebuild` / `clear` / `watch_start` / `watch_stop` / `disable` / `diff` / `registry`（只读列出注册表） / `ignore_*`。 |
 | **导航** | `auto_index_overview()` | 首过概览：语言分布、目录分布、按目录轮转的代表性样例（入口文件优先，测试/归档目录降权）。 |
-| **导航** | `auto_index_tree_get()` | 目录级摘要：文件数、语言构成、样例文件名。 |
+| **导航** | `auto_index_tree_get()` | 目录级摘要；`depth` 相对于请求的 `dir` 计算。 |
 | **导航** | `auto_index_files()` | 模糊文件查找：路径子串、裸文件名、glob、符号名回退，可按语言/目录过滤。 |
 | **导航** | `auto_index_file()` | 单文件索引记录：import、符号行区间、复杂度；`detail="full"` 附调用图与嵌套数据。 |
 | **搜索** | `auto_index_text_search()` | 源码 literal/regex 搜索，返回紧凑 path/line 命中。 |
@@ -53,17 +53,17 @@
 | **语义** | `auto_index_semantic_search()` | 自然语言语义搜索，词法与向量混合排序。 |
 | **质量** | `auto_index_quality_check()` | 嵌套过深、悬空代码、不可达代码检查。 |
 
-所有路径参数为项目相对正斜杠格式；反斜杠、项目内绝对路径会自动归一化，未命中时错误里附近似候选。错误统一为 `{error, hint, candidates?}` 结构，不抛裸协议异常。
+所有路径参数为项目相对正斜杠格式；反斜杠、项目内绝对路径会自动归一化，未命中时可返回近似候选。工具错误包含 `error`、`message`，并按情况附带 `hint` 或 `candidates`；Resource 失败使用 MCP 资源错误，其消息包含同样的结构化诊断。
 
 > [!NOTE]
 > **已知局限**
-> `kind="dangling"` 默认 `include_low_confidence=false`，配置/文档类 orphan 低置信项不展示。不可达检测：Python AST 路径为 high 置信；C/JS 等为大括号启发式 medium 置信，嵌套块内可能误报或漏报。僵尸代码检测按调用关系分析，函数仅被作为参数传递（如 `sort(key=fn)`）时可能误报未使用。
+> Python 引用分析覆盖格式化字符串、别名、装饰器和回调传参；动态分发、运行时注入及跨语言绑定仍可能漏报或误报。同名方法存在无法确定接收者的引用时标记为低置信；`kind="dangling"` 默认不显示低置信项。Python 不可达检测使用 AST，C/JS 等使用启发式分析；质量结果应结合调用方式判断。
 
 ---
 
 ## CLI 预建索引（推荐）
 
-MCP 会话首次建库的等待可以完全消除：提前手动建好，AI 连上即复用。
+提前构建索引可以减少 MCP 首次查询的等待。
 
 ```bat
 cd D:\your\project
@@ -76,7 +76,7 @@ auto-index-mcp build D:\your\project --no-semantic
 auto-index-mcp status D:\your\project
 ```
 
-`build` 为一次性命令：同步扫描建库（实时计数），随后同步构建语义向量（精确百分比进度条），完成即退出（exit code 0/1）。与运行中的 MCP 进程通过跨进程构建锁互斥，不会重复扫描。`status` 只读打印已有索引摘要。
+`build` 为一次性命令：已有兼容索引也会先与文件系统对账，再按需构建语义向量，完成后退出（exit code 0/1）。写入与运行中的 MCP 进程使用相同的跨进程租约；`--rebuild` 强制全量重建，`--no-semantic` 只更新导航索引。`status` 只读打印已有索引摘要。
 
 不带子命令时 `auto-index-mcp` 即为 MCP server（stdio），现有客户端配置无需变更。CLI 子命令共五个：`build` / `status` / `list` / `clean` / `serve`。
 
@@ -84,7 +84,7 @@ auto-index-mcp status D:\your\project
 
 ## 索引注册与清理
 
-索引存放在各项目内部（`<root>/.auto-index-mcp/`），项目删除后容易遗留。每次 `enable` / `build` 建库时会自动登记到用户级注册表，随时可以集中查看和清理。
+索引默认存放在 `<root>/.auto-index-mcp/`。每次 `enable` / `build` 自动登记到用户级注册表，以索引目录为身份；同一项目的多个索引分别保留。旧版注册表会自动迁移。
 
 ### 落盘位置
 
@@ -113,7 +113,7 @@ auto-index-mcp clean --dry-run             :: 只打印将删除什么
 
 ### 清理安全策略
 
-`clean` 只删自己的东西：删除前校验目录内 `marker.json`（或 `index.db` 元数据）确实指向该项目根，否则拒绝；只删除已知索引文件（`index.db`、`embeddings.db` 及伴生文件、锁、标记），目录里有陌生文件时保留目录并提示；检测到其他进程正在该目录构建时跳过。非交互终端必须带 `-y` 才会删除。
+`clean` 校验目录归属，并在持有维护租约期间删除已知数据库、伴生文件、日志和标记。活跃 watcher、构建或 schema 写入会阻止清理；删除失败保留注册记录并报告原因。未知文件和用于跨进程协调的稳定锁文件保留，因此空索引目录也可能继续存在。非交互终端必须带 `-y` 才会删除。
 
 MCP 侧提供只读视图：`auto_index_manage(action="registry")` 返回注册表全量条目及存活标记；`auto_index_status()` 的 `registered` 字段表示当前项目是否已登记。删除操作刻意只留在 CLI。
 
@@ -140,31 +140,51 @@ pip install -e ".[semantic]"
 
 默认使用内置 MiniLM ONNX 模型（约 90MB）进行 Embedding 推理，纯本地计算，无网络依赖。可通过 `AUTO_INDEX_EMBEDDING_MODEL` 环境变量指定自定义模型目录（须包含 `model.onnx` 和 `tokenizer.json`）。
 
-排序为混合评分：向量余弦相似度为主，查询与符号名/签名的词法重合度校正排名。超出模型截断窗口的长符号自动按重叠窗口分块，每块独立向量，尾部内容不丢失。
+排序为混合评分：向量余弦相似度为主，符号名/签名的词法匹配校正排名。正文最多采样 256 行、8,000 字符，每个符号最多 8 个重叠窗口；超出这些范围的内容不参与嵌入。主索引和子索引统一检索，模型配置使用独立向量空间；结果区分 `empty`、`ready`、`building`、`waiting`、`partial`、`failed`，并提供 `complete` 与来源状态。
 
 默认运行模式是按需语义索引：普通导航不会加载 ONNX 模型，首次语义搜索时才启动向量构建。需要启动后立即构建时设置 `AUTO_INDEX_SEMANTIC_MODE=eager`；不需要语义功能时设置 `AUTO_INDEX_SEMANTIC_MODE=off`。模型推理默认限制为单个 CPU 线程，并使用有界批处理，适合与多个 Agent 共用一台机器。
 
-服务日志按进程写入项目索引目录的 `logs/server-<pid>.log`，单文件最多 512 KiB，最多保留 32 个进程日志。`auto_index_status()` 会返回当前日志路径、构建阶段、锁持有者和 watcher owner/standby 状态。
+服务日志写入索引目录的 `logs/server-<pid>.log`，包含 PID、操作 ID、阶段与错误原因。单文件 512 KiB，每进程保留一份轮转日志，初始化时清理到最近 32 个日志文件。`auto_index_status()` 提供日志路径、构建状态、源/策略代次及 watcher owner/standby 状态；等待构建租约时附持有者诊断。
 
 > [!IMPORTANT]
 > **中文查询局限**
-> 内置 MiniLM 为英文模型，中文查询主要依赖词法兜底，向量召回有限。中文场景建议用英文描述查询，或通过 `AUTO_INDEX_EMBEDDING_MODEL` 指向多语言 ONNX 模型（如 bge-small-zh、multilingual-MiniLM）。
+> 内置 MiniLM 主要面向英文，词法子词拆分也以 ASCII 标识符为主。中文需求建议使用英文描述查询，或配置输入输出格式兼容的多语言 ONNX 模型及对应 tokenizer。
+
+---
+
+## 检索边界
+
+- 文本搜索使用安装依赖中的 ripgrep，即使未激活虚拟环境也可定位。正则采用 ripgrep 语法；不支持的表达式返回错误。整次请求共用 30 秒预算，超时或达到结果上限时检查 `complete`。
+- 符号正文最多返回 64 KiB，超限标记 `truncated`；搜索上下文合计最多 32 KiB。`files://` 资源超过 64 KiB 时返回 `source-too-large`。正文定位发现文件已改变时提示索引漂移。
+- 默认跳过超过 2 MiB 的源码；确需索引时使用 `ignore_*` 的 `target="privileged"` 配置。根目录和子目录 `.gitignore` 遵循 Git 层级匹配与父目录剪枝语义，运行时规则优先于文件规则。
+- MCP 挂载兼容索引后由 watcher 收敛文件变化；禁用 watcher 时可通过 `diff` 检查漂移，或运行 CLI `build` 完成同步。
 
 ---
 
 ## 目录结构
 
-```text
+```
 auto-index-mcp/
 ├── src/auto_index_mcp/
-│   ├── core/          服务状态、构建、watcher、质量检查
-│   ├── indexing/      SQLite 索引、进程锁、扫描和增量更新
-│   ├── embedding/     可选 ONNX 向量索引与流式检索
-│   ├── mcp_api/       MCP 工具和结构化错误边界
-│   ├── search/        文本搜索与有界源码缓存
-│   ├── workspace/     多索引工作区视图
-│   └── runtime/       日志与 stdio 父进程生命周期
-├── tests/             当前回归测试
+│   ├── application/   生命周期、构建、watcher 与语义协调器
+│   ├── core/          AutoIndexService 兼容入口
+│   ├── domain/        记录、策略、配置和错误契约
+│   ├── storage/       SQLite、符号关系、代次和向量持久化
+│   ├── indexing/      扫描、快照与增量发布
+│   ├── languages/     Python AST 与多语言解析适配
+│   ├── workspace/     主/子索引视图与聚合
+│   ├── search/        文本、符号与语义查询
+│   ├── embedding/     ONNX 后端、正文窗口与有界推理
+│   ├── quality/       嵌套、不可达与未使用候选分析
+│   ├── registry/      注册事务、目录归属和清理
+│   ├── commands/      build、status、list、clean
+│   ├── mcp_api/       MCP 工具、资源和异步调度
+│   └── runtime/       租约、执行预算、日志和进程生命周期
+├── tests/
+│   ├── unit/          单元回归
+│   ├── integration/   存储、工作区与真实协议回归
+│   ├── performance/   病态输入与规模边界
+│   └── fixtures/      数据与全量调用图对照算法
 ├── oldtest/           历史兼容测试归档
 └── scripts/stress/    并发与资源压测
 ```
@@ -179,7 +199,7 @@ auto-index-mcp/
 install_windows.bat
 ```
 
-脚本会创建 `.venv`、安装依赖、配置环境变量并验证 MCP 入口。若 MCP 客户端已运行，安装后重启以继承新环境变量。
+脚本复用或创建 `.venv`，安装语义依赖、配置模型环境变量，并验证 MCP 入口及 ripgrep。若 MCP 客户端已运行，安装后重启以加载新代码和环境变量。发布 wheel 也包含内置模型。
 
 ### 手动安装
 
@@ -236,19 +256,23 @@ Windows 一键安装后，可以参考安装脚本生成的 `mcp-client-config.w
 本地测试以 pytest 为准（无 GitHub Actions CI）。现行用例在 `tests/`（`oldtest/` 为历史归档，不参与默认收集）：
 
 ```bash
+python -m pip install -e ".[semantic,dev]"
 python -m pytest -q
+python -m ruff check --select F src tests scripts
 ```
 
-全量重建索引并进行质量检查：
+严格质量门禁在临时目录重建源码索引；深层嵌套、未核准告警、分析覆盖不足和超过 300 行的生产/默认测试文件均使检查失败。框架回调与公共接口的例外逐项记录原因：
 
 ```bash
 python scripts/self_quality_check.py
 ```
 
-烟测：
+协议检查覆盖 13 个工具、资源、结构化错误、watcher 更新、ping 和退出回收。资源基准记录冷/热构建、单文件/突发更新、查询 P50/P95、Python 分配峰值、RSS、CPU 与数据库大小：
 
 ```bash
-python scripts/smoke_auto_index.py
+python scripts/verify_mcp_stdio.py
+python scripts/stress/resource_bench.py --files 10000 --queries 40
+python scripts/stress/run_stress.py K2 4 15 1000
 ```
 
 ---

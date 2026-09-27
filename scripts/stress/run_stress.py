@@ -3,9 +3,8 @@
 Usage: run_stress.py <scenario> [agents] [duration_seconds] [files]
   scenario A : embedding disabled (isolates index.db + BuildLock behavior)
   scenario B : real bundled ONNX embedding (full multi-agent storm)
-  scenario K2: agent a0 wins the build lock then dies mid-build with a
-               compressed 12s stale window - regression scenario for the
-               dead-owner lock reclaim (production window was 120s)
+  scenario K2: process a0 dies while holding the writer lease; peers must
+               acquire the automatically released kernel lock and finish
 
 Spawns N child_agent.py processes against one synthetic project, streams their
 JSON output live, and reports per-agent worst-case enable latency. Any child
@@ -25,7 +24,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-PY = REPO / ".venv" / "Scripts" / "python.exe"
+PY = Path(sys.executable)
 
 
 def build_project(root: Path, files: int = 600) -> None:
@@ -64,13 +63,15 @@ def main() -> None:
 
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO / "src")
+    env["AUTO_INDEX_REGISTRY_DIR"] = str(tmp / "registry")
     if scenario == "B":
         env["AUTO_INDEX_EMBEDDING_MODEL"] = str(REPO / "models" / "minilm-onnx")
+        env["AUTO_INDEX_SEMANTIC_MODE"] = "eager"
     else:
         env["AUTO_INDEX_EMBEDDING_MODEL"] = str(tmp / "no-model-here")
+        env["AUTO_INDEX_SEMANTIC_MODE"] = "off"
     if scenario == "K2":
-        env["AIDX_STALE"] = "12"
-        env["AIDX_KILL_AFTER_a0"] = "4"
+        env["AIDX_KILL_WHILE_WRITING_a0"] = "4"
 
     stats: dict[str, dict] = {}
     stats_lock = threading.Lock()
@@ -123,6 +124,7 @@ def main() -> None:
         except subprocess.TimeoutExpired:
             hung.append(name)
             proc.kill()
+            proc.wait(timeout=5)
     for thread in threads:
         thread.join(timeout=5.0)
     for _, _, errlog in procs:
@@ -146,9 +148,14 @@ def main() -> None:
             stderr_notes.append((name, text))
     for name, text in stderr_notes:
         print(f"--- {name} stderr (non-empty) ---\n{text[-3000:]}", flush=True)
+    failed = hung or stderr_notes or any(entry["errors"] for entry in stats.values())
+    unexpected_exits = [name for name, proc, _ in procs
+                        if proc.returncode != 0 and not (scenario == "K2" and name == "a0" and proc.returncode == 1)]
     print(f"[driver] artifacts in {tmp}", flush=True)
-    if not hung and not stderr_notes:
+    if not failed and not unexpected_exits:
         shutil.rmtree(tmp, ignore_errors=True)
+    else:
+        raise SystemExit(f"stress failed; unexpected exits={unexpected_exits}")
 
 
 if __name__ == "__main__":

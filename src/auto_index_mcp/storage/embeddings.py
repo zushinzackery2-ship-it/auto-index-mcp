@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+from typing import ContextManager
+
+from .sqlite import IndexDatabase
+from .recovery import initialize_store
+
+# Bumped independently of the index schema; the vector DB owns its own lifecycle.
+# v2: chunk_index joined the primary key so long symbols can carry one vector
+# per overlapping window.
+EMBEDDING_DB_VERSION = 3
+
+
+class EmbeddingStore:
+    """Standalone SQLite store for per-symbol embedding vectors.
+
+    Lives in its own ``embeddings.db`` next to the navigable ``index.db`` so the
+    vector pipeline no longer shares a write lock or schema with the code index.
+    Symbol metadata needed at query time (``kind/end_line/signature/complexity``)
+    is denormalized into the vector table, so search reads this database alone -
+    no cross-database JOIN against the index ``symbols`` table.
+
+    Reuses :class:`IndexDatabase` for identical WAL + busy_timeout connection
+    semantics; the actual row SQL lives in :class:`SymbolEmbeddingStore`.
+    """
+
+    def __init__(self, db_path: Path) -> None:
+        self.database = IndexDatabase(db_path)
+        self.db_path = self.database.db_path
+
+    def connect(self) -> ContextManager[sqlite3.Connection]:
+        return self.database.connect()
+
+    def read_connect(self) -> ContextManager[sqlite3.Connection]:
+        return self.database.connect_readonly()
+
+    def initialize(self) -> None:
+        initialize_store(self.db_path, self._schema_current, self._initialize_schema)
+
+    def _schema_current(self) -> bool:
+        with self.read_connect() as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "metadata" in tables and "symbol_embeddings" in tables:
+                row = conn.execute("SELECT value FROM metadata WHERE key='version'").fetchone()
+                return bool(row and json.loads(row[0]) == EMBEDDING_DB_VERSION)
+        return False
+
+    def _initialize_schema(self):
+        with self.connect() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            _drop_pre_chunk_table(conn)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS symbol_embeddings (
+                    file_path TEXT NOT NULL,
+                    symbol_name TEXT NOT NULL,
+                    symbol_line INTEGER NOT NULL,
+                    model_name TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL DEFAULT 0,
+                    text_hash TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT '',
+                    end_line INTEGER NOT NULL DEFAULT 0,
+                    signature TEXT NOT NULL DEFAULT '',
+                    complexity INTEGER NOT NULL DEFAULT 1,
+                    vector BLOB NOT NULL,
+                    PRIMARY KEY (file_path, symbol_name, symbol_line, model_name, chunk_index)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_symbol_embeddings_model ON symbol_embeddings(model_name)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_embedding_stream ON symbol_embeddings"
+                "(model_name, file_path, symbol_name, symbol_line, chunk_index)"
+            )
+            conn.execute(
+                "INSERT INTO metadata VALUES ('version', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (json.dumps(EMBEDDING_DB_VERSION),),
+            )
+
+    def clear(self) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM symbol_embeddings")
+            conn.execute("DELETE FROM metadata WHERE key LIKE 'complete:%'")
+            conn.execute("DELETE FROM metadata WHERE key='requested'")
+
+    def delete_file(self) -> None:
+        if self.db_path.exists():
+            self.db_path.unlink()
+        for suffix in ("-wal", "-shm"):
+            Path(str(self.db_path) + suffix).unlink(missing_ok=True)
+
+
+def _drop_pre_chunk_table(conn: sqlite3.Connection) -> None:
+    """Recreate the vector table when it predates chunked embedding.
+
+    Vectors are derived data: the text-scheme change that introduced chunking
+    also changes every storage key, so the old rows are unreachable garbage
+    either way. Dropping the table is the honest migration.
+    """
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(symbol_embeddings)").fetchall()
+    }
+    if columns and "chunk_index" not in columns:
+        conn.execute("DROP TABLE symbol_embeddings")

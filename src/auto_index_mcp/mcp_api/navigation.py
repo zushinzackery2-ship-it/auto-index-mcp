@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from typing import Any, Literal, Optional
+import json
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.exceptions import ResourceError
 
 from ..core.service import AutoIndexService
 from .bootstrap import ensure_enabled
@@ -11,9 +13,14 @@ from .guard import run_service
 
 def register_navigation_tools(mcp: FastMCP, service: AutoIndexService) -> None:
     @mcp.resource("files://{file_path}")
-    def get_file_content(file_path: str) -> str:
+    async def get_file_content(file_path: str, ctx: Context) -> str:
         """Return the content of a project file."""
-        return service.file_content(file_path)
+        result = await ensure_enabled(service, ctx)
+        if result is None:
+            result = await run_service(service, service.file_content, file_path)
+        if isinstance(result, dict) and result.get("error"):
+            raise ResourceError(json.dumps(result, ensure_ascii=True))
+        return result
 
     @mcp.tool()
     async def auto_index_overview(

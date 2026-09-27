@@ -7,22 +7,23 @@ import threading
 from collections.abc import Iterator
 from pathlib import Path
 
-from ..core.config import (
+from ..domain.config import (
     DEFAULT_MAX_SOURCE_BYTES,
     LANGUAGE_BY_EXTENSION,
     TEXT_EXTENSIONS,
 )
-from ..core.ignore_config import matches_patterns
-from ..core.ignore_rules import IgnoreRules
-from ..core.models import FileRecord, ScanResult, SymbolRecord
-from ..core.source_clean import clean_source_lines
-from ..core.tree_progress import TreeProgress
-from ..core._utils import is_relative_to
-from ..core.quality_unreachable import file_quality_findings
-from ..core.text_decode import decode_text
+from ..domain.ignore_config import matches_patterns
+from ..domain.ignore_rules import IgnoreRules
+from ..domain.models import FileRecord, ScanResult, SymbolRecord
+from ..languages.source_clean import clean_source_lines
+from .tree_progress import TreeProgress
+from ..workspace.containment import is_relative_to
+from ..quality.unreachable import file_quality_findings
+from ..languages.text_decode import decode_text
 from .analysis import enrich_symbols
 from ..languages.c_family import extract_c_family_symbols
-from ..languages.python import extract_python_symbols
+from ..languages.python import extract_python_symbols, parse_python
+from ..languages.python_refs import scope_references
 from ..languages.javascript import extract_javascript_like_symbols
 from ..languages.generic import extract_symbols
 from ..languages.pascal import extract_pascal_symbols
@@ -168,9 +169,11 @@ class SourceScanner:
         # One comment/string-aware cleaning pass feeds symbol extraction,
         # call/complexity analysis, nesting and quality checks alike.
         cleaned = clean_source_lines(lines, language)
+        python_tree = parse_python(text) if language == "python" else None
         symbols = enrich_symbols(
             lines,
-            self._extract_symbols(language, text, lines, cleaned),
+            extract_python_symbols(text, lines, python_tree) if language == "python"
+            else self._extract_symbols(language, text, lines, cleaned),
             language,
             cleaned,
         )
@@ -178,6 +181,7 @@ class SourceScanner:
             {"path": rel, "language": language, "symbols": [vars(symbol) for symbol in symbols]},
             text,
             cleaned,
+            python_tree,
         )
         parent = str(Path(rel).parent).replace("\\", "/")
         if parent == ".":
@@ -197,6 +201,8 @@ class SourceScanner:
             quality_findings=quality_findings,
             active_source=True,
             snippet="\n".join(lines[:40]),
+            module_refs=list(scope_references(python_tree, {}).refs) if python_tree is not None else [],
+            analysis_kind="python-ast" if python_tree is not None else "heuristic",
         )
 
     def _reuse_record_if_current(self, path: Path, stat: os.stat_result) -> FileRecord | None:
@@ -221,6 +227,8 @@ class SourceScanner:
             quality_findings=existing.get("quality_findings", []),
             active_source=existing.get("active_source", True),
             snippet=existing["snippet"],
+            module_refs=existing.get("module_refs", []),
+            analysis_kind=existing.get("analysis_kind", "heuristic"),
         )
 
     def _extract_matches(self, lines: list[str], pattern: re.Pattern[str], whole_line: bool) -> list[str]:
@@ -238,8 +246,6 @@ class SourceScanner:
         lines: list[str],
         cleaned: list[str],
     ) -> list[SymbolRecord]:
-        if language == "python":
-            return extract_python_symbols(text, lines)
         if language in {"javascript", "typescript"}:
             return extract_javascript_like_symbols(lines, cleaned)
         if language in {"c", "cpp"}:

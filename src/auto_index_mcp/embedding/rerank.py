@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..core.subtoken import overlap_score, query_weights, target_token_set
+from ..search.subtoken import overlap_score, query_weights, target_token_set
 
 # Hybrid scoring weights, mirroring RagFlow's production rerank: vector
 # similarity carries most of the signal, lexical overlap corrects the pure

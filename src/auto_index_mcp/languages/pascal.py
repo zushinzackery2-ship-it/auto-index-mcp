@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 
-from ..core.models import SymbolRecord
-from ..core.source_clean import clean_source_lines
+from ..domain.models import SymbolRecord
+from .source_clean import clean_source_lines
 
 CLASS_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*=\s*class\b", re.IGNORECASE)
 ROUTINE_RE = re.compile(r"^\s*(?:class\s+)?(procedure|function)\s+([A-Za-z_][\w.]*)(?:\s*\(|\s*;|\s*:)", re.IGNORECASE)

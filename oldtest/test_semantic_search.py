@@ -9,7 +9,7 @@ from auto_index_mcp.core.service import AutoIndexService
 from auto_index_mcp.embedding import backend as embedding_backend
 from auto_index_mcp.embedding.backend import BagHashEmbedder
 from auto_index_mcp.embedding.indexer import SymbolEmbedder
-from auto_index_mcp.embedding.vector_store import decode_vector, encode_vector
+from auto_index_mcp.storage.vectors import decode_vector, encode_vector
 
 
 AUTH_PY = '''def authenticate_user(username, password):
@@ -53,7 +53,7 @@ def _make_model_dir(path: Path) -> Path:
 
 def _install_baghash(monkeypatch, dim: int = 128) -> None:
     monkeypatch.setattr(
-        "auto_index_mcp.core.service_embedding.create_embedder",
+        "auto_index_mcp.application.embedding.create_embedder",
         lambda env=None: BagHashEmbedder(dim=dim),
     )
 
@@ -238,7 +238,7 @@ def test_baghash_shared_tokens_rank_higher() -> None:
 def test_semantic_search_unavailable_without_model(monkeypatch, tmp_path: Path) -> None:
     _make_project(tmp_path)
     monkeypatch.setattr(
-        "auto_index_mcp.core.service_semantic.resolve_embedding_model_path",
+        "auto_index_mcp.search.semantic.resolve_embedding_model_path",
         lambda env=None: None,
     )
     service = AutoIndexService(index_root=tmp_path / ".idx")
@@ -282,7 +282,7 @@ def test_embedding_batches_pending_symbols_across_files(monkeypatch, tmp_path: P
 
     backend = CountingEmbedder()
     monkeypatch.setattr(
-        "auto_index_mcp.core.service_embedding.create_embedder",
+        "auto_index_mcp.application.embedding.create_embedder",
         lambda env=None: backend,
     )
     _make_project(tmp_path)
@@ -317,7 +317,7 @@ def test_fingerprint_change_invalidates_stored_vectors(monkeypatch, tmp_path: Pa
 
     def install(fingerprint: str) -> None:
         monkeypatch.setattr(
-            "auto_index_mcp.core.service_embedding.create_embedder",
+            "auto_index_mcp.application.embedding.create_embedder",
             lambda env=None: FingerprintedBagHash(fingerprint),
         )
 

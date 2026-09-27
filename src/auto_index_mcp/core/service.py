@@ -1,255 +1,183 @@
+"""Public service facade backed by explicit application coordinators."""
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
-from .config import project_index_root
-from .timefmt import iso_time
-from .tool_errors import ENABLE_HINT
-from .service_embedding import ServiceEmbeddingMixin
-from .service_ignore import ServiceIgnoreMixin
-from .service_navigation import ServiceNavigationMixin
-from .service_index_state import ServiceIndexStateMixin
-from .service_quality import ServiceQualityMixin
-from .service_rebuild import ServiceRebuildMixin
-from .service_search import ServiceSearchMixin
-from .service_semantic import ServiceSemanticMixin
-from .service_watcher import ServiceWatcherMixin
-from .tree_progress import TreeProgress
-from .maintenance import clear_index
-from ..embedding.embedding_store import EmbeddingStore
-from ..indexing.store import IndexStore
-from ..registry import write_index_markers
-from ..runtime.diagnostics import close_logging, configure_logging
+from ..application.context import ProjectContext
+from ..application.facade_fields import ContextField
+from ..domain.config import DEFAULT_WATCH_DEBOUNCE_SECONDS
+from ..domain.ignore_config import IgnoreConfig
+from ..search.navigation_format import MAX_PRESENTED_CALLERS
+from ..application.lifecycle import LifecycleCoordinator
+from ..application.ignore import IgnoreCoordinator
+from ..application.embedding import EmbeddingCoordinator
+from ..application.status import StatusCoordinator
+from ..application.rebuild import RebuildCoordinator
+from ..application.watcher import WatchCoordinator
+from ..search.navigation import NavigationQueries
+from ..search.queries import SearchQueries
+from ..quality.queries import QualityQueries
+from ..search.semantic import SemanticQueries
 
 
-class AutoIndexService(
-    ServiceNavigationMixin,
-    ServiceIndexStateMixin,
-    ServiceIgnoreMixin,
-    ServiceSearchMixin,
-    ServiceQualityMixin,
-    ServiceSemanticMixin,
-    ServiceRebuildMixin,
-    ServiceEmbeddingMixin,
-    ServiceWatcherMixin,
-):
-    """Single-root code index service.
+class AutoIndexService:
+    """Stable entrypoint; each operation delegates to its owning coordinator."""
 
-    Owns lifecycle (enable/disable/clear/status); shared state and the
-    smallest helpers live in ServiceBase (which every mixin extends), and
-    rebuild orchestration, the filesystem watcher, and the search/navigation
-    tool surfaces live in the composed mixins.
-    """
+    enabled = ContextField("enabled")
+    root_path = ContextField("root_path")
+    index_root = ContextField("index_root")
+    index_root_override = ContextField("index_root_override")
+    store = ContextField("store")
+    embedding_store = ContextField("embedding_store")
+    embedding_indexer = ContextField("embedding_indexer")
+    embedding_background = ContextField("embedding_background")
+    background = ContextField("background")
+    watcher = ContextField("watcher")
+    registry = ContextField("registry")
+    semantic_enabled = ContextField("semantic_enabled")
+    semantic_auto_start = ContextField("semantic_auto_start")
+    embedding_progress = ContextField("embedding_progress")
+    last_errors = ContextField("last_errors")
+    tree_progress = ContextField("tree_progress")
+    log_path = ContextField("log_path")
+    view = ContextField("view")
+    _request_lock = ContextField("_request_lock")
 
-    def enable(
-        self,
-        root_path: str,
-        rebuild: bool = True,
-        refresh_embedder: bool = True,
-        source: str = "mcp-enable",
-    ) -> dict[str, Any]:
-        root = Path(root_path).resolve()
-        if not root.exists() or not root.is_dir():
-            raise ValueError(f"root_path is not a directory: {root_path}")
-        self.cancel_auto_watch_after_build()
-        if self.root_path and self.root_path != root:
-            self.enabled = False
-            self._cancel_background_work()
-            self.stop_watcher()
-            self.embedding_indexer = None
-            self.embedding_background = None
-            self.background = None
-            self._ignore_config_dirty = False
-            from .ignore_config import IgnoreConfig
-            self._ignore_config = IgnoreConfig()
-        index_root = self.index_root_override or project_index_root(root)
-        if self._reusable_enable_context(root, index_root):
-            # Re-enable on the unchanged root: keep the live stores, watcher
-            # and embedder. Recreating the stores here would issue a schema
-            # write per call, which under multi-agent enable polling is pure
-            # cross-process write-lock churn; only state another process may
-            # have changed (persisted ignore config) is refreshed.
-            self.enabled = True
-            self._load_ignore_config_from_store()
-            self._invalidate_view_cache()
-            self.registry.touch(root)
-            if refresh_embedder and self.embedding_indexer is None:
-                self._refresh_embedder()
-            if rebuild:
-                return self.rebuild_sync()
-            return self.status()
-        self.log_path = configure_logging(index_root)
-        store = IndexStore(self._db_path(root))
-        store.initialize()
-        embedding_store = EmbeddingStore(index_root / "embeddings.db")
-        embedding_store.initialize()
-        self.root_path, self.index_root = root, index_root
-        self.store, self.embedding_store = store, embedding_store
-        self.enabled = True
-        self._register_index(root, index_root, source)
-        self._load_ignore_config_from_store()
-        self.tree_progress = TreeProgress()
-        if refresh_embedder:
-            self._refresh_embedder()
-        else:
-            self.embedding_indexer = None
-        self._invalidate_view_cache()
-        if rebuild:
-            return self.rebuild_sync()
-        return self.status()
+    def __init__(self, index_root: Path | None = None) -> None:
+        project = ProjectContext(index_root)
+        self.project = project
+        self.ignore = IgnoreCoordinator(project)
+        self.state = StatusCoordinator(project)
+        self.embeddings = EmbeddingCoordinator(project)
+        self.builds = RebuildCoordinator(project, self.ignore, self.embeddings, self.state,
+                                         lambda **kwargs: self.watch.start_watcher(**kwargs))
+        self.watch = WatchCoordinator(project, self.builds, self.embeddings)
+        self.lifecycle = LifecycleCoordinator(project, self.builds, self.ignore, self.embeddings, self.watch, self.state)
+        self.navigation = NavigationQueries(project, self.state)
+        self.search = SearchQueries(project, self.state)
+        self.quality = QualityQueries(project, self.state)
+        self.semantic = SemanticQueries(project, self.state, self.embeddings)
 
-    def _reusable_enable_context(self, root: Path, index_root: Path) -> bool:
-        return (
-            self.root_path == root
-            and self.index_root == index_root
-            and self.store is not None
-            and self.embedding_store is not None
-            and self.store.db_path.exists()
-        )
+    def enable(self, root_path: str, rebuild: bool=True, refresh_embedder: bool=True, source: str='mcp-enable') -> dict[str, Any]:
+        return self.lifecycle.enable(root_path, rebuild, refresh_embedder, source)
 
-    def _register_index(self, root: Path, index_root: Path, source: str) -> None:
-        """Best-effort registry upsert + marker drop; never fails enable."""
-        try:
-            self.registry.register(
-                root,
-                index_root,
-                source=source,
-                ephemeral=self.index_root_override is not None,
-            )
-            write_index_markers(index_root, root)
-        except Exception:  # noqa: BLE001 - bookkeeping must not break enable
-            pass
-
-    def enable_reusing_index(
-        self,
-        root_path: str,
-        rebuild: bool = False,
-        wait_seconds: float = 0.0,
-        source: str = "mcp-enable",
-    ) -> dict[str, Any]:
-        root = Path(root_path).resolve()
-        if self._enable_already_running(root):
-            return self._already_running_enable_status()
-        if rebuild:
-            # Explicit forced rebuild: dispatch to background thread and return immediately.
-            self.enable(str(root), rebuild=False, refresh_embedder=False, source=source)
-            return self._start_background_rebuild(wait_seconds=wait_seconds)
-        db_existed = self._db_path(root).exists()
-        self.enable(str(root), rebuild=False, refresh_embedder=False, source=source)
-        if db_existed and self.can_reuse_index_for(root):
-            # Reused a fresh index: build the vector store now (non-blocking) so
-            # semantic search is ready without waiting for a first query to
-            # trigger a lazy build.
-            if self.semantic_auto_start or self.embedding_indexer is not None:
-                self.ensure_embedding_background()
-            return self.status()
-        return self._start_background_rebuild(wait_seconds=wait_seconds, reuse_if_fresh=True)
-
-    def _enable_already_running(self, root: Path) -> bool:
-        background = self.background
-        if background is None or not background.is_running():
-            return False
-        if not self.enabled or self.root_path is None:
-            return False
-        index_root = self.index_root_override or project_index_root(root)
-        key = (root.resolve(), index_root.resolve())
-        return (
-            self.root_path.resolve() == root.resolve()
-            and self.index_root is not None
-            and self.index_root.resolve() == index_root.resolve()
-            and self._background_context_key == key
-        )
-
-    def _already_running_enable_status(self) -> dict[str, Any]:
-        result = self.status()
-        result["status"] = "already-running"
-        result["already_running"] = True
-        return result
+    def enable_reusing_index(self, root_path: str, rebuild: bool=False, wait_seconds: float=0.0, source: str='mcp-enable') -> dict[str, Any]:
+        return self.lifecycle.enable_reusing_index(root_path, rebuild, wait_seconds, source)
 
     def disable(self) -> dict[str, Any]:
-        self.enabled = False
-        self._cancel_background_work()
-        self.cancel_auto_watch_after_build()
-        self.stop_watcher()
-        self.tree_progress.clear()
-        result = self.status()
-        self.embedding_indexer = None
-        close_logging(getattr(self, "log_path", None))
-        if self.background is not None and self.background.is_running():
-            result["warning"] = "background index build still running on its daemon thread"
-        return result
-
-    def _cancel_background_work(self) -> None:
-        for worker in (self.background, self.embedding_background):
-            if worker is not None:
-                worker.cancelled.set()
+        return self.lifecycle.disable()
 
     def status(self) -> dict[str, Any]:
-        """Compact index health: one level of nesting, ISO timestamps, no
-        duplicated background result blobs (LLM callers read this a lot)."""
-        store = self.store
-        meta = store.get_metadata_map() if store else {}
-        file_count = int(meta.get("file_count") or 0)
-        total_file_count = int(meta.get("total_file_count") or file_count)
-        timers = self.build_timers()
-        result: dict[str, Any] = {
-            "enabled": self.enabled,
-            "root": str(self.root_path) if self.root_path else None,
-            "index_path": str(store.db_path) if store else None,
-            "log_path": getattr(self, "log_path", None),
-            "file_count": file_count,
-            "total_file_count": total_file_count,
-            "child_index_count": int(meta.get("child_index_count") or 0),
-            "updated_at": iso_time(meta.get("updated_at")),
-            "watcher": self.watcher_status(),
-            "embedding": self._compact_embedding_status(timers["embedding"]),
-            "index_build": _compact_timer(timers["index"]),
-        }
-        if self.root_path is not None:
-            result["registered"] = self.registry.is_registered(self.root_path)
-        if self.last_errors:
-            result["error_count"] = len(self.last_errors)
-            result["errors"] = self.last_errors[:5]
-        if store is None or self.root_path is None:
-            result["hint"] = ENABLE_HINT
-        return result
+        return self.state.status()
 
-    def _compact_embedding_status(self, timer: dict[str, Any]) -> dict[str, Any]:
-        """Semantic-vector state merged into status (was a separate tool)."""
-        indexer = self.embedding_indexer
-        result: dict[str, Any] = {
-            "enabled": indexer is not None,
-            "model": indexer.backend.name if indexer is not None else None,
-        }
-        if not self.semantic_enabled:
-            result["state"] = "disabled"
-            return result
-        if timer.get("running"):
-            result["state"] = "building"
-            result["elapsed_seconds"] = timer.get("elapsed_seconds")
-            return result
-        if indexer is None:
-            result["state"] = "on-demand"
-            return result
-        try:
-            count = indexer.count()
-        except Exception as exc:
-            result["state"] = "error"
-            result["error"] = str(exc)
-            return result
-        result["vector_count"] = count
-        result["state"] = "ready" if count > 0 else "empty"
-        return result
+    def clear(self, delete_file: bool=False) -> dict[str, Any]:
+        return self.lifecycle.clear(delete_file)
 
-    def clear(self, delete_file: bool = False) -> dict[str, Any]:
-        return clear_index(self, delete_file)
+    def ignore_config(self) -> IgnoreConfig:
+        return self.ignore.ignore_config()
 
+    def runtime_ignore_patterns(self) -> list[str]:
+        return self.ignore.runtime_ignore_patterns()
 
-def _compact_timer(timer: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "state": timer.get("state"),
-        "phase": timer.get("phase"),
-        "running": bool(timer.get("running")),
-        "elapsed_seconds": timer.get("elapsed_seconds"),
-    }
+    def auto_ignore_patterns(self) -> list[str]:
+        return self.ignore.auto_ignore_patterns()
+
+    def privileged_ignore_patterns(self) -> list[str]:
+        return self.ignore.privileged_ignore_patterns()
+
+    def ignore_status(self) -> dict[str, Any]:
+        return self.ignore.ignore_status()
+
+    def configure_ignore(self, patterns: list[str] | None=None, mode: str='status', target: str='ignore') -> dict[str, Any]:
+        return self.ignore.configure_ignore(patterns, mode, target)
+
+    def add_auto_ignore_patterns(self, patterns: list[str]) -> None:
+        return self.ignore.add_auto_ignore_patterns(patterns)
+
+    def replace_ignore_config(self, config: IgnoreConfig, dirty: bool) -> None:
+        return self.ignore.replace_ignore_config(config, dirty)
+
+    def ensure_embedding_background(self) -> dict[str, Any]:
+        return self.embeddings.ensure_embedding_background()
+
+    def build_timers(self) -> dict[str, Any]:
+        return self.state.build_timers()
+
+    def rebuild(self, reuse_if_fresh: bool=False) -> dict[str, Any]:
+        return self.builds.rebuild(reuse_if_fresh)
+
+    def rebuild_sync(self, reuse_if_fresh: bool=False) -> dict[str, Any]:
+        return self.builds.rebuild_sync(reuse_if_fresh)
+
+    def request_auto_watch_after_build(self) -> None:
+        return self.builds.request_auto_watch_after_build()
+
+    def cancel_auto_watch_after_build(self) -> None:
+        return self.builds.cancel_auto_watch_after_build()
+
+    def can_reuse_index_for(self, root: Path) -> bool:
+        return self.builds.can_reuse_index_for(root)
+
+    def can_start_auto_watch(self, result: dict[str, Any] | None) -> bool:
+        return self.builds.can_start_auto_watch(result)
+
+    def start_watcher(self, debounce_seconds: float=DEFAULT_WATCH_DEBOUNCE_SECONDS, wait_ready: bool=False) -> dict[str, Any]:
+        return self.watch.start_watcher(debounce_seconds, wait_ready)
+
+    def sync_index_to_filesystem(self) -> dict[str, Any]:
+        return self.watch.sync_index_to_filesystem()
+
+    def stop_watcher(self) -> dict[str, Any]:
+        return self.watch.stop_watcher()
+
+    def watcher_status(self) -> dict[str, Any]:
+        return self.watch.watcher_status()
+
+    def overview(self, limit: int=20) -> dict[str, Any]:
+        return self.navigation.overview(limit)
+
+    def tree_get(self, dir: str='', depth: int=2, limit: int=50) -> dict[str, Any]:
+        return self.navigation.tree_get(dir, depth, limit)
+
+    def find_files(self, query: str='', dir: str='', languages: list[str] | None=None, limit: int=20, cursor: str | None=None) -> dict[str, Any]:
+        return self.navigation.find_files(query, dir, languages, limit, cursor)
+
+    def file_summary(self, path: str) -> dict[str, Any]:
+        return self.navigation.file_summary(path)
+
+    def get(self, path: str) -> dict[str, Any]:
+        return self.navigation.get(path)
+
+    def file_content(self, path: str) -> str:
+        return self.navigation.file_content(path)
+
+    def diff_filesystem(self) -> dict[str, Any]:
+        return self.navigation.diff_filesystem()
+
+    def all_files(self) -> list[dict[str, Any]]:
+        return self.navigation.all_files()
+
+    def text_search(self, pattern: str, case_sensitive: bool=True, regex: bool=False, limit: int=20, file_pattern: str | None=None, context_lines: int=0, exclude_paths: list[str] | None=None, active_only: bool=False) -> dict[str, Any]:
+        return self.search.text_search(pattern, case_sensitive, regex, limit, file_pattern, context_lines, exclude_paths, active_only)
+
+    def symbol_search(self, text: str='', kind: str='', limit: int=20, cursor: str | None=None) -> dict[str, Any]:
+        return self.search.symbol_search(text, kind, limit, cursor)
+
+    def symbol_body(self, symbol_name: str, path: str='', line: int=0) -> dict[str, Any]:
+        return self.search.symbol_body(symbol_name, path, line)
+
+    def symbol_refs(self, symbol_name: str, path: str='', direction: str='both', limit: int=MAX_PRESENTED_CALLERS) -> dict[str, Any]:
+        return self.search.symbol_refs(symbol_name, path, direction, limit)
+
+    def nesting_check(self, max_depth: int=4, languages: list[str] | None=None, limit: int=50, exclude_paths: list[str] | None=None, active_only: bool=False) -> dict[str, Any]:
+        return self.quality.nesting_check(max_depth, languages, limit, exclude_paths, active_only)
+
+    def dangling_check(self, include_low_confidence: bool=False, include_tests: bool=False, limit: int=50, exclude_paths: list[str] | None=None, active_only: bool=False) -> dict[str, Any]:
+        return self.quality.dangling_check(include_low_confidence, include_tests, limit, exclude_paths, active_only)
+
+    def semantic_search(self, query: str, limit: int=10, min_score: float=0.0) -> dict:
+        return self.semantic.semantic_search(query, limit, min_score)
+
+    def embedding_status(self) -> dict:
+        return self.semantic.embedding_status()

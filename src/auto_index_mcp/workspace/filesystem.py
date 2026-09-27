@@ -3,9 +3,9 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from ..core.config import DEFAULT_MAX_SOURCE_BYTES
-from ..core.ignore_config import matches_patterns
-from ..core.ignore_rules import IgnoreRules
+from ..domain.config import DEFAULT_MAX_SOURCE_BYTES
+from ..domain.ignore_config import matches_patterns
+from ..domain.ignore_rules import IgnoreRules
 from ..indexing.snapshot import _iter_source_files
 
 

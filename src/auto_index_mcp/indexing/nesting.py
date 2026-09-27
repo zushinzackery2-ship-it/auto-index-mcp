@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 
-from ..core.models import SymbolRecord
+from ..domain.models import SymbolRecord
 
 BRACE_LANGUAGES = {
     "c",

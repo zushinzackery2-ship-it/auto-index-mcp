@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from auto_index_mcp.embedding.backend import resolve_embedding_model_path  # noqa: E402
 from auto_index_mcp.embedding.indexer import _symbol_text  # noqa: E402
-from auto_index_mcp.core.text_decode import read_text_file  # noqa: E402
+from auto_index_mcp.languages.text_decode import read_text_file  # noqa: E402
 
 LENGTHS = (64, 128, 192, 256)
 

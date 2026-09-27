@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..core._utils import is_relative_to
-from ..core.ignore_rules import IgnoreRules
+from ..workspace.containment import is_relative_to
+from ..domain.ignore_rules import IgnoreRules
 from .locator import INDEX_DB_NAME, INDEX_DIR_NAME, iter_index_databases
-from .metadata_reader import DEFAULT_METADATA_READER
+from ..storage.metadata import DEFAULT_METADATA_READER
 
 
 def child_index_snapshot(

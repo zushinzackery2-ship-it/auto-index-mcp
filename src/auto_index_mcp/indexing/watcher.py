@@ -9,10 +9,11 @@ from typing import Any, Callable
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-from ..core.config import DEFAULT_EXCLUDE_DIRS
-from ..core._utils import is_relative_to
+from ..domain.config import DEFAULT_EXCLUDE_DIRS
+from ..workspace.containment import is_relative_to
 from .snapshot import WatchSnapshot
-from .build_lock import BuildLock
+from ..runtime.leases import BuildLock
+from ..runtime.diagnostics import diagnostic_scope
 
 # Directory names whose events can be dropped at the source: they are excluded
 # from indexing unconditionally, so no snapshot could ever change because of
@@ -122,6 +123,11 @@ class FileEventWatcher:
     def is_running(self) -> bool:
         return self._worker is not None and self._worker.is_alive()
 
+    def request_refresh(self) -> None:
+        with self._changes_lock:
+            self._needs_full_snapshot = True
+        self._changed.set()
+
     def status(self) -> dict[str, Any]:
         return {
             "running": self.is_running(),
@@ -137,9 +143,11 @@ class FileEventWatcher:
 
     def _run(self) -> None:
         try:
-            self._run_leased()
+            with diagnostic_scope(self._lease.path.parent if self._lease is not None else None):
+                self._run_leased()
         except Exception as exc:
             self.last_error = str(exc)
+            logger.exception("watcher failed root=%s", self.root)
         finally:
             if self._observer is not None:
                 self._observer.stop()
@@ -171,6 +179,7 @@ class FileEventWatcher:
                         self._maintenance()
                     except Exception as exc:
                         self.last_error = str(exc)
+                        logger.exception("watcher maintenance failed root=%s", self.root)
                 continue
             self._changed.clear()
             if self._stop.wait(self.debounce_seconds):
@@ -218,7 +227,7 @@ class FileEventWatcher:
                     return
                 else:
                     current = self.update_snapshot(self._snapshot, paths)
-                if current == self._snapshot:
+                if current == self._snapshot and not current.dirty_files:
                     self.ready = True
                     return
                 previous = self._snapshot

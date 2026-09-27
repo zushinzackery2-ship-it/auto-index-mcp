@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 
-from ..core.models import SymbolRecord
-from ..core.source_clean import clean_source_lines
+from ..domain.models import SymbolRecord
+from .source_clean import clean_source_lines
 
 SYMBOL_PATTERNS = [
     ("class", re.compile(r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_][\w]*)")),

@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Any
 
-from ..core.quality_dangling import with_project_quality_findings
-from .active_sources import annotate_active_sources
-from .analysis import resolve_project_callers
 from .scanner import SourceScanner
 from .snapshot import WatchSnapshot
 from ..workspace.discovery import child_indexes_to_dicts, discover_child_indexes
-from .store import IndexStore
-from .build_lock import BuildLock
-from ..core.models import FileRecord, SymbolRecord
+from ..storage.index import IndexStore
+from ..runtime.leases import BuildLock
+from ..domain.models import FileRecord, SymbolRecord
 
 
 @dataclass(frozen=True)
@@ -47,6 +44,7 @@ class IndexUpdater:
         ignore_patterns: list[str] | None = None,
         auto_ignore_patterns: list[str] | None = None,
         privileged_patterns: list[str] | None = None,
+        policy_generation: int | None = None,
     ) -> None:
         self.root = root
         self.store = store
@@ -54,6 +52,7 @@ class IndexUpdater:
         self.ignore_patterns = ignore_patterns or []
         self.auto_ignore_patterns = auto_ignore_patterns or []
         self.privileged_patterns = privileged_patterns or []
+        self.policy_generation = policy_generation
 
     def apply(self, previous: WatchSnapshot, current: WatchSnapshot) -> dict[str, Any]:
         lock = BuildLock(self.store.db_path.parent / "index.build.lock")
@@ -66,20 +65,26 @@ class IndexUpdater:
 
     def _apply_locked(self, previous, current, lock):
         start = time.time()
+        metadata = self.store.get_metadata_map()
+        generation = int(metadata.get("policy_generation", 0))
+        if self.policy_generation is not None and generation != self.policy_generation:
+            raise RuntimeError("policy generation changed; pending filesystem changes retained")
         child_added, child_deleted, child_modified = current.child_index_changes(previous)
-        if child_added or child_deleted:
+        added, deleted, modified = current.changed_files(previous)
+        manifest_changed = any(path.lower().endswith(".vcxproj") for path in added + deleted + modified)
+        policy_changed = generation != int(metadata.get("applied_policy_generation", 0))
+        if child_added or child_deleted or manifest_changed or policy_changed or current.rules_changed:
             lock.release()
             result = self.rebuild()
             result["update_mode"] = "structural-rebuild"
             return result
         if child_modified:
             self.refresh_child_links()
-        added, deleted, modified = current.changed_files(previous)
         if not added and not deleted and not modified:
             result = UpdateResult("metadata-refresh", 0, 0, 0, 0, False, 0).to_dict()
             result["child_indexes_modified"] = len(child_modified)
             return result
-        stored_records = {item["path"]: _dict_to_record(item) for item in self.store.all_files()}
+        stored_records = {item["path"]: _dict_to_record(item) for item in self.store.get_files(added + modified + deleted)}
         if self._db_reflects_changes(stored_records, added, modified, deleted, current):
             # Another process sharing this index already wrote these filesystem
             # changes. Skip the redundant read+resolve+write; the watcher still
@@ -95,9 +100,9 @@ class IndexUpdater:
             records.pop(path, None)
         for record in changed_records:
             records[record.path] = record
-        active_records = annotate_active_sources(self.root, sorted(records.values(), key=lambda item: item.path.lower()))
-        resolved = with_project_quality_findings(resolve_project_callers(active_records))
-        rewritten = self._rewrite_changed_records(stored_records, resolved, deleted + unindexed)
+        active_records = [replace(record, active_source=self.store.is_active_source(record.path))
+                          if record.language in ("c", "cpp") else record for record in records.values()]
+        rewritten = self._rewrite_changed_records(stored_records, active_records, deleted + unindexed)
         result = UpdateResult(
             status="incremental",
             added=len(added),
@@ -119,6 +124,8 @@ class IndexUpdater:
         current: WatchSnapshot,
     ) -> bool:
         for path in added + modified:
+            if path in current.dirty_files:
+                return False
             record = stored_records.get(path)
             if record is None or (record.size, record.mtime_ns) != current.files.get(path):
                 return False
@@ -144,7 +151,7 @@ class IndexUpdater:
         for rel in paths:
             try:
                 records.append(scanner.read_path(self.root / rel))
-            except (OSError, UnicodeDecodeError, ValueError):
+            except (FileNotFoundError, ValueError):
                 unindexed.append(rel)
         return records, unindexed
 
@@ -167,8 +174,10 @@ def _dict_to_record(item: dict[str, Any]) -> FileRecord:
         sha1=item["sha1"],
         line_count=item["line_count"],
         imports=item["imports"],
-        symbols=[SymbolRecord(**symbol) for symbol in item["symbols"]],
+        symbols=[SymbolRecord(**dict(symbol, called_by=[])) for symbol in item["symbols"]],
         quality_findings=item.get("quality_findings", []),
         active_source=item.get("active_source", True),
         snippet=item["snippet"],
+        module_refs=item.get("module_refs", []),
+        analysis_kind=item.get("analysis_kind", "heuristic"),
     )

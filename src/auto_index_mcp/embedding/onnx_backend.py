@@ -113,6 +113,11 @@ class OnnxEmbedder:
         return self._name
 
     @property
+    def space_fingerprint(self) -> str:
+        # The model file identifies its output dimensions without loading ONNX.
+        return f"onnx={self._identity}"
+
+    @property
     def text_fingerprint(self) -> str:
         """Identity of the text->vector mapping beyond the model name.
 

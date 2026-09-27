@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 
-from ..core.models import SymbolRecord
-from ..core.source_clean import clean_source_lines
+from ..domain.models import SymbolRecord
+from .source_clean import clean_source_lines
+from .braces import BracePairs
 
 TYPE_RE = re.compile(r"^\s*(?:class|struct|enum(?:\s+class)?)\s+([A-Za-z_][\w]*)")
 CONTROL_NAMES = {"if", "for", "while", "switch", "catch", "return", "sizeof"}
@@ -19,15 +20,16 @@ def extract_c_family_symbols(
     # keeps macro/comment-dense sources (ImGui-style) from producing phantom
     # symbol starts or runaway end lines.
     cleaned = cleaned_lines if cleaned_lines is not None else clean_source_lines(lines, "cpp")
+    braces = BracePairs(cleaned)
     records: list[SymbolRecord] = []
     index = 0
     while index < len(lines):
         type_match = TYPE_RE.match(cleaned[index])
         if type_match:
-            records.append(_record(type_match.group(1), _type_kind(cleaned[index]), index, cleaned))
+            records.append(_record(type_match.group(1), _type_kind(cleaned[index]), index, cleaned, braces))
             index += 1
             continue
-        candidate = _function_candidate(cleaned, index)
+        candidate = _function_candidate(cleaned, index, braces)
         if candidate:
             name, kind, end_line = candidate
             records.append(
@@ -45,7 +47,7 @@ def extract_c_family_symbols(
     return records
 
 
-def _function_candidate(cleaned: list[str], start: int) -> tuple[str, str, int] | None:
+def _function_candidate(cleaned: list[str], start: int, braces: BracePairs) -> tuple[str, str, int] | None:
     first = cleaned[start].strip()
     if not first or first.startswith("#") or _starts_with_keyword(first):
         return None
@@ -65,7 +67,7 @@ def _function_candidate(cleaned: list[str], start: int) -> tuple[str, str, int] 
             if not info:
                 return None
             name, is_method = info
-            return name, "method" if is_method else "function", _find_brace_end(cleaned, index)
+            return name, "method" if is_method else "function", braces.end_line(index)
         if ";" in text and paren_depth <= 0:
             return None
     return None
@@ -89,12 +91,12 @@ def _function_info(header: str) -> tuple[str, bool] | None:
     return raw_name.lstrip("~"), is_method
 
 
-def _record(name: str, kind: str, index: int, cleaned: list[str]) -> SymbolRecord:
+def _record(name: str, kind: str, index: int, cleaned: list[str], braces: BracePairs) -> SymbolRecord:
     return SymbolRecord(
         name=name,
         kind=kind,
         line=index + 1,
-        end_line=_find_brace_end(cleaned, index),
+        end_line=braces.end_line(index),
         signature=_signature(cleaned, index),
     )
 
@@ -117,24 +119,6 @@ def _signature(cleaned: list[str], start: int) -> str:
         if "{" in text:
             break
     return " ".join(parts).strip()
-
-
-def _find_brace_end(cleaned: list[str], start: int) -> int:
-    depth = 0
-    opened = False
-    for index in range(start, len(cleaned)):
-        text = cleaned[index]
-        depth = max(0, depth - text.count("}"))
-        opens = text.count("{")
-        opened = opened or opens > 0
-        depth += opens
-        if opened and depth <= 0:
-            return index + 1
-    # No balanced closing brace anywhere in the file: the start was most likely
-    # mis-detected (macros / comment blocks throw off the brace count). Fall back
-    # to a minimal span so one bad symbol cannot swallow the rest of a large
-    # file's calls and nesting (e.g. an 11k-line file collapsing into one symbol).
-    return min(start + 1, len(cleaned))
 
 
 def _starts_with_keyword(text: str) -> bool:

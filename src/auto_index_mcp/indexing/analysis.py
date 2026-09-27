@@ -1,25 +1,16 @@
 from __future__ import annotations
 
 import re
-from dataclasses import replace
 
-from ..core.models import FileRecord, SymbolRecord
-from ..core.source_clean import clean_source_lines
+from ..domain.models import SymbolRecord
+from ..languages.source_clean import clean_source_lines
 from .nesting import annotate_symbol_nesting
 
 CALL_RE = re.compile(r"\b([A-Za-z_][\w]*)\s*\(")
 CONTROL_NAMES = {"if", "for", "while", "switch", "return", "raise", "catch", "with"}
 COMPLEXITY_RE = re.compile(r"\b(if|elif|else if|for|while|case|catch|except|and|or|\?|&&|\|\|)\b")
 
-# Value references: a bare identifier used as data rather than invoked -
-# callback arguments (sort(key=fn)), kwarg values, assignment RHS, decorators,
-# collection elements, return values. The trailing lookahead rejects names that
-# are immediately called (CALL_RE territory), kwarg names (key=) and walrus /
-# dict-key positions (name:). Line-local by design: cleaned lines carry no
-# cross-line state, so a bare positional name on its own continuation line is
-# not seen - acceptable for a heuristic whose job is suppressing false
-# "unused symbol" verdicts, not building a complete reference graph.
-REF_RE = re.compile(r"(?:[=(,\[{:]|@|\breturn\b|\byield\b)\s*&?\s*([A-Za-z_]\w*)\b(?!\s*[(=:])")
+TOKEN_RE = re.compile(r"[A-Za-z_]\w*|[^\s\w]")
 # Definition lines are skipped for reference extraction so parameter names in
 # single-line signatures are never mistaken for value references.
 DEF_LINE_RE = re.compile(
@@ -47,6 +38,8 @@ def enrich_symbols(
     # Comment/string regions are blanked once per file so complexity, call and
     # nesting analysis only ever see executable code.
     cleaned = cleaned_lines if cleaned_lines is not None else clean_source_lines(lines, language)
+    if language == "python":
+        return annotate_symbol_nesting(cleaned, symbols, language)
     enriched = []
     for symbol in symbols:
         body = cleaned[symbol.line - 1:symbol.end_line]
@@ -65,86 +58,6 @@ def enrich_symbols(
             )
         )
     return annotate_symbol_nesting(cleaned, enriched, language)
-
-
-def resolve_project_callers(records: list[FileRecord]) -> list[FileRecord]:
-    # Authoritative recompute: called_by is derived entirely from the (stable) calls
-    # data of the current record set, never seeded from previously stored called_by.
-    # This keeps the reverse-call graph self-healing - references to files that were
-    # deleted or renamed simply stop being recomputed instead of lingering forever.
-    symbol_locations = _symbol_locations(records)
-    local_callers, project_callers = _caller_maps(records, symbol_locations)
-    return _apply_callers(records, local_callers, project_callers)
-
-
-def _symbol_locations(records: list[FileRecord]) -> dict[str, list[tuple[int, int]]]:
-    symbol_locations: dict[str, list[tuple[int, int]]] = {}
-    for record_index, record in enumerate(records):
-        for symbol_index, symbol in enumerate(record.symbols):
-            symbol_locations.setdefault(symbol.name, []).append((record_index, symbol_index))
-    return symbol_locations
-
-
-def _caller_maps(
-    records: list[FileRecord],
-    symbol_locations: dict[str, list[tuple[int, int]]],
-) -> tuple[dict[tuple[int, int], list[str]], dict[tuple[int, int], list[str]]]:
-    local_callers: dict[tuple[int, int], list[str]] = {}
-    project_callers: dict[tuple[int, int], list[str]] = {}
-    for record_index, record in enumerate(records):
-        local_locations = dict()
-        for symbol_index, symbol in enumerate(record.symbols):
-            local_locations.setdefault(symbol.name, []).append((record_index, symbol_index))
-        for symbol in record.symbols:
-            project_caller = f"{record.path}::{symbol.name}"
-            # Value references count as usage edges exactly like calls: a
-            # function handed to sort(key=...) or stored in a table has a user.
-            for call in dict.fromkeys(symbol.calls + symbol.refs):
-                _record_local_call(local_callers, local_locations, call, symbol.name)
-                _record_project_call(project_callers, symbol_locations, call, project_caller, record_index)
-    return local_callers, project_callers
-
-
-def _record_local_call(
-    callers: dict[tuple[int, int], list[str]],
-    locations_by_name: dict[str, list[tuple[int, int]]],
-    call: str,
-    caller_name: str,
-) -> None:
-    if call == caller_name:
-        return
-    for location in locations_by_name.get(call, []):
-        callers.setdefault(location, []).append(caller_name)
-
-
-def _record_project_call(
-    callers: dict[tuple[int, int], list[str]],
-    locations_by_name: dict[str, list[tuple[int, int]]],
-    call: str,
-    project_caller: str,
-    caller_record_index: int,
-) -> None:
-    locations = locations_by_name.get(call, [])
-    # Same-file callers are already covered by the bare-name local edge; adding
-    # the path-qualified form as well only duplicates every entry.
-    if len(locations) == 1 and locations[0][0] != caller_record_index:
-        callers.setdefault(locations[0], []).append(project_caller)
-
-
-def _apply_callers(
-    records: list[FileRecord],
-    local_callers: dict[tuple[int, int], list[str]],
-    project_callers: dict[tuple[int, int], list[str]],
-) -> list[FileRecord]:
-    updated_records = []
-    for record_index, record in enumerate(records):
-        symbols = []
-        for symbol_index, symbol in enumerate(record.symbols):
-            location = (record_index, symbol_index)
-            resolved = list(dict.fromkeys(local_callers.get(location, []) + project_callers.get(location, [])))
-            symbols.append(replace(symbol, called_by=resolved))
-        updated_records.append(replace(record, symbols=symbols))
-    return updated_records
 
 
 def _complexity(cleaned_body: list[str]) -> int:
@@ -173,7 +86,14 @@ def _value_refs(cleaned_body: list[str], own_name: str, calls: list[str]) -> lis
     for line in cleaned_body:
         if DEF_LINE_RE.match(line):
             continue
-        for name in REF_RE.findall(line):
+        tokens = TOKEN_RE.findall(line)
+        for index, name in enumerate(tokens):
+            previous = tokens[index - 1] if index else ""
+            following = tokens[index + 1] if index + 1 < len(tokens) else ""
+            if previous not in {"=", "(", ",", "[", "{", ":", "@", "&", "return", "yield"}:
+                continue
+            if following in {"(", "=", ":"} or not name.isidentifier():
+                continue
             if name == own_name or name in REF_STOP_NAMES or name in called:
                 continue
             if name not in refs:

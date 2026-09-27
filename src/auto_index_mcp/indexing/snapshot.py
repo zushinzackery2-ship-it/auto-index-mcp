@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Iterator
 
-from ..core.config import TEXT_EXTENSIONS
-from ..core.ignore_rules import IgnoreRules
-from ..core._utils import is_relative_to
+from ..domain.config import TEXT_EXTENSIONS
+from ..domain.ignore_rules import IgnoreRules
+from ..workspace.containment import is_relative_to
 from .snapshot_child import (
     child_index_snapshot,
     direct_child_index_db,
@@ -23,15 +23,23 @@ from .snapshot_child import (
 class WatchSnapshot:
     files: dict[str, tuple[int, int]]
     child_indexes: dict[str, tuple[int, ...]]
+    policy_generation: int = 0
+    rules_changed: bool = False
+    dirty_files: frozenset[str] = field(default_factory=frozenset, compare=False)
+    changed_paths: frozenset[str] | None = field(default=None, compare=False)
 
     def changed_files(self, previous: "WatchSnapshot") -> tuple[list[str], list[str], list[str]]:
+        if self.changed_paths is not None:
+            added = sorted(path for path in self.changed_paths if path in self.files and path not in previous.files)
+            deleted = sorted(path for path in self.changed_paths if path in previous.files and path not in self.files)
+            modified = sorted(path for path in self.changed_paths if path in self.files and path in previous.files
+                              and (path in self.dirty_files or self.files[path] != previous.files[path]))
+            return added, deleted, modified
         added = sorted(set(self.files) - set(previous.files))
         deleted = sorted(set(previous.files) - set(self.files))
-        modified = sorted(path for path in set(self.files) & set(previous.files) if self.files[path] != previous.files[path])
+        modified = sorted(path for path in set(self.files) & set(previous.files)
+                          if path in self.dirty_files or self.files[path] != previous.files[path])
         return added, deleted, modified
-
-    def child_indexes_changed(self, previous: "WatchSnapshot") -> bool:
-        return self.child_indexes != previous.child_indexes
 
     def child_index_changes(self, previous: "WatchSnapshot") -> tuple[list[str], list[str], list[str]]:
         added = sorted(set(self.child_indexes) - set(previous.child_indexes))
@@ -80,6 +88,8 @@ def update_watch_snapshot(
     ignore_rules = IgnoreRules.from_root(root, ignore_patterns)
     own_db = own_db_path.resolve() if own_db_path else None
     files = dict(previous.files)
+    dirty_files = set()
+    candidates = set()
     refresh_child_indexes = False
     for changed_path in changed_paths:
         try:
@@ -87,6 +97,7 @@ def update_watch_snapshot(
             rel = path.relative_to(root).as_posix()
         except (OSError, ValueError):
             continue
+        candidates.add(rel)
         if rel in {"", "."}:
             return take_watch_snapshot(root, boundaries, own_db_path, ignore_patterns)
         if path.name == ".gitignore":
@@ -101,13 +112,13 @@ def update_watch_snapshot(
             continue
         if path.exists() and path.is_dir():
             if direct_child_index_db(path, own_db) is not None:
-                _remove_entries_under(files, rel)
+                candidates.update(_remove_entries_under(files, rel))
                 refresh_child_indexes = True
                 continue
             if _should_skip_dir(path, boundaries, ignore_rules):
-                _remove_entries_under(files, rel)
+                candidates.update(_remove_entries_under(files, rel))
                 continue
-            _replace_subtree(files, root, path, rel, boundaries, ignore_rules)
+            candidates.update(_replace_subtree(files, root, path, rel, boundaries, ignore_rules))
             refresh_child_indexes = refresh_child_indexes or subtree_had_child_index(previous.child_indexes, rel)
             continue
         if path.exists() and path.is_file() and _is_indexable_source(path, boundaries, ignore_rules):
@@ -117,16 +128,18 @@ def update_watch_snapshot(
                 files.pop(rel, None)
             else:
                 files[rel] = (stat.st_size, stat.st_mtime_ns)
+                dirty_files.add(rel)
             continue
         files.pop(rel, None)
-        _remove_entries_under(files, rel)
+        candidates.update(_remove_entries_under(files, rel))
         refresh_child_indexes = refresh_child_indexes or subtree_had_child_index(previous.child_indexes, rel)
     child_indexes = (
         child_index_snapshot(root, own_db_path, boundaries, ignore_rules)
         if refresh_child_indexes
         else dict(previous.child_indexes)
     )
-    return WatchSnapshot(files=files, child_indexes=child_indexes)
+    return WatchSnapshot(files=files, child_indexes=child_indexes, dirty_files=frozenset(dirty_files),
+                         changed_paths=frozenset(candidates))
 
 
 def snapshot_from_index(root: Path, files: list[dict], child_indexes: list[dict]) -> WatchSnapshot:
@@ -164,8 +177,8 @@ def _replace_subtree(
     rel: str,
     boundary_roots: list[Path],
     ignore_rules: IgnoreRules,
-) -> None:
-    _remove_entries_under(files, rel)
+) -> set[str]:
+    affected = _remove_entries_under(files, rel)
     for source in _iter_source_files(path, boundary_roots, ignore_rules):
         try:
             stat = source.stat()
@@ -173,13 +186,16 @@ def _replace_subtree(
         except (OSError, ValueError):
             continue
         files[source_rel] = (stat.st_size, stat.st_mtime_ns)
+        affected.add(source_rel)
+    return affected
 
 
-def _remove_entries_under(files: dict[str, tuple[int, int]], rel: str) -> None:
+def _remove_entries_under(files: dict[str, tuple[int, int]], rel: str) -> set[str]:
     prefix = rel.rstrip("/") + "/"
-    for path in list(files):
-        if path == rel or path.startswith(prefix):
-            files.pop(path, None)
+    affected = {path for path in files if path == rel or path.startswith(prefix)}
+    for path in affected:
+        files.pop(path, None)
+    return affected
 
 
 def _should_skip_dir(

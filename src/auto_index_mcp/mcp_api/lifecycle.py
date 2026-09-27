@@ -4,10 +4,10 @@ from typing import Any, Literal, Optional
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from ..core.background_indexer import BackgroundIndexer
-from ..core.config import DEFAULT_ENABLE_REBUILD_WAIT_SECONDS, DEFAULT_WATCH_DEBOUNCE_SECONDS
+from ..runtime.background import BackgroundIndexer
+from ..domain.config import DEFAULT_ENABLE_REBUILD_WAIT_SECONDS, DEFAULT_WATCH_DEBOUNCE_SECONDS
 from ..core.service import AutoIndexService
-from ..core.tool_errors import invalid_argument, not_enabled
+from ..domain.responses import invalid_argument, not_enabled
 from .bootstrap import ensure_enabled, resolve_project_root
 from .guard import run_service
 
@@ -81,7 +81,7 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         """Index health in one compact payload: root, file/vector counts,
         watcher state, and build progress. Call when results look stale or a
         tool reported the index was still building."""
-        return await run_service(service, service.status)
+        return await run_service(service, service.status, control_plane=True)
 
     @mcp.tool()
     async def auto_index_manage(

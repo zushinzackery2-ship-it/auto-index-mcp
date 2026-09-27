@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ..core.ignore_rules import IgnoreRules
+from ..domain.ignore_rules import IgnoreRules
 
 
 INDEX_DB_NAME = "index.db"

@@ -105,6 +105,13 @@ if errorlevel 1 (
     goto fail
 )
 
+echo Verifying packaged ripgrep dependency.
+"%VENV_PY%" -c "import subprocess; from auto_index_mcp.runtime.dependencies import ripgrep_executable; path = ripgrep_executable(); assert path, 'ripgrep dependency missing'; subprocess.run([path, '--version'], check=True)" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    set "FAIL_REASON=Ripgrep dependency verification failed."
+    goto fail
+)
+
 call :write_config
 
 (

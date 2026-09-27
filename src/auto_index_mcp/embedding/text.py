@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..core.text_decode import read_text_file
+from ..languages.text_decode import read_text_file
 
 MAX_BODY_LINES = 256
 MAX_BODY_CHARS = 8000

@@ -29,7 +29,7 @@ def test_embedding_status_does_not_load_model(monkeypatch, tmp_path: Path) -> No
     service = AutoIndexService(index_root=tmp_path / ".idx")
     service.enable(str(tmp_path), rebuild=False, refresh_embedder=False)
     monkeypatch.setattr(
-        "auto_index_mcp.core.service_embedding.create_embedder",
+        "auto_index_mcp.application.embedding.create_embedder",
         lambda env=None: (_ for _ in ()).throw(AssertionError("status must not load model")),
     )
 
@@ -62,11 +62,11 @@ def test_semantic_search_starts_background_embedding_without_blocking(
         return BagHashEmbedder(dim=32)
 
     monkeypatch.setattr(
-        "auto_index_mcp.core.service_semantic.resolve_embedding_model_path",
+        "auto_index_mcp.search.semantic.resolve_embedding_model_path",
         lambda env=None: model_dir,
     )
     monkeypatch.setattr(
-        "auto_index_mcp.core.service_embedding.create_embedder",
+        "auto_index_mcp.application.embedding.create_embedder",
         slow_create_embedder,
     )
 
@@ -105,7 +105,7 @@ def test_semantic_search_returns_partial_results_while_embedding_runs(
 
     monkeypatch.setattr(embedding_indexer, "EMBED_BATCH_SIZE", 1)
     monkeypatch.setattr(
-        "auto_index_mcp.core.service_embedding.create_embedder",
+        "auto_index_mcp.application.embedding.create_embedder",
         lambda env=None: BlockingEmbedder(dim=32),
     )
     service = AutoIndexService(index_root=tmp_path / ".idx")

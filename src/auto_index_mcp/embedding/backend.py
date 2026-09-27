@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import sys
 import re
 import threading
 import logging
@@ -101,6 +102,9 @@ def _find_bundled_model_dir() -> Path | None:
         candidate = base / _BUNDLED_MODEL_DIR
         if _has_model_files(candidate):
             return candidate
+    installed = Path(sys.prefix) / "share" / "auto-index-mcp" / _BUNDLED_MODEL_DIR
+    if _has_model_files(installed):
+        return installed
     return None
 
 

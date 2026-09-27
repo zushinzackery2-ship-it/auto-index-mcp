@@ -4,9 +4,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from ..core.config import INDEX_VERSION
+from ..domain.config import INDEX_VERSION
 from ..indexing.locator import iter_index_databases
-from ..indexing.metadata_reader import DEFAULT_METADATA_READER, IndexMetadataReader
+from ..storage.metadata import DEFAULT_METADATA_READER, IndexMetadataReader
 
 
 @dataclass(frozen=True)

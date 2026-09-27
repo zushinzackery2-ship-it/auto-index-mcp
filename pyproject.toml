@@ -10,11 +10,14 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
-    "mcp>=1.13.0",
+    "mcp>=1.13.0,<2",
     "watchdog>=4.0.0",
+    "pathspec>=0.12.1,<2",
+    "ripgrep>=14.1.0,<16",
 ]
 
 [project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.13", "psutil>=6"]
 semantic = [
     "onnxruntime>=1.16",
     "tokenizers>=0.15",
@@ -25,6 +28,9 @@ auto-index-mcp = "auto_index_mcp.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"share/auto-index-mcp/models/minilm-onnx" = ["models/minilm-onnx/model.onnx", "models/minilm-onnx/tokenizer.json"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

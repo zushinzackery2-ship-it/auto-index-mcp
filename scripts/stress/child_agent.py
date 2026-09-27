@@ -6,8 +6,7 @@ dumps every thread's stack to stderr if any single iteration exceeds 25s, so a
 hung call leaves the exact blocking stack behind.
 
 Env knobs (set by run_stress.py):
-  AIDX_STALE            override BuildLock stale_seconds for compressed runs
-  AIDX_KILL_AFTER_<id>  abrupt os._exit after N seconds, like a closed session
+  AIDX_KILL_WHILE_WRITING_<id>  abrupt exit while holding the index writer lease
 """
 from __future__ import annotations
 
@@ -30,27 +29,21 @@ def main() -> None:
     from auto_index_mcp.core.service import AutoIndexService
     from auto_index_mcp.mcp_api.lifecycle import start_or_defer_auto_watch
 
-    stale_override = os.environ.get("AIDX_STALE")
-    if stale_override:
-        import functools
-
-        from auto_index_mcp.core import service_rebuild
-        from auto_index_mcp.indexing.build_lock import BuildLock
-
-        service_rebuild.BuildLock = functools.partial(  # type: ignore[assignment]
-            BuildLock, stale_seconds=float(stale_override)
-        )
-
-    kill_after = float(os.environ.get(f"AIDX_KILL_AFTER_{agent}", "0") or 0)
+    kill_after = float(os.environ.get(f"AIDX_KILL_WHILE_WRITING_{agent}", "0") or 0)
     start = time.monotonic()
 
     service = AutoIndexService()
+    if kill_after:
+        def exit_under_writer_lease(indexer, context):
+            emit(agent=agent, op="writer-held", at=round(time.monotonic() - start, 2))
+            time.sleep(kill_after)
+            emit(agent=agent, op="abrupt-exit", at=round(time.monotonic() - start, 2))
+            os._exit(1)
+
+        service.builds.pipeline.run = exit_under_writer_lease
     deadline = time.monotonic() + duration
     call_no = 0
     while time.monotonic() < deadline:
-        if kill_after and time.monotonic() - start >= kill_after:
-            emit(agent=agent, op="abrupt-exit", at=round(time.monotonic() - start, 2))
-            os._exit(1)
         call_no += 1
         t0 = time.monotonic()
         status = "?"
@@ -68,7 +61,7 @@ def main() -> None:
         finally:
             faulthandler.cancel_dump_traceback_later()
         dt = time.monotonic() - t0
-        bg = result.get("background_index") or {}
+        bg = result.get("index_build") or {}
         emit(
             agent=agent,
             call=call_no,
@@ -85,18 +78,18 @@ def main() -> None:
 
     t0 = time.monotonic()
     st = service.status()
-    emb = st.get("embedding_background") or {}
+    emb = st.get("embedding") or {}
     emit(
         agent=agent,
         op="final_status",
         seconds=round(time.monotonic() - t0, 3),
         files=st.get("file_count"),
-        bg_state=(st.get("background_index") or {}).get("state"),
+        bg_state=(st.get("index_build") or {}).get("state"),
         emb_state=emb.get("state"),
         emb_phase=emb.get("phase"),
-        errors=st.get("last_errors"),
+        errors=st.get("errors"),
     )
-    os._exit(0)
+    service.disable()
 
 
 if __name__ == "__main__":

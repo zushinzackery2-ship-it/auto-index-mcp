@@ -9,7 +9,7 @@ from typing import Any, Iterable
 from .backend import EmbeddingBackend
 from .rerank import candidate_pool_size, rerank_hits
 from .text import TEXT_SCHEME_VERSION, read_lines, symbol_meta, symbol_text, window_texts
-from .vector_store import SymbolEmbeddingStore, encode_vector
+from ..storage.vectors import SymbolEmbeddingStore, encode_vector
 
 EMBED_BATCH_SIZE = 8
 logger = logging.getLogger(__name__)
@@ -25,7 +25,10 @@ class SymbolEmbedder:
         self.progress: Any = None
         self.check_cancelled = lambda: None
         fingerprint = getattr(self.backend, "text_fingerprint", "")
-        parts = [part for part in (fingerprint, TEXT_SCHEME_VERSION) if part]
+        space = getattr(backend, "space_fingerprint", None)
+        if space is None:
+            space = f"dim={backend.dim}"
+        parts = [part for part in (space, fingerprint, TEXT_SCHEME_VERSION) if part]
         self.model_key = f"{backend.name}#{';'.join(parts)}"
 
     def embed_project(self, root: Path, symbols: Iterable[dict[str, Any]]) -> dict[str, Any]:
@@ -37,13 +40,12 @@ class SymbolEmbedder:
         current_files: set[str] = set()
         result = self._embed_groups(root, groups, current_files)
         with self.conn_provider.connect() as conn:
-            self.store.purge_other_models(conn, self.model_key)
             rows = conn.execute(
                 "SELECT DISTINCT file_path FROM symbol_embeddings WHERE model_name=?", (self.model_key,)
             )
             stale = [row[0] for row in rows if row[0] not in current_files]
             for path in stale:
-                self.store.delete_file(conn, path)
+                self.store.delete_file(conn, path, self.model_key)
         return result
 
     def embed_files(self, root: Path, symbols_by_file: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
@@ -109,7 +111,7 @@ class SymbolEmbedder:
     def delete_files(self, paths: Iterable[str]) -> None:
         with self.conn_provider.connect() as conn:
             for path in paths:
-                self.store.delete_file(conn, path)
+                self.store.delete_file(conn, path, self.model_key)
 
     def _report_progress(self, done: int, total: int, reused: int) -> None:
         if self.progress is not None:

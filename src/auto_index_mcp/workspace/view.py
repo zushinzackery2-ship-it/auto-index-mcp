@@ -1,21 +1,19 @@
 from __future__ import annotations
 
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from ..indexing.store import IndexStore
-from ..core.text_decode import read_text_file
+from ..storage.index import IndexStore
+from ..languages.text_decode import read_text_file
 from .discovery import read_index_metadata
 from .safety import ensure_relative_to
 from .filesystem import diff_local
 from .ranking import ranked_symbol_key
-
-# Cache configuration - short TTL for incremental update responsiveness
-_CACHE_TTL_SECONDS = 0.5
-
+from .projection import (
+    prefix_file, prefix_file_header, prefix_search_target, prefixed_symbols,
+)
 
 @dataclass(frozen=True)
 class FileLookup:
@@ -40,15 +38,22 @@ class WorkspaceView:
         self._active_children: list[dict[str, Any]] | None = None
         self._child_stores: dict[str, IndexStore] = {}
         self._child_views: dict[str, WorkspaceView] = {}
-        # Result caches with TTL
-        self._cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+        # Result caches keyed by published workspace generations
+        self._cache: dict[str, tuple[tuple, list[dict[str, Any]]]] = {}
         self._cache_lock = threading.Lock()
+        self._source_generation = None
 
     def all_files(self) -> list[dict[str, Any]]:
         return self._load_all_files()
 
     def child_indexes(self) -> list[dict[str, Any]]:
         return self._active_child_indexes()
+
+    def iter_sources(self, root: Path):
+        yield "", root, self.store
+        for child in self._active_child_indexes():
+            for prefix, source_root, store in self._child_view(child).iter_sources(Path(child["root"])):
+                yield "/".join(part for part in (child["path"], prefix) if part), source_root, store
 
     def file_headers(self) -> list[dict[str, Any]]:
         return self._cached_files("file_headers", lambda: self._load_file_headers())
@@ -57,17 +62,26 @@ class WorkspaceView:
         return self._cached_files("search_targets", lambda: self._load_search_targets())
 
     def _cached_files(self, key: str, loader: Callable[[], list[dict[str, Any]]]) -> list[dict[str, Any]]:
-        """Get cached result or load fresh data with TTL-based caching."""
-        now = time.time()
+        """Invalidate by published generations, including nested workspaces."""
+        generation = self.generation_key()
         with self._cache_lock:
             cached = self._cache.get(key)
-            if cached is not None and (now - cached[0]) < _CACHE_TTL_SECONDS:
+            if cached is not None and generation == cached[0]:
                 return cached[1]
         # Load fresh data outside lock
         result = loader()
         with self._cache_lock:
-            self._cache[key] = (now, result)
+            self._cache[key] = (generation, result)
         return result
+
+    def generation_key(self) -> tuple:
+        metadata = self.store.get_metadata_map()
+        own = (metadata.get("index_epoch"), metadata.get("source_generation"), metadata.get("policy_generation"))
+        if own != self._source_generation:
+            self._source_generation = own
+            self._active_children = None
+        children = tuple((child["path"], self._child_view(child).generation_key()) for child in self._active_child_indexes())
+        return own, children
 
     def _load_all_files(self) -> list[dict[str, Any]]:
         """Load all files from store and all child indexes."""
@@ -90,31 +104,13 @@ class WorkspaceView:
             targets.extend(self.prefixed_search_targets(child))
         return sorted(targets, key=lambda item: item["path"].lower())
 
-    def invalidate_cache(self) -> None:
-        """Invalidate all caches (call after mutations)."""
-        with self._cache_lock:
-            self._cache.clear()
-            self._active_children = None
-
-    def query(self, text: str, languages: list[str], parent: str, limit: int, offset: int) -> list[dict[str, Any]]:
-        if not self._active_child_indexes():
-            return self.store.query(text, languages, parent, limit, offset)
-        rows = self.store.query(text, languages, parent, limit + offset, 0)
-        for child in self._active_child_indexes():
-            child_parent = self._child_parent_filter(child, parent)
-            if child_parent is None:
-                continue
-            child_rows = self._child_view(child).query(text, languages, child_parent, limit + offset, 0)
-            rows.extend(self.prefixed_files(child, child_rows))
-        return sorted(rows, key=lambda item: item["path"].lower())[offset:offset + limit]
-
     def query_symbols(self, text: str, kind: str, limit: int, offset: int) -> list[dict[str, Any]]:
         if not self._active_child_indexes():
             return self.store.query_symbols(text, kind, limit, offset)
         rows = self.store.query_symbols(text, kind, limit + offset, 0)
         for child in self._active_child_indexes():
             child_rows = self._child_view(child).query_symbols(text, kind, limit + offset, 0)
-            rows.extend(self._prefixed_symbols(child, child_rows))
+            rows.extend(prefixed_symbols(child, child_rows))
         # Text queries carry a match_rank tier from the store; merged
         # parent/child rows re-sort on it so relevance survives the merge.
         if text:
@@ -129,7 +125,7 @@ class WorkspaceView:
         rows = self.store.query_symbols_relaxed(subtokens, kind, limit + offset, 0)
         for child in self._active_child_indexes():
             child_rows = self._child_view(child).query_symbols_relaxed(subtokens, kind, limit + offset, 0)
-            rows.extend(self._prefixed_symbols(child, child_rows))
+            rows.extend(prefixed_symbols(child, child_rows))
         rows.sort(key=ranked_symbol_key)
         return rows[offset:offset + limit]
 
@@ -143,7 +139,7 @@ class WorkspaceView:
         lookup = self._child_view(child).get_file(child_path)
         if not lookup.item:
             return FileLookup(None)
-        return FileLookup(self._prefix_file(child, lookup.item))
+        return FileLookup(prefix_file(child, lookup.item))
 
     def read_text(self, root: Path, path: str) -> str:
         lookup = self.get_file(path)
@@ -158,12 +154,6 @@ class WorkspaceView:
         target = ensure_relative_to(source_root / source_path, source_root, item["path"])
         return read_text_file(target)
 
-    def context_for_match(self, root: Path, match: dict[str, Any], context_lines: int) -> list[dict[str, Any]]:
-        lines = self.read_text(root, match["path"]).splitlines()
-        line_index = match["line"] - 1
-        start = max(0, line_index - context_lines)
-        end = min(len(lines), line_index + context_lines + 1)
-        return [{"line": index + 1, "text": lines[index]} for index in range(start, end)]
 
     def diff_filesystem(self, root: Path) -> dict[str, list[str]]:
         children = self._active_child_indexes()
@@ -187,79 +177,16 @@ class WorkspaceView:
 
     def prefixed_files(self, child: dict[str, Any], files: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         rows = files if files is not None else self._child_view(child).all_files()
-        return [self._prefix_file(child, item) for item in rows]
+        return [prefix_file(child, item) for item in rows]
 
     def prefixed_file_headers(self, child: dict[str, Any], files: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         rows = files if files is not None else self._child_view(child).file_headers()
-        return [self._prefix_file_header(child, item) for item in rows]
+        return [prefix_file_header(child, item) for item in rows]
 
     def prefixed_search_targets(self, child: dict[str, Any], files: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         rows = files if files is not None else self._child_view(child).search_targets()
-        return [self._prefix_search_target(child, item) for item in rows]
+        return [prefix_search_target(child, item) for item in rows]
 
-    def _prefix_file(self, child: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
-        prefixed = dict(item)
-        prefixed["source_root"] = item.get("source_root", child["root"])
-        prefixed["source_path"] = item.get("source_path", item["path"])
-        prefixed["path"] = f"{child['path']}/{item['path']}"
-        prefixed["parent"] = str(Path(prefixed["path"]).parent).replace("\\", "/")
-        if prefixed["parent"] == ".":
-            prefixed["parent"] = ""
-        prefixed["symbols"] = [self._prefix_symbol_refs(child, symbol) for symbol in prefixed["symbols"]]
-        return prefixed
-
-    def _prefix_file_header(self, child: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
-        prefixed = dict(item)
-        prefixed["source_root"] = item.get("source_root", child["root"])
-        prefixed["source_path"] = item.get("source_path", item["path"])
-        prefixed["path"] = f"{child['path']}/{item['path']}"
-        prefixed["parent"] = str(Path(prefixed["path"]).parent).replace("\\", "/")
-        if prefixed["parent"] == ".":
-            prefixed["parent"] = ""
-        return prefixed
-
-    def _prefix_search_target(self, child: dict[str, Any], item: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "path": f"{child['path']}/{item['path']}",
-            "language": item.get("language", ""),
-            "active_source": item.get("active_source", True),
-            "source_root": item.get("source_root", child["root"]),
-            "source_path": item.get("source_path", item["path"]),
-        }
-
-    def _prefixed_symbols(self, child: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        prefixed = []
-        for row in rows:
-            item = self._prefix_symbol_refs(child, dict(row))
-            item["file_path"] = f"{child['path']}/{item['file_path']}"
-            prefixed.append(item)
-        return prefixed
-
-    def _prefix_symbol_refs(self, child: dict[str, Any], symbol: dict[str, Any]) -> dict[str, Any]:
-        updated = dict(symbol)
-        updated["called_by"] = [self._prefix_caller(child, value) for value in updated.get("called_by", [])]
-        return updated
-
-    def _prefix_caller(self, child: dict[str, Any], value: str) -> str:
-        if "::" not in value:
-            return value
-        file_path, symbol = value.split("::", 1)
-        if file_path.startswith(child["path"] + "/"):
-            return value
-        return f"{child['path']}/{file_path}::{symbol}"
-
-    def _child_parent_filter(self, child: dict[str, Any], parent: str) -> str | None:
-        parent = parent.replace("\\", "/").strip("/")
-        prefix = child["path"].rstrip("/")
-        if not parent:
-            return ""
-        if parent == prefix:
-            return ""
-        if parent.startswith(prefix + "/"):
-            return parent[len(prefix) + 1:]
-        if prefix.startswith(parent.rstrip("/") + "/"):
-            return ""
-        return None
 
     def _child_store(self, child: dict[str, Any]) -> IndexStore:
         db_path = Path(child["db_path"])
@@ -283,6 +210,11 @@ class WorkspaceView:
         return self._child_views[key]
 
     def _active_child_indexes(self) -> list[dict[str, Any]]:
+        metadata = self.store.get_metadata_map()
+        generation = (metadata.get("index_epoch"), metadata.get("source_generation"), metadata.get("policy_generation"))
+        if generation != self._source_generation:
+            self._source_generation = generation
+            self._active_children = None
         if self._active_children is not None:
             return self._active_children
         children = []

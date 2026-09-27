@@ -5,17 +5,17 @@ import os
 from dataclasses import replace
 from pathlib import Path
 
-from ..core._utils import is_relative_to
-from ..core.models import FileRecord
-from ..core.ignore_rules import IgnoreRules
+from ..workspace.containment import is_relative_to
+from ..domain.models import FileRecord
+from ..domain.ignore_rules import IgnoreRules
 
 C_FAMILY_LANGUAGES = {"c", "cpp"}
 
 
-def annotate_active_sources(root: Path, records: list[FileRecord]) -> list[FileRecord]:
+def annotate_active_sources(root: Path, records: list[FileRecord], active_paths: set[str] | None = None) -> list[FileRecord]:
     if not any(record.language in C_FAMILY_LANGUAGES for record in records):
         return records
-    active = discover_active_source_paths(root)
+    active = discover_active_source_paths(root) if active_paths is None else active_paths
     if not active:
         return records
     updated = []

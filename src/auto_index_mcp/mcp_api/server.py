@@ -8,7 +8,7 @@ from types import FrameType
 
 from mcp.server.fastmcp import FastMCP
 
-from ..core.config import DEFAULT_ENABLE_REBUILD_WAIT_SECONDS
+from ..domain.config import DEFAULT_ENABLE_REBUILD_WAIT_SECONDS
 from ..core.service import AutoIndexService
 from ..runtime.parent_lifetime import watch_parent
 from .bootstrap import PROJECT_PATH_ENV
@@ -61,7 +61,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _shutdown_service() -> None:
-    _service.stop_watcher()
+    _service.disable()
 
 
 def _handle_shutdown_signal(signum: int, frame: FrameType | None) -> None:

@@ -23,7 +23,7 @@ import anyio
 from mcp.server.fastmcp import Context
 
 from ..core.service import AutoIndexService
-from ..core.tool_errors import not_enabled
+from ..domain.responses import not_enabled
 
 PROJECT_PATH_ENV = "AUTO_INDEX_PROJECT_PATH"
 

@@ -1,37 +1,56 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 
-from ..core.models import SymbolRecord
+from ..domain.models import SymbolRecord
+from .python_refs import scope_references
 
 
-def extract_python_symbols(text: str, lines: list[str]) -> list[SymbolRecord]:
+def parse_python(text: str) -> ast.Module | None:
     try:
-        tree = ast.parse(text)
-    except SyntaxError:
+        return ast.parse(text)
+    except (SyntaxError, RecursionError):
+        return None
+
+
+def extract_python_symbols(text: str, lines: list[str], tree: ast.Module | None = None) -> list[SymbolRecord]:
+    tree = tree if tree is not None else parse_python(text)
+    if tree is None:
         return []
     records: list[SymbolRecord] = []
-    _visit_body(tree.body, lines, records, in_class=False)
+    aliases = scope_references(tree, {}).aliases
+    _visit_body(tree.body, lines, records, in_class=False, aliases=aliases)
     return sorted(records, key=lambda item: (item.line, item.name))
 
 
-def _visit_body(nodes: list[ast.stmt], lines: list[str], records: list[SymbolRecord], in_class: bool) -> None:
+def _visit_body(nodes, lines, records, in_class, aliases) -> None:
     for node in nodes:
-        _visit_node(node, lines, records, in_class)
+        _visit_node(node, lines, records, in_class, aliases)
 
 
-def _visit_node(node: ast.AST, lines: list[str], records: list[SymbolRecord], in_class: bool) -> None:
+def _visit_node(node, lines, records, in_class, aliases) -> None:
     """Visit definitions below control-flow nodes without changing scope."""
     if isinstance(node, ast.ClassDef):
-        records.append(_record(node.name, "class", node, lines))
-        _visit_body(node.body, lines, records, in_class=True)
+        refs = scope_references(node, aliases)
+        records.append(_enriched_record(node, "class", lines, refs))
+        _visit_body(node.body, lines, records, in_class=True, aliases=refs.aliases)
         return
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        records.append(_record(node.name, "method" if in_class else "function", node, lines))
-        _visit_body(node.body, lines, records, in_class=False)
+        refs = scope_references(node, aliases)
+        records.append(_enriched_record(node, "method" if in_class else "function", lines, refs))
+        _visit_body(node.body, lines, records, in_class=False, aliases=refs.aliases)
         return
     for child in ast.iter_child_nodes(node):
-        _visit_node(child, lines, records, in_class)
+        _visit_node(child, lines, records, in_class, aliases)
+
+
+def _enriched_record(node, kind, lines, refs) -> SymbolRecord:
+    calls = [name for name in refs.calls if name != node.name]
+    return replace(
+        _record(node.name, kind, node, lines), complexity=refs.complexity, calls=calls,
+        refs=[name for name in refs.refs if name != node.name and name not in refs.calls],
+    )
 
 
 def _record(name: str, kind: str, node: ast.AST, lines: list[str]) -> SymbolRecord:

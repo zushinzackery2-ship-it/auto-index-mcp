@@ -5,7 +5,7 @@ from auto_index_mcp.core.service import AutoIndexService
 
 
 def test_10_concurrent_rebuilds_only_one_succeeds(tmp_path: Path) -> None:
-    from auto_index_mcp.indexing.build_lock import BuildLock
+    from auto_index_mcp.runtime.leases import BuildLock
 
     project = tmp_path / "lock_stress"
     project.mkdir()

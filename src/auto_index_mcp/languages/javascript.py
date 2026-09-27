@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 
-from ..core.models import SymbolRecord
-from ..core.source_clean import clean_source_lines
+from ..domain.models import SymbolRecord
+from .source_clean import clean_source_lines
 from .generic import extract_symbols
 
 

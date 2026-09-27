@@ -32,7 +32,7 @@ def _make_project(root: Path) -> None:
 
 def _install_baghash(monkeypatch, dim: int = 64) -> None:
     monkeypatch.setattr(
-        "auto_index_mcp.core.service_embedding.create_embedder",
+        "auto_index_mcp.application.embedding.create_embedder",
         lambda env=None: BagHashEmbedder(dim=dim),
     )
 

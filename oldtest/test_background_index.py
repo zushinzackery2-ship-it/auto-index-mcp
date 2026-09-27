@@ -2,7 +2,7 @@ import threading
 import time
 from pathlib import Path
 
-from auto_index_mcp.core.background_indexer import (
+from auto_index_mcp.runtime.background import (
     BackgroundIndexer,
     PHASE_SCANNING,
     STATE_DONE,

@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-PY = REPO / ".venv" / "Scripts" / "python.exe"
+PY = Path(sys.executable)
 CALL_CAP = 45.0
 
 
@@ -112,6 +112,8 @@ class McpClient:
             self.proc.kill()
         except OSError:
             pass
+        self.proc.wait(timeout=5)
+        self.reader.join(timeout=5)
         self.errlog.close()
 
 
@@ -170,10 +172,13 @@ def main() -> None:
 
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO / "src")
+    env["AUTO_INDEX_REGISTRY_DIR"] = str(tmp / "registry")
     if scenario == "B":
         env["AUTO_INDEX_EMBEDDING_MODEL"] = str(REPO / "models" / "minilm-onnx")
+        env["AUTO_INDEX_SEMANTIC_MODE"] = "eager"
     else:
         env["AUTO_INDEX_EMBEDDING_MODEL"] = str(tmp / "no-model-here")
+        env["AUTO_INDEX_SEMANTIC_MODE"] = "off"
 
     clients = [McpClient(f"s{i}", env, tmp / f"s{i}.stderr.log") for i in range(servers)]
     outputs: list[list[str]] = [[] for _ in clients]
