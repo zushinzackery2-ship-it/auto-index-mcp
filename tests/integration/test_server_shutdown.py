@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from auto_index_mcp.mcp_api import server
+from auto_index_mcp.runtime.control.contracts import ActivationIntent
 
 
 class DummyService:
@@ -18,7 +19,9 @@ class DummyService:
         rebuild: bool = False,
         wait_seconds: float = 0.0,
         source: str = "",
+        activation=ActivationIntent.EXPLICIT,
     ) -> dict:
+        assert activation is ActivationIntent.AUTOMATIC
         self.enabled.append((root_path, rebuild, wait_seconds))
         return {"root": root_path, "updated_at": 1.0}
 

@@ -8,12 +8,16 @@ BRANCHES = (ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While, ast.ExceptHandl
 
 
 class References(ast.NodeVisitor):
-    def __init__(self, aliases: dict[str, str], parameters: set[str] | None = None) -> None:
+    def __init__(self, aliases: dict[str, str], parameters: set[str] | None = None,
+                 owner: str = "", qualifiers=None) -> None:
         self.aliases = dict(aliases)
         self.shadowed = set(parameters or ())
         self.calls: dict[str, None] = dict()
         self.refs: dict[str, None] = dict()
         self.complexity = 1
+        self.owner = owner
+        self.qualifiers = dict(qualifiers or {})
+        self.evidence: dict[tuple, dict] = dict()
 
     def name(self, node: ast.AST) -> str:
         if isinstance(node, ast.Name):
@@ -28,6 +32,7 @@ class References(ast.NodeVisitor):
         name = self.name(node.func)
         if name:
             self.calls[name] = None
+            self._reference(node.func, "call")
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -35,17 +40,48 @@ class References(ast.NodeVisitor):
             name = self.name(node)
             if name and name not in ("self", "cls"):
                 self.refs[name] = None
+                self._reference(node, "reference")
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if isinstance(node.ctx, ast.Load):
             self.refs[node.attr] = None
+            self._reference(node, "reference")
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         for alias in node.names:
             self.aliases[alias.asname or alias.name] = alias.name
-            if alias.asname:
-                self.refs[alias.name] = None
+            self.qualifiers[alias.asname or alias.name] = f"{node.module}.{alias.name}" if node.module else alias.name
+            self.refs[alias.name] = None
+            self._reference(ast.Name(id=alias.asname or alias.name, ctx=ast.Load()), "import")
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            self.qualifiers[alias.asname or alias.name.split(".")[0]] = alias.name
+
+    def _reference(self, node: ast.AST, usage: str) -> None:
+        target = self.name(node)
+        if not target:
+            return
+        qualifier, evidence = self._qualify(node)
+        key = (target, qualifier, usage)
+        self.evidence[key] = dict(target=target, qualifier=qualifier, evidence=evidence, usage=usage)
+
+    def _qualify(self, node: ast.AST) -> tuple[str, str]:
+        if isinstance(node, ast.Name):
+            qualifier = self.qualifiers.get(node.id, "")
+            return qualifier, "module-qualified" if qualifier else "name-only"
+        if isinstance(node, ast.Attribute):
+            receiver = node.value
+            if isinstance(receiver, ast.Call) and isinstance(receiver.func, ast.Name):
+                constructor = self.qualifiers.get(receiver.func.id, receiver.func.id)
+                return f"{constructor}.{node.attr}", "class-receiver"
+            if isinstance(receiver, ast.Name) and receiver.id in ("self", "cls") and self.owner:
+                return f"{self.owner}.{node.attr}", "self-receiver"
+            if isinstance(receiver, ast.Name) and receiver.id in self.qualifiers:
+                return f"{self.qualifiers[receiver.id]}.{node.attr}", "module-qualified"
+            return ast.unparse(node), "unresolved-receiver"
+        return "", "name-only"
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
@@ -92,10 +128,10 @@ class References(ast.NodeVisitor):
         super().generic_visit(node)
 
 
-def scope_references(node: ast.AST, aliases: dict[str, str]) -> References:
+def scope_references(node: ast.AST, aliases: dict[str, str], owner: str = "", qualifiers=None) -> References:
     args = getattr(node, "args", None)
     parameters = {arg.arg for arg in ast.walk(args) if isinstance(arg, ast.arg)} if args else set()
-    refs = References(aliases)
+    refs = References(aliases, owner=owner, qualifiers=qualifiers)
     refs.visit_header(node)
     refs.shadowed.update(parameters)
     for stmt in getattr(node, "body", []):

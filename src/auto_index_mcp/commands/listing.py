@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+from pathlib import Path
 
 
 def run(argv: list[str]) -> int:
@@ -8,13 +10,22 @@ def run(argv: list[str]) -> int:
         prog="auto-index-mcp list",
         description="List every index recorded in the user-level registry.",
     )
-    parser.parse_args(argv)
+    parser.add_argument("--json", action="store_true", help="include cache and model space accounting as JSON")
+    args = parser.parse_args(argv)
 
     from ..runtime.timefmt import iso_time
     from ..registry import IndexRegistry, index_dir_size
 
     registry = IndexRegistry()
     entries = registry.verify()
+    from ..cache.inventory import cache_inventory
+    from ..registry.cleanup import build_lock_active
+    if args.json:
+        print(json.dumps(dict(registry=str(registry.path()), entries=[
+            dict(entry, space=cache_inventory(Path(entry["index_dir"])), active=build_lock_active(entry["index_dir"]))
+            for entry in entries
+        ]), indent=2))
+        return 0
     print(f"registry: {registry.path()}")
     if not entries:
         print("no registered indexes")
@@ -25,7 +36,11 @@ def run(argv: list[str]) -> int:
             flags.append("orphan")
         if entry.get("ephemeral"):
             flags.append("ephemeral")
-        size = index_dir_size(entry["index_dir"]) if entry["index_exists"] else 0
+        if entry.get("state") in ("residual", "coordination", "failed"):
+            flags.append(entry["state"])
+        if build_lock_active(entry["index_dir"]):
+            flags.append("active")
+        size = index_dir_size(entry["index_dir"])
         note = f"  [{', '.join(flags)}]" if flags else ""
         print(f"{entry['root']}{note}")
         print(f"    index:         {entry['index_dir']}  ({_human_size(size)})")

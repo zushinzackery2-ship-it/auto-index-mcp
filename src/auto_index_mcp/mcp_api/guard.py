@@ -40,7 +40,8 @@ def run_tool(fn: Callable[..., dict[str, Any]], *args: Any, **kwargs: Any) -> di
         return internal_error(exc)
 
 
-async def run_service(service: Any, fn: Callable, *args: Any, control_plane: bool = False, **kwargs: Any) -> Any:
+async def run_service(service: Any, fn: Callable, *args: Any, control_plane: bool = False,
+                      allow_suspended: bool = False, **kwargs: Any) -> Any:
     """Serialize service requests off the MCP loop; protocol traffic stays live."""
     def invoke():
         with diagnostic_scope(getattr(service, "index_root", None)):
@@ -57,6 +58,11 @@ async def run_service(service: Any, fn: Callable, *args: Any, control_plane: boo
         if control_plane:
             return run_tool(fn, *args, **kwargs)
         with service._request_lock:
-            return run_tool(fn, *args, **kwargs)
+            return run_tool(admitted)
+
+    def admitted():
+        if not allow_suspended:
+            service.project.control.check(service.root_path)
+        return fn(*args, **kwargs)
 
     return await anyio.to_thread.run_sync(invoke)

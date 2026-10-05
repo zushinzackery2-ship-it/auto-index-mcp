@@ -173,6 +173,8 @@ def main() -> None:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO / "src")
     env["AUTO_INDEX_REGISTRY_DIR"] = str(tmp / "registry")
+    env["AUTO_INDEX_CACHE_DIR"] = str(tmp / "cache")
+    env["AUTO_INDEX_CACHE_MODE"] = "user"
     if scenario == "B":
         env["AUTO_INDEX_EMBEDDING_MODEL"] = str(REPO / "models" / "minilm-onnx")
         env["AUTO_INDEX_SEMANTIC_MODE"] = "eager"

@@ -19,37 +19,43 @@ def extract_python_symbols(text: str, lines: list[str], tree: ast.Module | None 
     if tree is None:
         return []
     records: list[SymbolRecord] = []
-    aliases = scope_references(tree, {}).aliases
-    _visit_body(tree.body, lines, records, in_class=False, aliases=aliases)
+    module = scope_references(tree, {})
+    _visit_body(tree.body, lines, records, in_class=False, aliases=module.aliases,
+                qualifiers=module.qualifiers, scope="")
     return sorted(records, key=lambda item: (item.line, item.name))
 
 
-def _visit_body(nodes, lines, records, in_class, aliases) -> None:
+def _visit_body(nodes, lines, records, in_class, aliases, qualifiers, scope) -> None:
     for node in nodes:
-        _visit_node(node, lines, records, in_class, aliases)
+        _visit_node(node, lines, records, in_class, aliases, qualifiers, scope)
 
 
-def _visit_node(node, lines, records, in_class, aliases) -> None:
+def _visit_node(node, lines, records, in_class, aliases, qualifiers, scope) -> None:
     """Visit definitions below control-flow nodes without changing scope."""
     if isinstance(node, ast.ClassDef):
-        refs = scope_references(node, aliases)
-        records.append(_enriched_record(node, "class", lines, refs))
-        _visit_body(node.body, lines, records, in_class=True, aliases=refs.aliases)
+        refs = scope_references(node, aliases, qualifiers=qualifiers)
+        child_scope = f"{scope}.{node.name}" if scope else node.name
+        records.append(_enriched_record(node, "class", lines, refs, child_scope))
+        _visit_body(node.body, lines, records, in_class=True, aliases=refs.aliases,
+                    qualifiers=refs.qualifiers, scope=child_scope)
         return
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        refs = scope_references(node, aliases)
-        records.append(_enriched_record(node, "method" if in_class else "function", lines, refs))
-        _visit_body(node.body, lines, records, in_class=False, aliases=refs.aliases)
+        refs = scope_references(node, aliases, owner=scope if in_class else "", qualifiers=qualifiers)
+        child_scope = f"{scope}.{node.name}" if scope else node.name
+        records.append(_enriched_record(node, "method" if in_class else "function", lines, refs, child_scope))
+        _visit_body(node.body, lines, records, in_class=False, aliases=refs.aliases,
+                    qualifiers=refs.qualifiers, scope=child_scope)
         return
     for child in ast.iter_child_nodes(node):
-        _visit_node(child, lines, records, in_class, aliases)
+        _visit_node(child, lines, records, in_class, aliases, qualifiers, scope)
 
 
-def _enriched_record(node, kind, lines, refs) -> SymbolRecord:
+def _enriched_record(node, kind, lines, refs, scope) -> SymbolRecord:
     calls = [name for name in refs.calls if name != node.name]
     return replace(
         _record(node.name, kind, node, lines), complexity=refs.complexity, calls=calls,
         refs=[name for name in refs.refs if name != node.name and name not in refs.calls],
+        reference_evidence=list(refs.evidence.values()), nesting_path=scope,
     )
 
 

@@ -7,6 +7,7 @@ from typing import Any
 from ..domain.config import INDEX_VERSION
 from ..indexing.locator import iter_index_databases
 from ..storage.metadata import DEFAULT_METADATA_READER, IndexMetadataReader
+from ..domain.ignore_rules import IgnoreRules
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,15 @@ def discover_child_indexes(
     own_db_path = own_db_path.resolve()
     candidates: list[tuple[Path, Path]] = []
     seen_child_roots: set[Path] = set()
+    from ..registry.store import IndexRegistry
+    rules = IgnoreRules.from_root(root, ignore_patterns)
+    for entry in IndexRegistry().entries().values():
+        child_root = Path(entry["root"]).resolve()
+        db_path = Path(entry["index_dir"]) / "index.db"
+        if child_root != root and child_root.is_relative_to(root) and db_path.exists() and not rules.is_ignored(child_root, True):
+            if child_root not in seen_child_roots:
+                candidates.append((child_root, db_path))
+                seen_child_roots.add(child_root)
     for db_path in iter_index_databases(root, ignore_patterns=ignore_patterns):
         db_path = db_path.resolve()
         if db_path == own_db_path:

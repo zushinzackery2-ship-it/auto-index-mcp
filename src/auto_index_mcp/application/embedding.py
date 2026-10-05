@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from typing import Any
+import logging
 
 from ..runtime.background import BackgroundIndexer, PHASE_EMBEDDING
 from ..embedding.backend import create_embedder, resolve_embedding_model_path
-from ..storage.completion import is_complete, mark_complete
+from ..storage.completion import begin_pass, checkpoint_revision, is_complete, mark_complete
 from ..storage.embeddings import EmbeddingStore
 from ..embedding.indexer import SymbolEmbedder
 from ..runtime.leases import BuildLock
@@ -12,6 +13,10 @@ from ..storage.generation import revision as source_revision
 from ..workspace.semantic import vector_sources, workspace_complete
 from ..workspace.view import WorkspaceView
 from ..workspace.semantic import describe_sources
+from ..domain.errors import ServiceError
+from ..storage.namespace import retain_namespaces, retention_limits
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingCoordinator:
@@ -31,7 +36,7 @@ class EmbeddingCoordinator:
             indexer = self.project.embedding_indexer
             if indexer is not None and self._vectors_current(store, indexer):
                 return dict(status="embedding-ready", model=indexer.backend.name,
-                            vector_count=sum(item["vector_count"] for item in describe_sources(WorkspaceView(store), root, indexer)))
+                            vector_count=sum(item["vector_count"] for item in describe_sources(self.project.view, root, indexer)))
             embedding_store = self.project.embedding_store
             worker = BackgroundIndexer(
                 lambda background: self._load_and_embed_project(background, root, store, embedding_store),
@@ -53,7 +58,7 @@ class EmbeddingCoordinator:
                 self.ensure_embedding_background()
 
     def _vectors_current(self, store, indexer):
-        return workspace_complete(WorkspaceView(store), self.project.root_path, indexer)
+        return workspace_complete(self.project.view, self.project.root_path, indexer)
 
     def _refresh_embedder(self) -> None:
         self.project.embedding_indexer = self._create_embedding_indexer()
@@ -79,7 +84,14 @@ class EmbeddingCoordinator:
             self.project.embedding_indexer = indexer
         indexer.check_cancelled = background.check_cancelled
         results = []
-        for prefix, source_root, source_store, vectors in vector_sources(WorkspaceView(store), root, indexer.conn_provider):
+        view = WorkspaceView(store, control=self.project.control)
+        try:
+            return self._embed_sources(view, background, root, indexer, results)
+        finally:
+            view.close()
+
+    def _embed_sources(self, view, background, root, indexer, results):
+        for prefix, source_root, source_store, vectors in vector_sources(view, root, indexer.conn_provider):
             background.check_cancelled()
             vectors.initialize()
             source_indexer = indexer if not prefix else SymbolEmbedder(indexer.backend, vectors)
@@ -106,6 +118,7 @@ class EmbeddingCoordinator:
         return dict(status="embedding-in-background", model=_embedding_model_name(indexer or self.project.embedding_indexer))
 
     def _embed_project_exclusive(self, root, store, indexer, wait_seconds):
+        count_limit, byte_limit = retention_limits()
         lock = BuildLock(indexer.conn_provider.db_path.parent / "embeddings.build.lock")
         if not lock.acquire(wait_seconds):
             return dict(status="embedding-in-other-process", model=indexer.backend.name, build_lock=lock.state_info())
@@ -119,17 +132,49 @@ class EmbeddingCoordinator:
                     return dict(status="embedding-waiting-for-index", model=indexer.backend.name)
                 if is_complete(indexer.conn_provider, indexer.model_key, revision):
                     return dict(status="embedding-ready", model=indexer.backend.name, vector_count=indexer.count())
-                result = indexer.embed_project(root, store.iter_symbols())
+                baseline = checkpoint_revision(indexer.conn_provider, indexer.model_key)
+                changes = store.changes_since(baseline)
+                revision = changes["revision"]
+                begin_pass(indexer.conn_provider, indexer.model_key, baseline)
+                try:
+                    if changes["mode"] == "full":
+                        result = indexer.embed_project(root, store.iter_symbols())
+                    else:
+                        result = self._embed_delta(root, store, indexer, changes["paths"])
+                except ServiceError as exc:
+                    if exc.code not in ("source-changed", "source-too-large"):
+                        raise
+                    logger.warning("semantic phase=source-drift root=%s error=%s", root, exc)
+                    return dict(status="embedding-waiting-for-source", error=exc.code, hint=exc.hint)
+                result["mode"] = changes["mode"]
+                result["reason"] = changes["reason"]
                 # A concurrent index publication invalidates this pass. Reuse
                 # its per-file commits and converge on the newest revision.
                 if source_revision(store.get_metadata_map()) == revision:
                     mark_complete(indexer.conn_provider, indexer.model_key, revision)
+                    with indexer.conn_provider.connect() as conn:
+                        result["retention"] = retain_namespaces(conn, indexer.model_key, count_limit, byte_limit)
                     result["status"] = "embedded"
                     result["vector_count"] = indexer.count()
+                    logger.info("semantic phase=published root=%s mode=%s revision=%s files=%s embedded=%s reused=%s",
+                                root, changes["mode"], revision, result["files"], result["embedded"], result["reused"])
                     return result
             return dict(status="embedding-cancelled")
         finally:
             lock.release()
+
+    @staticmethod
+    def _embed_delta(root, store, indexer, paths):
+        result = dict(embedded=0, reused=0, files=0, model=indexer.backend.name)
+        for start in range(0, len(paths), 64):
+            batch = paths[start:start + 64]
+            groups = dict((path, []) for path in batch)
+            for symbol in store.symbols_for_files(batch):
+                groups[symbol["file_path"]].append(symbol)
+            partial = indexer.embed_files(root, groups)
+            for key in ("embedded", "reused", "files"):
+                result[key] += partial[key]
+        return result
 
     def _embed_after_incremental(self, root, store, previous, current, result):
         if self.project.enabled and self.project.store is store and result.get("status") == "incremental":

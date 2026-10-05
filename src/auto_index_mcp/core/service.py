@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import uuid
 
 from ..application.context import ProjectContext
 from ..application.facade_fields import ContextField
@@ -10,6 +11,10 @@ from ..domain.config import DEFAULT_WATCH_DEBOUNCE_SECONDS
 from ..domain.ignore_config import IgnoreConfig
 from ..search.navigation_format import MAX_PRESENTED_CALLERS
 from ..application.lifecycle import LifecycleCoordinator
+from ..application.stopping import StoppingCoordinator
+from ..application.purge.coordinator import PurgeCoordinator
+from ..runtime.control.client import ControlClient
+from ..runtime.control.contracts import ActivationIntent
 from ..application.ignore import IgnoreCoordinator
 from ..application.embedding import EmbeddingCoordinator
 from ..application.status import StatusCoordinator
@@ -26,6 +31,7 @@ class AutoIndexService:
 
     enabled = ContextField("enabled")
     root_path = ContextField("root_path")
+    fixed_root = ContextField("fixed_root")
     index_root = ContextField("index_root")
     index_root_override = ContextField("index_root_override")
     store = ContextField("store")
@@ -53,17 +59,25 @@ class AutoIndexService:
         self.builds = RebuildCoordinator(project, self.ignore, self.embeddings, self.state,
                                          lambda **kwargs: self.watch.start_watcher(**kwargs))
         self.watch = WatchCoordinator(project, self.builds, self.embeddings)
-        self.lifecycle = LifecycleCoordinator(project, self.builds, self.ignore, self.embeddings, self.watch, self.state)
+        self.stopping = StoppingCoordinator(project, self.builds, self.watch, self.state)
+        self.purging = PurgeCoordinator(project)
+        project.control = ControlClient(uuid.uuid4().hex, self.stopping.cooperate)
+        self.lifecycle = LifecycleCoordinator(project, self.builds, self.ignore, self.embeddings, self.watch,
+                                              self.state, self.stopping)
         self.navigation = NavigationQueries(project, self.state)
         self.search = SearchQueries(project, self.state)
         self.quality = QualityQueries(project, self.state)
         self.semantic = SemanticQueries(project, self.state, self.embeddings)
 
-    def enable(self, root_path: str, rebuild: bool=True, refresh_embedder: bool=True, source: str='mcp-enable') -> dict[str, Any]:
-        return self.lifecycle.enable(root_path, rebuild, refresh_embedder, source)
+    def enable(self, root_path: str, rebuild: bool=True, refresh_embedder: bool=True, source: str='mcp-enable',
+               activation=ActivationIntent.EXPLICIT) -> dict[str, Any]:
+        with self._request_lock:
+            return self.lifecycle.enable(root_path, rebuild, refresh_embedder, source, activation)
 
-    def enable_reusing_index(self, root_path: str, rebuild: bool=False, wait_seconds: float=0.0, source: str='mcp-enable') -> dict[str, Any]:
-        return self.lifecycle.enable_reusing_index(root_path, rebuild, wait_seconds, source)
+    def enable_reusing_index(self, root_path: str, rebuild: bool=False, wait_seconds: float=0.0,
+                            source: str='mcp-enable', activation=ActivationIntent.EXPLICIT) -> dict[str, Any]:
+        with self._request_lock:
+            return self.lifecycle.enable_reusing_index(root_path, rebuild, wait_seconds, source, activation)
 
     def disable(self) -> dict[str, Any]:
         return self.lifecycle.disable()
@@ -73,6 +87,9 @@ class AutoIndexService:
 
     def clear(self, delete_file: bool=False) -> dict[str, Any]:
         return self.lifecycle.clear(delete_file)
+
+    def purge(self, dry_run=False, timeout_seconds=30.0) -> dict[str, Any]:
+        return self.purging.run(dry_run, timeout_seconds)
 
     def ignore_config(self) -> IgnoreConfig:
         return self.ignore.ignore_config()
@@ -108,7 +125,8 @@ class AutoIndexService:
         return self.builds.rebuild(reuse_if_fresh)
 
     def rebuild_sync(self, reuse_if_fresh: bool=False) -> dict[str, Any]:
-        return self.builds.rebuild_sync(reuse_if_fresh)
+        with self._request_lock:
+            return self.builds.rebuild_sync(reuse_if_fresh)
 
     def request_auto_watch_after_build(self) -> None:
         return self.builds.request_auto_watch_after_build()
@@ -128,8 +146,8 @@ class AutoIndexService:
     def sync_index_to_filesystem(self) -> dict[str, Any]:
         return self.watch.sync_index_to_filesystem()
 
-    def stop_watcher(self) -> dict[str, Any]:
-        return self.watch.stop_watcher()
+    def stop_watcher(self, deadline=None) -> dict[str, Any]:
+        return self.watch.stop_watcher(deadline)
 
     def watcher_status(self) -> dict[str, Any]:
         return self.watch.watcher_status()

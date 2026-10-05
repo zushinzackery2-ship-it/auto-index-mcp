@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from ..domain.ignore_config import IgnoreConfig
+from ..domain.ignore_rules import IgnoreRules
 from ..indexing.snapshot import snapshot_from_index, take_watch_snapshot, update_watch_snapshot
 from ..indexing.updater import IndexUpdater
 
@@ -15,10 +16,14 @@ class WatchSession:
         self.root, self.store = root, store
         self.rebuild = rebuild
         self.after_update = after_update
+        config = IgnoreConfig.from_metadata(store.get_metadata_map())
+        self.event_rules = IgnoreRules.from_root(root, config.patterns)
 
     def _policy(self):
         metadata = self.store.get_metadata_map()
-        return IgnoreConfig.from_metadata(metadata), int(metadata.get("policy_generation", 0))
+        config = IgnoreConfig.from_metadata(metadata)
+        self.event_rules = IgnoreRules.from_root(self.root, config.patterns)
+        return config, int(metadata.get("policy_generation", 0))
 
     def baseline(self):
         return snapshot_from_index(self.root, self.store.file_headers(), self.store.child_indexes())

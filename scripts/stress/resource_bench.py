@@ -14,7 +14,7 @@ import time
 import tracemalloc
 from pathlib import Path
 
-import psutil
+from metrics import cpu_seconds, resident_bytes
 
 from auto_index_mcp.application.watch_session import WatchSession
 from auto_index_mcp.core.service import AutoIndexService
@@ -24,33 +24,34 @@ from auto_index_mcp.storage.embeddings import EmbeddingStore
 from auto_index_mcp.embedding.indexer import SymbolEmbedder
 
 
-def measure(fn):
-    process = psutil.Process()
-    cpu_start = sum(process.cpu_times()[:2])
-    rss_start = process.memory_info().rss
+def measure(fn, trace_allocations=True):
+    cpu_start = cpu_seconds()
+    rss_start = resident_bytes()
     peak_rss = [rss_start]
     stopped = threading.Event()
 
     def sample():
         while not stopped.wait(0.005):
-            peak_rss[0] = max(peak_rss[0], process.memory_info().rss)
+            peak_rss[0] = max(peak_rss[0], resident_bytes())
 
     sampler = threading.Thread(target=sample, daemon=True)
-    tracemalloc.start()
+    if trace_allocations:
+        tracemalloc.start()
     sampler.start()
     started = time.perf_counter()
     try:
         result = fn()
         elapsed = time.perf_counter() - started
-        _, peak = tracemalloc.get_traced_memory()
-        peak_rss[0] = max(peak_rss[0], process.memory_info().rss)
+        peak = tracemalloc.get_traced_memory()[1] if trace_allocations else None
+        peak_rss[0] = max(peak_rss[0], resident_bytes())
     finally:
         stopped.set()
         sampler.join()
-        tracemalloc.stop()
-    return dict(seconds=round(elapsed, 4), python_peak_mib=round(peak / 1048576, 3),
+        if trace_allocations:
+            tracemalloc.stop()
+    return dict(seconds=round(elapsed, 4), python_peak_mib=round(peak / 1048576, 3) if peak is not None else None,
                 rss_start_mib=round(rss_start / 1048576, 3), rss_peak_mib=round(peak_rss[0] / 1048576, 3),
-                cpu_seconds=round(sum(process.cpu_times()[:2]) - cpu_start, 4), result=result)
+                cpu_seconds=round(cpu_seconds() - cpu_start, 4), result=result)
 
 
 def module_path(root, index):

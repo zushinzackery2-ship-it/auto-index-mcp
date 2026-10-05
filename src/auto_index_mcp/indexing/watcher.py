@@ -9,22 +9,23 @@ from typing import Any, Callable
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-from ..domain.config import DEFAULT_EXCLUDE_DIRS
+from ..domain.config import INTERNAL_EXCLUDE_DIRS
+from ..domain.ignore_rules import IgnoreRules
 from ..workspace.containment import is_relative_to
 from .snapshot import WatchSnapshot
 from ..runtime.leases import BuildLock
 from ..runtime.diagnostics import diagnostic_scope
+from ..runtime.control.contracts import remaining
 
-# Directory names whose events can be dropped at the source: they are excluded
-# from indexing unconditionally, so no snapshot could ever change because of
-# them. ``.auto-index-mcp`` is deliberately NOT here - child-index WAL commits
-# under a subproject's .auto-index-mcp must keep waking the watcher; only this
-# project's own index directory is filtered (by prefix, below).
-_EVENT_IGNORED_DIR_NAMES = frozenset(DEFAULT_EXCLUDE_DIRS - {".auto-index-mcp"})
+# Recommended exclusions can be explicitly included and change across instances.
+# Only protected directories are safe to drop before the policy-aware snapshot.
+# Child .auto-index-mcp events must continue to wake the parent watcher.
+_EVENT_IGNORED_DIR_NAMES = frozenset(INTERNAL_EXCLUDE_DIRS - {".auto-index-mcp"})
 logger = logging.getLogger(__name__)
 
 
-def make_event_filter(root: Path, own_index_dir: Path | None) -> Callable[[Path], bool]:
+def make_event_filter(root: Path, own_index_dir: Path | None,
+                      rules_provider: Callable[[], IgnoreRules] | None = None) -> Callable[[Path], bool]:
     """Cheap pre-filter for filesystem events (string ops only, no syscalls).
 
     Returns True for paths that can never affect the index: anything inside
@@ -33,6 +34,8 @@ def make_event_filter(root: Path, own_index_dir: Path | None) -> Callable[[Path]
     always-excluded directory such as .git or __pycache__.
     """
 
+    default_rules = IgnoreRules.from_root(root) if rules_provider is None else None
+
     def should_ignore(path: Path) -> bool:
         if own_index_dir is not None and is_relative_to(path, own_index_dir):
             return True
@@ -40,7 +43,12 @@ def make_event_filter(root: Path, own_index_dir: Path | None) -> Callable[[Path]
             rel = path.relative_to(root)
         except ValueError:
             return False
-        return any(part in _EVENT_IGNORED_DIR_NAMES for part in rel.parts)
+        if any(part in _EVENT_IGNORED_DIR_NAMES for part in rel.parts):
+            return True
+        if path.name == ".gitignore" or ".auto-index-mcp" in rel.parts:
+            return False
+        rules = rules_provider() if rules_provider is not None else default_rules
+        return rules.is_ignored_rel(rel.as_posix(), False)
 
     return should_ignore
 
@@ -65,6 +73,7 @@ class FileEventWatcher:
         self.debounce_seconds = debounce_seconds
         self._initial_snapshot = initial_snapshot
         self._event_filter = event_filter
+        self.index_root = lease_path.parent if lease_path is not None else None
         self._lease = BuildLock(lease_path) if lease_path else None
         self._maintenance = maintenance
         self._observer = None
@@ -106,14 +115,18 @@ class FileEventWatcher:
             self.stop()
             raise
 
-    def stop(self) -> None:
+    def stop(self, deadline=None) -> None:
+        deadline = deadline if deadline is not None else time.monotonic() + 10.0
         self._stop.set()
         self._changed.set()
-        if self._observer:
-            self._observer.stop()
-            self._observer.join(timeout=5.0)
+        observer = self._observer
+        if observer:
+            observer.stop()
+            observer.join(timeout=remaining(deadline))
+            if observer.is_alive():
+                raise TimeoutError("watcher observer is still stopping; resources retained")
         if self._worker:
-            self._worker.join(timeout=5.0)
+            self._worker.join(timeout=remaining(deadline))
             if self._worker.is_alive():
                 raise TimeoutError("watcher is still finishing an update; lease retained")
         self._observer = None
@@ -143,7 +156,7 @@ class FileEventWatcher:
 
     def _run(self) -> None:
         try:
-            with diagnostic_scope(self._lease.path.parent if self._lease is not None else None):
+            with diagnostic_scope(self.index_root):
                 self._run_leased()
         except Exception as exc:
             self.last_error = str(exc)

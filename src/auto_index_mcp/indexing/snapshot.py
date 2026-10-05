@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Iterator
 
-from ..domain.config import TEXT_EXTENSIONS
+from ..domain.config import text_extensions
 from ..domain.ignore_rules import IgnoreRules
 from ..workspace.containment import is_relative_to
 from .snapshot_child import (
@@ -59,8 +59,9 @@ def take_watch_snapshot(
     ignore_patterns: list[str] | None = None,
 ) -> WatchSnapshot:
     root = root.resolve()
-    boundaries = [path.resolve() for path in boundary_roots or []]
     ignore_rules = IgnoreRules.from_root(root, ignore_patterns)
+    children = child_index_snapshot(root, own_db_path, ignore_rules)
+    boundaries = [(root / path).parent.parent for path in children]
     files: dict[str, tuple[int, int]] = {}
     for path in _iter_source_files(root, boundaries, ignore_rules):
         try:
@@ -71,7 +72,7 @@ def take_watch_snapshot(
         files[rel] = (stat.st_size, stat.st_mtime_ns)
     return WatchSnapshot(
         files=files,
-        child_indexes=child_index_snapshot(root, own_db_path, boundaries, ignore_rules),
+        child_indexes=children,
     )
 
 
@@ -134,7 +135,7 @@ def update_watch_snapshot(
         candidates.update(_remove_entries_under(files, rel))
         refresh_child_indexes = refresh_child_indexes or subtree_had_child_index(previous.child_indexes, rel)
     child_indexes = (
-        child_index_snapshot(root, own_db_path, boundaries, ignore_rules)
+        child_index_snapshot(root, own_db_path, ignore_rules)
         if refresh_child_indexes
         else dict(previous.child_indexes)
     )
@@ -215,7 +216,7 @@ def _is_indexable_source(
     ignore_rules: IgnoreRules,
 ) -> bool:
     return (
-        path.suffix.lower() in TEXT_EXTENSIONS
+            path.suffix.lower() in text_extensions()
         and not ignore_rules.is_ignored(path, is_dir=False)
         and not _should_skip_dir(path.parent, boundary_roots, ignore_rules)
     )

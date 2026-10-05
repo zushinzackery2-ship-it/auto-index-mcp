@@ -27,13 +27,16 @@ def update_policy(conn, values: dict) -> int:
     return generation
 
 
-def publish(conn, parser_version: int) -> None:
+def publish(conn, parser_version: int, paths=(), full: bool = False) -> None:
+    from .changes import record_changes
     current = metadata(conn)
+    generation = int(current.get("source_generation", 0)) + 1
     set_value(conn, "index_epoch", current.get("index_epoch") or uuid.uuid4().hex)
-    set_value(conn, "source_generation", int(current.get("source_generation", 0)) + 1)
+    set_value(conn, "source_generation", generation)
     set_value(conn, "applied_policy_generation", int(current.get("policy_generation", 0)))
     set_value(conn, "parser_version", parser_version)
     set_value(conn, "updated_at", time.time())
+    record_changes(conn, generation, paths, full)
 
 
 def revision(values: dict) -> str | None:

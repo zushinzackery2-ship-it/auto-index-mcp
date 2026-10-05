@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 
 from .locking.native import process_alive, try_lock, unlock
+from .budget import bounded_timeout
+from ..cache.locking import lock_path
 
 logger = logging.getLogger(__name__)
 
@@ -20,14 +22,15 @@ class BuildLock:
     Neither timestamps nor PID reuse can revoke a live owner's lock.
     """
 
-    def __init__(self, path: Path, stale_seconds: float = 120.0, poll_seconds: float = 0.05) -> None:
-        self.path = Path(path)
+    def __init__(self, path: Path, stale_seconds: float = 120.0, poll_seconds: float = 0.05,
+                 resolve_cache: bool = True) -> None:
+        self.path = lock_path(Path(path)) if resolve_cache else Path(path)
         self.poll_seconds = poll_seconds
         self._fd: int | None = None
         self._mutex = threading.Lock()
 
     def acquire(self, wait_seconds: float) -> bool:
-        deadline = time.monotonic() + max(0.0, wait_seconds)
+        deadline = time.monotonic() + bounded_timeout(wait_seconds)
         while True:
             with self._mutex:
                 if self._fd is not None:
@@ -105,6 +108,8 @@ class BuildLock:
             with self.path.open("rb") as stream:
                 stream.seek(1)
                 token = stream.read(128).decode("ascii").strip()
+            if not token:
+                return dict(holder_pid=None, holder_alive=True, mechanism="kernel-shared")
             pid, started = (int(part) for part in token.split(":", 1))
         except (OSError, ValueError, UnicodeError):
             return None

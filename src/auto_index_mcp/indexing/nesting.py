@@ -47,11 +47,12 @@ def annotate_symbol_nesting(cleaned_lines: list[str], symbols: list[SymbolRecord
             children[parent].append(index)
         depth = len(stack)
         parent_symbol = annotated[parent] if parent is not None else None
-        nesting_path = f"{parent_symbol.nesting_path}.{symbol.name}" if parent_symbol else symbol.name
+        nesting_path = (f"{parent_symbol.nesting_path}.{symbol.name}" if parent_symbol
+                        else symbol.nesting_path or symbol.name)
         annotated[index] = replace(
             symbol,
-            parent_name=parent_symbol.name if parent_symbol else "",
-            parent_kind=parent_symbol.kind if parent_symbol else "",
+            parent_name=parent_symbol.name if parent_symbol else symbol.parent_name,
+            parent_kind=parent_symbol.kind if parent_symbol else symbol.parent_kind,
             depth=depth,
             nesting_path=nesting_path,
             max_block_depth=_max_block_depth(cleaned_lines, symbol, language),

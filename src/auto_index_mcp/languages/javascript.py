@@ -5,10 +5,11 @@ import re
 from ..domain.models import SymbolRecord
 from .source_clean import clean_source_lines
 from .generic import extract_symbols
+from .braces import BracePairs
 
 
 TS_EXPORT_RE = re.compile(r"^\s*export\s+(?:default\s+)?")
-ARROW_RE = re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][\w]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_][\w]*)\s*=>")
+ARROW_RE = re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_][\w]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_][\w]*)\s*(?::\s*[^=]+)?=>")
 METHOD_RE = re.compile(r"^\s*(?:public|private|protected|static|async|override|readonly|\s)*([A-Za-z_][\w]*)\s*\([^)]*\)\s*(?::\s*[^{]+)?\s*\{")
 
 
@@ -17,37 +18,25 @@ def extract_javascript_like_symbols(
     cleaned_lines: list[str] | None = None,
 ) -> list[SymbolRecord]:
     cleaned = cleaned_lines if cleaned_lines is not None else clean_source_lines(lines, "javascript")
-    records = extract_symbols(lines, cleaned)
-    names = {(record.name, record.line) for record in records}
+    records = {(record.name, record.line): record for record in extract_symbols(lines, cleaned)}
+    pairs = BracePairs(cleaned)
     for index, line in enumerate(cleaned):
         arrow = ARROW_RE.match(line)
-        if arrow and (arrow.group(1), index + 1) not in names:
-            records.append(_record(arrow.group(1), "function", index, lines, cleaned))
+        if arrow:
+            key = (arrow.group(1), index + 1)
+            records[key] = _record(arrow.group(1), "function", index, lines, pairs)
             continue
         method = METHOD_RE.match(TS_EXPORT_RE.sub("", line))
-        if method and (method.group(1), index + 1) not in names:
-            records.append(_record(method.group(1), "method", index, lines, cleaned))
-    return sorted(records, key=lambda item: (item.line, item.name))
+        if method and (method.group(1), index + 1) not in records:
+            records[(method.group(1), index + 1)] = _record(method.group(1), "method", index, lines, pairs)
+    return sorted(records.values(), key=lambda item: (item.line, item.name))
 
 
-def _record(name: str, kind: str, index: int, lines: list[str], cleaned: list[str]) -> SymbolRecord:
+def _record(name: str, kind: str, index: int, lines: list[str], pairs: BracePairs) -> SymbolRecord:
     return SymbolRecord(
         name=name,
         kind=kind,
         line=index + 1,
-        end_line=_find_brace_end(cleaned, index),
+        end_line=pairs.end_line(index),
         signature=lines[index].strip(),
     )
-
-
-def _find_brace_end(cleaned: list[str], start_index: int) -> int:
-    depth = 0
-    opened = False
-    for index in range(start_index, len(cleaned)):
-        line = cleaned[index]
-        depth += line.count("{")
-        opened = opened or "{" in line
-        depth -= line.count("}")
-        if opened and depth <= 0:
-            return index + 1
-    return min(start_index + 50, len(cleaned))

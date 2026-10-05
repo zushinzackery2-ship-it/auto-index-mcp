@@ -5,6 +5,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from ..domain.errors import ServiceError
 
 import threading
 from .progress import Progress as _Progress, bar as _bar
@@ -46,7 +47,7 @@ def run(argv: list[str]) -> int:
             refresh_embedder=not args.no_semantic,
             source="cli-build",
         )
-    except ValueError as exc:
+    except (ValueError, ServiceError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     printer.line(f"project: {root}")

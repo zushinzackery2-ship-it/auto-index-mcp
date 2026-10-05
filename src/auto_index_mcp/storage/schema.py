@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from .reference_schema import initialize_references
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 NESTING_COLUMNS = dict(
     parent_name="TEXT NOT NULL DEFAULT ''", parent_kind="TEXT NOT NULL DEFAULT ''",
     depth="INTEGER NOT NULL DEFAULT 0", nesting_path="TEXT NOT NULL DEFAULT ''",
@@ -22,13 +23,15 @@ def initialize_schema(conn, set_metadata=None) -> None:
         quality_findings="TEXT NOT NULL DEFAULT '[]'", active_source="INTEGER NOT NULL DEFAULT 1",
         symbol_count="INTEGER NOT NULL DEFAULT 0", module_refs="TEXT NOT NULL DEFAULT '[]'",
         analysis_kind="TEXT NOT NULL DEFAULT 'heuristic'",
+        module_reference_evidence="TEXT NOT NULL DEFAULT '[]'",
     ))
     conn.execute("""CREATE TABLE IF NOT EXISTS symbols (
         id INTEGER PRIMARY KEY, file_path TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL,
         line INTEGER NOT NULL, end_line INTEGER NOT NULL, signature TEXT NOT NULL,
         complexity INTEGER NOT NULL DEFAULT 1, calls TEXT NOT NULL DEFAULT '[]',
         FOREIGN KEY(file_path) REFERENCES files(path) ON DELETE CASCADE)""")
-    ensure_columns(conn, "symbols", dict(NESTING_COLUMNS, refs="TEXT NOT NULL DEFAULT '[]'"))
+    ensure_columns(conn, "symbols", dict(NESTING_COLUMNS, refs="TEXT NOT NULL DEFAULT '[]'",
+                                         reference_evidence="TEXT NOT NULL DEFAULT '[]'"))
     _migrate_symbol_payload(conn)
     conn.execute("DROP TABLE IF EXISTS symbol_nesting")
     conn.execute("DROP TABLE IF EXISTS symbol_embeddings")
@@ -38,15 +41,12 @@ def initialize_schema(conn, set_metadata=None) -> None:
         path TEXT PRIMARY KEY, root TEXT NOT NULL, db_path TEXT NOT NULL,
         file_count INTEGER NOT NULL, updated_at REAL, version INTEGER NOT NULL)""")
     conn.execute("DROP TABLE IF EXISTS file_fts")
-    conn.execute("""CREATE TABLE IF NOT EXISTS symbol_references (
-        source_file TEXT NOT NULL, source_name TEXT NOT NULL, source_line INTEGER NOT NULL,
-        target TEXT NOT NULL, PRIMARY KEY(source_file,source_name,source_line,target),
-        FOREIGN KEY(source_file) REFERENCES files(path) ON DELETE CASCADE)""")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_references_target ON symbol_references(target,source_file)")
+    initialize_references(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS active_sources (path TEXT PRIMARY KEY)")
-    conn.execute("""INSERT OR IGNORE INTO symbol_references
+    conn.execute("CREATE TABLE IF NOT EXISTS source_changes (generation INTEGER NOT NULL, path TEXT NOT NULL, PRIMARY KEY(generation,path))")
+    conn.execute("""INSERT OR IGNORE INTO symbol_references(source_file,source_name,source_line,target)
         SELECT s.file_path,s.name,s.line,j.value FROM symbols s, json_each(s.calls) j""")
-    conn.execute("""INSERT OR IGNORE INTO symbol_references
+    conn.execute("""INSERT OR IGNORE INTO symbol_references(source_file,source_name,source_line,target)
         SELECT s.file_path,s.name,s.line,j.value FROM symbols s, json_each(s.refs) j""")
 
 

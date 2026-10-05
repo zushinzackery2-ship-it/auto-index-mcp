@@ -42,7 +42,7 @@ class WatchCoordinator:
         self.project.watcher = FileEventWatcher(
             root, session.snapshot, session.update_snapshot, session.apply,
             debounce_seconds, session.baseline,
-            event_filter=make_event_filter(root, store.db_path.parent),
+            event_filter=make_event_filter(root, store.db_path.parent, lambda: session.event_rules),
             lease_path=store.db_path.parent / "watcher.lock",
             maintenance=lambda: self._watch_maintenance(root, store),
         )
@@ -64,10 +64,10 @@ class WatchCoordinator:
         self.project._invalidate_view_cache()
         return result
 
-    def stop_watcher(self) -> dict[str, Any]:
+    def stop_watcher(self, deadline=None) -> dict[str, Any]:
         with self.project._watcher_lock:
             if self.project.watcher:
-                self.project.watcher.stop()
+                self.project.watcher.stop(deadline=deadline)
                 self.project.watcher = None
         return self.watcher_status()
 

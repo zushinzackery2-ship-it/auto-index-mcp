@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import codecs
+import hashlib
 from pathlib import Path
 
 from ..languages.text_decode import TEXT_ENCODINGS
@@ -38,6 +39,12 @@ def read_source(root: Path, item: dict, *, require_fresh: bool = False,
     if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
         raise _drift(item["path"])
     truncated = len(raw) > read_limit
+    if require_fresh:
+        if truncated:
+            raise ServiceError("source-too-large", f"source exceeds the verification limit: {item['path']}",
+                               "use text search or read a bounded file range", path=item["path"], byte_limit=read_limit)
+        if hashlib.sha1(raw).hexdigest() != item.get("sha1"):
+            raise _drift(item["path"])
     raw = raw[:read_limit]
     lines = _decode_prefix(raw, truncated).splitlines()
     return lines, dict(source_bytes=before.st_size, read_bytes=len(raw), source_truncated=truncated)

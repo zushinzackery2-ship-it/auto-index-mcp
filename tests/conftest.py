@@ -19,6 +19,9 @@ def _isolated_registry(
 ) -> None:
     """Registry writes land in a per-test directory, never the user's state dir."""
     monkeypatch.setenv("AUTO_INDEX_REGISTRY_DIR", str(tmp_path_factory.mktemp("registry")))
+    monkeypatch.setenv("AUTO_INDEX_CACHE_DIR", str(tmp_path_factory.mktemp("cache")))
+    monkeypatch.setenv("AUTO_INDEX_CACHE_MODE", "project")
+    monkeypatch.setenv("AUTO_INDEX_CONTROL_DIR", str(tmp_path_factory.mktemp("control")))
 
 
 @pytest.fixture(autouse=True)

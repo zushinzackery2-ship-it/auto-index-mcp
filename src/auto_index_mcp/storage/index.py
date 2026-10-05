@@ -13,13 +13,17 @@ from .readers import read_files
 from .generation import publish, update_policy
 from .writes import delete_file_rows, insert_child_indexes, insert_many
 from .symbols import query_ranked, query_relaxed
+from .changes import changes_since
+from .symbol_reader import SymbolReader
 from .recovery import initialize_store, is_corruption_error, quarantine
 from ..runtime.maintenance import MaintenanceLease
 
 class IndexStore:
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, session=None) -> None:
         self.database = IndexDatabase(db_path)
         self.db_path = self.database.db_path
+        self.session = session
+        self.symbol_reader = SymbolReader(self)
 
     def connect(self) -> ContextManager[sqlite3.Connection]:
         return self.database.connect()
@@ -28,7 +32,7 @@ class IndexStore:
         return self.database.connect_readonly()
 
     def initialize(self) -> None:
-        initialize_store(self.db_path, self._schema_current, self._initialize_schema)
+        initialize_store(self.db_path, self._schema_current, self._initialize_schema, self.session)
 
     def _schema_current(self) -> bool:
         with self.read_connect() as conn:
@@ -54,7 +58,7 @@ class IndexStore:
             # healthy index is never destroyed under a transient failure.
             if not is_corruption_error(exc):
                 raise
-            with MaintenanceLease(self.db_path.parent, "recover-write"):
+            with MaintenanceLease(self.db_path.parent, "recover-write", session=self.session):
                 quarantine(self.db_path)
                 self._initialize_schema()
                 self._write_all(root, records, child_indexes, extra_metadata)
@@ -99,7 +103,7 @@ class IndexStore:
             update_policy(conn, extra)
             for key, value in extra.items():
                 self.set_metadata(conn, key, value)
-            publish(conn, PARSER_VERSION)
+            publish(conn, PARSER_VERSION, full=True)
 
     def apply_files(self, records: list[FileRecord], paths: list[str]) -> None:
         if not records and not paths:
@@ -110,7 +114,7 @@ class IndexStore:
             insert_many(conn, records)
             self._refresh_file_count(conn)
             self.set_metadata(conn, "version", INDEX_VERSION)
-            publish(conn, PARSER_VERSION)
+            publish(conn, PARSER_VERSION, paths=[record.path for record in records] + paths)
 
     def replace_child_indexes(self, children: list[dict[str, Any]]) -> None:
         with self.connect() as conn:
@@ -131,6 +135,8 @@ class IndexStore:
             conn.execute("DELETE FROM files")
             conn.execute("DELETE FROM symbols")
             conn.execute("DELETE FROM child_indexes")
+            conn.execute("DELETE FROM source_changes")
+            conn.execute("DELETE FROM metadata WHERE key='delta_floor'")
             self.set_metadata(conn, "version", INDEX_VERSION)
             self.set_metadata(conn, "updated_at", None)
             self.set_metadata(conn, "file_count", 0)
@@ -148,6 +154,9 @@ class IndexStore:
             rows = conn.execute("SELECT key, value FROM metadata").fetchall()
         return {row["key"]: json.loads(row["value"]) for row in rows}
 
+    def changes_since(self, previous: str | None) -> dict:
+        return changes_since(self, previous)
+
     def prepare_build(self) -> dict[str, Any]:
         if not self.db_path.exists():
             self.initialize()
@@ -156,7 +165,7 @@ class IndexStore:
         except sqlite3.DatabaseError as exc:
             if not is_corruption_error(exc):
                 raise
-        with MaintenanceLease(self.db_path.parent, "recover-build"):
+        with MaintenanceLease(self.db_path.parent, "recover-build", session=self.session):
             try:
                 return self.get_metadata_map()
             except sqlite3.DatabaseError as exc:
@@ -221,39 +230,10 @@ class IndexStore:
         return [dict(row) for row in rows]
 
     def iter_symbols(self):
-        cursor = ("", -1, -1)
-        while True:
-            with self.read_connect() as conn:
-                rows = conn.execute(
-                    "SELECT id, file_path, name, kind, line, end_line, signature, complexity FROM symbols "
-                    "WHERE (file_path, line, id) > (?, ?, ?) ORDER BY file_path, line, id LIMIT 256", cursor,
-                ).fetchall()
-            if not rows:
-                return
-            for row in rows:
-                item = dict(row)
-                cursor = (item["file_path"], item["line"], item.pop("id"))
-                yield item
+        return self.symbol_reader.iterate()
 
     def symbols_for_files(self, paths: list[str]) -> list[dict[str, Any]]:
-        """Symbol rows for the given file paths only (incremental embedding)."""
-        if not paths:
-            return []
-        rows: list[Any] = []
-        with self.read_connect() as conn:
-            # Chunk to stay well below SQLite's bound-parameter limit.
-            for start in range(0, len(paths), 500):
-                chunk = paths[start:start + 500]
-                placeholders = ",".join("?" for _ in chunk)
-                rows.extend(
-                    conn.execute(
-                        "SELECT file_path, name, kind, line, end_line, signature, complexity "
-                        f"FROM symbols WHERE file_path IN ({placeholders}) "
-                        "ORDER BY file_path, line",
-                        chunk,
-                    ).fetchall()
-                )
-        return [dict(row) for row in rows]
+        return self.symbol_reader.for_files(paths)
 
     def symbol_count(self) -> int:
         with self.read_connect() as conn:

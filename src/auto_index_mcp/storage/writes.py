@@ -7,11 +7,12 @@ from .graph import insert_edges
 FILE_FIELDS = (
     "path", "name", "parent", "extension", "language", "size", "mtime_ns", "sha1",
     "line_count", "imports", "quality_findings", "active_source", "snippet", "symbol_count",
-    "module_refs", "analysis_kind",
+    "module_refs", "analysis_kind", "module_reference_evidence",
 )
 SYMBOL_FIELDS = (
     "name", "kind", "line", "end_line", "signature", "complexity", "calls", "refs",
     "parent_name", "parent_kind", "depth", "nesting_path", "children_count", "max_child_depth", "max_block_depth",
+    "reference_evidence",
 )
 
 
@@ -24,13 +25,13 @@ def _insert_batch(conn, records) -> None:
     files, symbols = [], []
     for record in records:
         values = dict(vars(record), symbol_count=len(record.symbols))
-        for key in ("imports", "quality_findings", "module_refs"):
+        for key in ("imports", "quality_findings", "module_refs", "module_reference_evidence"):
             values[key] = json.dumps(values[key])
         files.append(tuple(values[name] for name in FILE_FIELDS))
         for symbol in record.symbols:
             data = vars(symbol)
             symbols.append((record.path,) + tuple(
-                json.dumps(data[name]) if name in ("calls", "refs") else data[name] for name in SYMBOL_FIELDS
+                json.dumps(data[name]) if name in ("calls", "refs", "reference_evidence") else data[name] for name in SYMBOL_FIELDS
             ))
     conn.executemany(f"INSERT INTO files({','.join(FILE_FIELDS)}) VALUES ({','.join('?' for _ in FILE_FIELDS)})", files)
     conn.executemany(

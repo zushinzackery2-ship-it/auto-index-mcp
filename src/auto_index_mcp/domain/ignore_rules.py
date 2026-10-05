@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import os
 from functools import lru_cache
@@ -8,7 +7,7 @@ from pathlib import Path
 
 from pathspec import GitIgnoreSpec
 
-from .config import DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_FILE_PATTERNS
+from .config import DEFAULT_EXCLUDE_DIRS, DEFAULT_EXCLUDE_FILE_PATTERNS, INTERNAL_EXCLUDE_DIRS
 
 
 @lru_cache(maxsize=256)
@@ -25,6 +24,8 @@ class IgnoreRules:
         self.runtime_patterns = list(runtime_patterns or [])
         self._specs = {"": compile_patterns(tuple(self.gitignore_patterns))}
         self._runtime = compile_patterns(tuple(self.runtime_patterns))
+        self._defaults = compile_patterns(tuple(sorted(name + "/" for name in DEFAULT_EXCLUDE_DIRS))
+                                          + tuple(sorted(DEFAULT_EXCLUDE_FILE_PATTERNS)))
         self._directories: dict[str, bool] = {"": False}
 
     @classmethod
@@ -48,7 +49,7 @@ class IgnoreRules:
         rel = rel_path.replace("\\", "/").strip("/")
         if rel in ("", "."):
             return False
-        if self._is_default_excluded(rel, is_dir):
+        if any(part in INTERNAL_EXCLUDE_DIRS for part in rel.split("/")):
             return True
         parts = rel.split("/")
         # A child cannot be re-included while its parent remains excluded.
@@ -63,7 +64,7 @@ class IgnoreRules:
     def _match(self, rel: str, is_dir: bool) -> bool:
         parts = rel.split("/")
         suffix = "/" if is_dir else ""
-        ignored = False
+        ignored = bool(self._defaults.check_file(rel + suffix).include)
         for end in range(len(parts)):
             directory = "/".join(parts[:end])
             result = self._spec(directory).check_file("/".join(parts[end:]) + suffix).include
@@ -99,18 +100,12 @@ class IgnoreRules:
     def status(self, known_paths: list[str] | None = None) -> dict[str, object]:
         return {
             "default_exclude_dirs": sorted(DEFAULT_EXCLUDE_DIRS),
+            "internal_exclude_dirs": sorted(INTERNAL_EXCLUDE_DIRS),
             "default_exclude_file_patterns": sorted(DEFAULT_EXCLUDE_FILE_PATTERNS),
             "gitignore_patterns": self.gitignore_patterns,
             "runtime_patterns": self.runtime_patterns,
             "fingerprint": self.fingerprint(known_paths),
         }
-
-    def _is_default_excluded(self, rel: str, is_dir: bool) -> bool:
-        if any(part in DEFAULT_EXCLUDE_DIRS for part in rel.split("/")):
-            return True
-        return not is_dir and any(fnmatch.fnmatch(Path(rel).name, pattern) or fnmatch.fnmatch(rel, pattern)
-                                  for pattern in DEFAULT_EXCLUDE_FILE_PATTERNS)
-
 
 def read_gitignore_patterns(root: Path) -> list[str]:
     try:

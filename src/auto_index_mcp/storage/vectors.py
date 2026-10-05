@@ -5,6 +5,7 @@ import heapq
 import sqlite3
 from typing import Any, Iterable
 from .completion import invalidate
+from .namespace import clear_namespaces, retain_namespaces
 
 
 def encode_vector(values: list[float]) -> bytes:
@@ -144,15 +145,10 @@ class SymbolEmbeddingStore:
 
     def purge_other_models(self, conn: sqlite3.Connection, model_name: str) -> None:
         """Explicit garbage collection; normal builds preserve other models."""
-        conn.execute(
-            "DELETE FROM symbol_embeddings WHERE model_name != ?", (model_name,)
-        )
-        conn.execute("DELETE FROM metadata WHERE key LIKE 'complete:%' AND key != ?", ("complete:" + model_name,))
-        conn.execute("DELETE FROM metadata WHERE key LIKE 'generation:%' AND key != ?", ("generation:" + model_name,))
+        retain_namespaces(conn, current=model_name, max_models=1)
 
     def clear(self, conn: sqlite3.Connection) -> None:
-        conn.execute("DELETE FROM symbol_embeddings")
-        conn.execute("DELETE FROM metadata WHERE key LIKE 'complete:%'")
+        clear_namespaces(conn)
 
     def count(self, conn: sqlite3.Connection, model_name: str) -> int:
         row = conn.execute(

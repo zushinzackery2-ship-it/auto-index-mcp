@@ -23,6 +23,8 @@ RANK_SUBTOKEN_BASE = 4
 # Bounds the relaxed query size; queries rarely carry more useful subtokens.
 MAX_RELAXED_SUBTOKENS = 8
 
+_SOURCE_COLUMNS = "files.sha1 AS source_sha1, files.size AS source_size, files.mtime_ns AS source_mtime_ns, "
+
 _BASE_ORDER = " ORDER BY symbols.file_path, symbols.line LIMIT ? OFFSET ?"
 _RANKED_ORDER = (
     " ORDER BY match_rank, length(symbols.name), symbols.file_path, symbols.line"
@@ -45,7 +47,7 @@ def query_ranked(
         return _query_browse(conn, kind, limit, offset)
     like = f"%{text}%"
     select = (
-        "SELECT symbols.*, files.language, "
+        "SELECT symbols.*, files.language, " + _SOURCE_COLUMNS +
         "CASE "
         "WHEN lower(symbols.name) = lower(?) THEN 0 "
         "WHEN symbols.name LIKE ? THEN 1 "
@@ -95,7 +97,7 @@ def query_relaxed(
         where.append("symbols.kind=?")
         where_params.append(kind)
     sql = (
-        "SELECT symbols.*, files.language, "
+        "SELECT symbols.*, files.language, " + _SOURCE_COLUMNS +
         f"? + {' + '.join(rank_terms)} AS match_rank "
         "FROM symbols JOIN files ON files.path=symbols.file_path "
         "WHERE " + " AND ".join(where) + _RANKED_ORDER
@@ -112,7 +114,7 @@ def _query_browse(
     offset: int,
 ) -> list[dict[str, Any]]:
     sql = (
-        "SELECT symbols.*, files.language FROM symbols "
+        "SELECT symbols.*, files.language, " + _SOURCE_COLUMNS.rstrip(", ") + " FROM symbols "
         "JOIN files ON files.path=symbols.file_path"
     )
     params: list[Any] = []

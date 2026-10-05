@@ -5,12 +5,16 @@ import atexit
 import os
 import signal
 from types import FrameType
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from ..domain.config import DEFAULT_ENABLE_REBUILD_WAIT_SECONDS
 from ..core.service import AutoIndexService
 from ..runtime.parent_lifetime import watch_parent
+from ..runtime.control.contracts import ActivationIntent
+from ..domain.config import project_index_root
+from ..domain.errors import ServiceError
 from .bootstrap import PROJECT_PATH_ENV
 from .lifecycle import register_lifecycle_tools, start_or_defer_auto_watch
 from .navigation import register_navigation_tools
@@ -36,6 +40,10 @@ and auto_index_semantic_search matches natural-language descriptions
 Errors come back as {error, hint, candidates?} - follow the hint instead of
 retrying blindly. If a response says the index is still building, check
 auto_index_status() and retry shortly.
+
+Use auto_index_manage(action="purge") to stop related instances and remove
+all main/child caches within the bound workspace. After purge, ordinary
+tools stay suspended until this instance explicitly calls auto_index_enable.
 """
 
 mcp = FastMCP("AutoIndexMCP", instructions=SERVER_INSTRUCTIONS)
@@ -89,15 +97,26 @@ def main(argv: list[str] | None = None) -> None:
         watch_parent()
     project_path = args.project_path or os.environ.get(PROJECT_PATH_ENV, "").strip() or None
     try:
+        if args.transport != "stdio":
+            if not project_path:
+                raise ValueError("HTTP/SSE requires --project-path or AUTO_INDEX_PROJECT_PATH to select a fixed project")
+            _service.fixed_root = Path(project_path).resolve()
         if project_path:
-            result = _service.enable_reusing_index(
-                project_path,
-                rebuild=args.rebuild and not args.no_rebuild,
-                wait_seconds=DEFAULT_ENABLE_REBUILD_WAIT_SECONDS,
-                source="cli-serve",
-            )
-            if not args.no_watch:
-                start_or_defer_auto_watch(_service, result)
+            _service.root_path = Path(project_path).resolve()
+            _service.index_root = project_index_root(_service.root_path)
+            try:
+                result = _service.enable_reusing_index(
+                    project_path,
+                    rebuild=args.rebuild and not args.no_rebuild,
+                    wait_seconds=DEFAULT_ENABLE_REBUILD_WAIT_SECONDS,
+                    source="cli-serve", activation=ActivationIntent.AUTOMATIC,
+                )
+            except ServiceError as exc:
+                if exc.code not in ("workspace-suspended", "busy"):
+                    raise
+            else:
+                if not args.no_watch:
+                    start_or_defer_auto_watch(_service, result)
         if args.transport != "stdio":
             mcp.settings.port = args.port
         mcp.run(transport=args.transport)

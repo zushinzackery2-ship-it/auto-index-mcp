@@ -23,7 +23,9 @@ import anyio
 from mcp.server.fastmcp import Context
 
 from ..core.service import AutoIndexService
-from ..domain.responses import not_enabled
+from ..domain.responses import not_enabled, error_response
+from ..domain.errors import ServiceError
+from ..runtime.control.contracts import ActivationIntent
 
 PROJECT_PATH_ENV = "AUTO_INDEX_PROJECT_PATH"
 
@@ -66,7 +68,9 @@ async def roots_from_client(ctx: Optional[Context]) -> list[Path]:
     for root in result.roots:
         path = uri_to_path(str(root.uri))
         if path is not None and path.is_dir():
-            found.append(path)
+            resolved = path.resolve()
+            if resolved not in found:
+                found.append(resolved)
     return found
 
 
@@ -79,9 +83,14 @@ async def ensure_enabled(
     Returns None when the service is usable, otherwise a structured error
     the tool should return as-is.
     """
-    if service.enabled and service.store is not None and service.root_path is not None:
-        return None
-    root = await resolve_project_root(service, ctx)
+    try:
+        service.project.control.check(service.root_path)
+        if service.enabled and service.store is not None and service.root_path is not None:
+            return None
+        root = await resolve_project_root(service, ctx)
+        service.project.control.check(root)
+    except ServiceError as exc:
+        return error_response(exc.code, str(exc), hint=exc.hint, **exc.details)
     if root is None:
         return not_enabled(
             "no project root is configured and none could be discovered "
@@ -93,7 +102,7 @@ async def ensure_enabled(
     def attach():
         if service.enabled and service.store is not None:
             return dict(enabled=True)
-        result = service.enable_reusing_index(str(root), source="cold-start")
+        result = service.enable_reusing_index(str(root), source="cold-start", activation=ActivationIntent.AUTOMATIC)
         start_or_defer_auto_watch(service, result)
         return result
 
@@ -111,6 +120,10 @@ async def resolve_project_root(
     if env_root is not None:
         return env_root
     client_roots = await roots_from_client(ctx)
+    if len(client_roots) > 1:
+        raise ServiceError("ambiguous-project", "the client supplied multiple project roots",
+                           "select one with auto_index_enable(root_path=<absolute project path>)",
+                           roots=[str(root) for root in client_roots])
     if client_roots:
         return client_roots[0]
     return None

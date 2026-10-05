@@ -36,6 +36,8 @@ KNOWN_INDEX_FILES = (
     "watcher.lock",
     "index.schema.lock",
     "embeddings.schema.lock",
+    "sessions.lock",
+    "maintenance.lock",
     MARKER_FILE_NAME,
     CACHEDIR_TAG_NAME,
 )

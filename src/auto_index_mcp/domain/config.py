@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-INDEX_VERSION = 9
-PARSER_VERSION = 3
+INDEX_VERSION = 10
+PARSER_VERSION = 5
 DEFAULT_WATCH_DEBOUNCE_SECONDS = 0.25
 DEFAULT_ENABLE_REBUILD_WAIT_SECONDS = 3.0
 DEFAULT_MAX_SOURCE_BYTES = 2 * 1024 * 1024
+
+INTERNAL_EXCLUDE_DIRS = {".git", ".hg", ".svn", ".auto-index-mcp"}
 
 DEFAULT_EXCLUDE_DIRS = {
     ".git",
@@ -70,6 +72,10 @@ LANGUAGE_BY_EXTENSION = {
     ".txt": "text",
     ".xml": "xml",
     ".vcxproj": "xml",
+    ".vue": "vue",
+    ".svelte": "text",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
     ".yaml": "yaml",
     ".yml": "yaml",
 }
@@ -77,11 +83,25 @@ LANGUAGE_BY_EXTENSION = {
 TEXT_EXTENSIONS = set(LANGUAGE_BY_EXTENSION)
 
 
+def text_extensions() -> set[str]:
+    extra = os.environ.get("AUTO_INDEX_TEXT_EXTENSIONS", "").split(",")
+    normalized = {value.strip().lower() for value in extra if value.strip()}
+    if any(not value.startswith(".") or any(char in value for char in "/\\*? ") for value in normalized):
+        raise ValueError("AUTO_INDEX_TEXT_EXTENSIONS requires comma-separated extensions such as .sql,.lua")
+    return TEXT_EXTENSIONS | normalized
+
+
 def project_index_root(root: Path) -> Path:
-    return root / ".auto-index-mcp"
+    from ..cache.layout import project_cache
+    return project_cache(root)
 
 
 REGISTRY_DIR_ENV = "AUTO_INDEX_REGISTRY_DIR"
+
+
+def control_directory() -> Path:
+    override = os.environ.get("AUTO_INDEX_CONTROL_DIR", "").strip()
+    return Path(override).resolve() if override else _user_state_directory() / "control"
 
 
 def registry_directory() -> Path:
@@ -94,6 +114,10 @@ def registry_directory() -> Path:
     override = os.environ.get(REGISTRY_DIR_ENV, "").strip()
     if override:
         return Path(override)
+    return _user_state_directory()
+
+
+def _user_state_directory() -> Path:
     if os.name == "nt":
         local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
         base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"

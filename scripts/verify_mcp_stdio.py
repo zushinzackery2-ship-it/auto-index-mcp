@@ -111,6 +111,31 @@ async def check_watcher(session, project):
     raise AssertionError("watcher did not publish the source update")
 
 
+async def check_purge(session, project):
+    preview = await call(session, "auto_index_manage", action="purge", dry_run=True)
+    assert preview["status"] == "preview" and preview["selected_indexes"] == 1, preview
+    result = await call(session, "auto_index_manage", action="purge")
+    assert result["complete"] and result["removed_indexes"] == 1, result
+    status = await call(session, "auto_index_status")
+    assert not status["enabled"] and status["last_purge"]["operation_id"] == result["operation_id"], status
+    blocked = await call(session, "auto_index_symbol_search", text="greet_new")
+    assert blocked["error"] == "workspace-suspended", blocked
+    try:
+        await session.read_resource("files://sample.py")
+    except McpError as exc:
+        assert "workspace-suspended" in str(exc), exc
+    else:
+        raise AssertionError("purged source resource auto-attached")
+    resource = await session.read_resource(result["details_resource"])
+    assert json.loads(resource.contents[0].text)["complete"]
+    repeated = await call(session, "auto_index_manage", action="purge")
+    assert repeated["status"] == "already-purged", repeated
+    enabled = await call(session, "auto_index_enable", root_path=str(project))
+    assert not enabled.get("error"), enabled
+    await wait_ready(session)
+    return True
+
+
 async def check_cleanup(index_root, pid):
     deadline = time.monotonic() + 5
     while process_alive(pid) is not False and time.monotonic() < deadline:
@@ -132,6 +157,8 @@ async def verify_stdio(python: str = sys.executable, installed: bool = False) ->
         (project / "pkg" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
         (project / "large.txt").write_text("x" * (65536 + 1), encoding="utf-8")
         env = dict(os.environ, AUTO_INDEX_REGISTRY_DIR=str(Path(temporary) / "registry"),
+                   AUTO_INDEX_CACHE_DIR=str(Path(temporary) / "cache"), AUTO_INDEX_CACHE_MODE="user",
+                   AUTO_INDEX_CONTROL_DIR=str(Path(temporary) / "control"),
                    AUTO_INDEX_SEMANTIC_MODE="off", AUTO_INDEX_PROJECT_PATH=str(project))
         if installed:
             env.pop("PYTHONPATH", None)
@@ -146,15 +173,19 @@ async def verify_stdio(python: str = sys.executable, installed: bool = False) ->
                     names = frozenset(tool.name for tool in (await session.list_tools()).tools)
                     assert not REQUIRED_TOOLS - names, f"missing tools: {REQUIRED_TOOLS - names}"
                     assert not FORBIDDEN_TOOLS & names, f"legacy tools: {FORBIDDEN_TOOLS & names}"
-                    await wait_ready(session)
-                    owner = BuildLock(project / ".auto-index-mcp" / "watcher.lock").state_info()
+                    status = await wait_ready(session)
+                    index_root = Path(status["index_path"]).parent
+                    assert not (project / ".auto-index-mcp").exists(), "user caching wrote to the source tree"
+                    owner = BuildLock(index_root / "watcher.lock").state_info()
                     assert owner is not None, "watcher owner lease is missing"
                     await check_tools(session, project)
                     ping_ms = await check_resources(session)
                     update_seconds = await check_watcher(session, project)
-            await check_cleanup(project / ".auto-index-mcp", owner["holder_pid"])
+                    purge = await check_purge(session, project)
+            await check_cleanup(index_root, owner["holder_pid"])
     return dict(ok=True, tools=len(names), ping_ms=ping_ms, watcher_update_seconds=update_seconds,
-                resources=True, structured_errors=True, process_cleanup=True, lease_cleanup=True)
+                resources=True, structured_errors=True, process_cleanup=True, lease_cleanup=True,
+                source_tree_clean=True, workspace_purge=purge, explicit_resume=True)
 
 
 def main():

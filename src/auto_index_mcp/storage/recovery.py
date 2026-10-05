@@ -28,14 +28,14 @@ def quarantine(db_path: Path) -> None:
     logger.warning("database quarantined path=%s recovery_id=%s", db_path, token)
 
 
-def initialize_store(db_path, current, initialize_schema) -> None:
+def initialize_store(db_path, current, initialize_schema, session=None) -> None:
     try:
         if db_path.exists() and current():
             return
     except sqlite3.DatabaseError as exc:
         if not is_corruption_error(exc):
             raise
-        with MaintenanceLease(db_path.parent, "recover"):
+        with MaintenanceLease(db_path.parent, "recover", session=session):
             try:
                 if current():
                     return
@@ -54,6 +54,6 @@ def initialize_store(db_path, current, initialize_schema) -> None:
     # Upgrading an existing schema must exclude old watcher/writer processes,
     # not just other schema initializers. Release the schema lease first so
     # maintenance can acquire the complete lock set in its canonical order.
-    with MaintenanceLease(db_path.parent, "schema-upgrade"):
+    with MaintenanceLease(db_path.parent, "schema-upgrade", session=session):
         if not current():
             initialize_schema()

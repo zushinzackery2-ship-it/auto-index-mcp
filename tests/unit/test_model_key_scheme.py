@@ -56,12 +56,14 @@ SYMBOLS = [
 
 def test_model_key_without_fingerprint_still_carries_text_scheme(store: EmbeddingStore) -> None:
     embedder = SymbolEmbedder(BagHashEmbedder(dim=64), store)
-    assert embedder.model_key == f"baghash#dim=64;{TEXT_SCHEME_VERSION}"
+    from auto_index_mcp.domain.config import PARSER_VERSION
+    assert embedder.model_key == f"baghash#dim=64;{TEXT_SCHEME_VERSION};parser={PARSER_VERSION}"
 
 
 def test_model_key_joins_fingerprint_and_text_scheme(store: EmbeddingStore) -> None:
     embedder = SymbolEmbedder(FingerprintedEmbedder("maxlen=192"), store)
-    assert embedder.model_key == f"fingerprinted#dim=64;maxlen=192;{TEXT_SCHEME_VERSION}"
+    from auto_index_mcp.domain.config import PARSER_VERSION
+    assert embedder.model_key == f"fingerprinted#dim=64;maxlen=192;{TEXT_SCHEME_VERSION};parser={PARSER_VERSION}"
 
 
 def test_fingerprint_change_preserves_independent_vectors(store: EmbeddingStore, project: Path) -> None:

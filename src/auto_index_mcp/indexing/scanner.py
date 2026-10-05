@@ -10,23 +10,17 @@ from pathlib import Path
 from ..domain.config import (
     DEFAULT_MAX_SOURCE_BYTES,
     LANGUAGE_BY_EXTENSION,
-    TEXT_EXTENSIONS,
+    text_extensions,
 )
 from ..domain.ignore_config import matches_patterns
 from ..domain.ignore_rules import IgnoreRules
 from ..domain.models import FileRecord, ScanResult, SymbolRecord
-from ..languages.source_clean import clean_source_lines
 from .tree_progress import TreeProgress
 from ..workspace.containment import is_relative_to
 from ..quality.unreachable import file_quality_findings
 from ..languages.text_decode import decode_text
-from .analysis import enrich_symbols
-from ..languages.c_family import extract_c_family_symbols
-from ..languages.python import extract_python_symbols, parse_python
+from ..languages.dispatch import analyze_symbols
 from ..languages.python_refs import scope_references
-from ..languages.javascript import extract_javascript_like_symbols
-from ..languages.generic import extract_symbols
-from ..languages.pascal import extract_pascal_symbols
 
 IMPORT_RE = re.compile(r"^\s*(?:from\s+[\w.]+\s+import|import\s+[\w., ]+|#include\s+[<\"].+[>\"]|using\s+[\w.:]+;)")
 
@@ -56,6 +50,8 @@ class SourceScanner:
         self.cancelled = cancelled
         self.oversized_paths: list[str] = []
         self.privileged_paths: list[str] = []
+        self.text_extensions = text_extensions()
+        self.excluded_directories: list[str] = []
 
     def scan(self) -> ScanResult:
         records: list[FileRecord] = []
@@ -111,7 +107,7 @@ class SourceScanner:
         rel = self._relative(resolved)
         if self.ignore_rules.is_ignored_rel(rel, is_dir=False):
             return True
-        if resolved.suffix.lower() not in TEXT_EXTENSIONS:
+        if resolved.suffix.lower() not in self.text_extensions:
             return True
         if matches_patterns(self.auto_excludes, rel) and not self._is_privileged(rel):
             return True
@@ -148,7 +144,10 @@ class SourceScanner:
             return True
         if any(is_relative_to(resolved, root) for root in self.boundary_roots):
             return True
-        return self.ignore_rules.should_prune_dir(resolved)
+        ignored = self.ignore_rules.should_prune_dir(resolved)
+        if ignored and len(self.excluded_directories) < 30:
+            self.excluded_directories.append(self._relative(resolved))
+        return ignored
 
     def read_path(self, path: Path) -> FileRecord:
         path = path.resolve(strict=True)
@@ -168,15 +167,7 @@ class SourceScanner:
         language = LANGUAGE_BY_EXTENSION.get(path.suffix.lower(), "text")
         # One comment/string-aware cleaning pass feeds symbol extraction,
         # call/complexity analysis, nesting and quality checks alike.
-        cleaned = clean_source_lines(lines, language)
-        python_tree = parse_python(text) if language == "python" else None
-        symbols = enrich_symbols(
-            lines,
-            extract_python_symbols(text, lines, python_tree) if language == "python"
-            else self._extract_symbols(language, text, lines, cleaned),
-            language,
-            cleaned,
-        )
+        symbols, cleaned, python_tree, analysis_kind = analyze_symbols(text, lines, language)
         quality_findings = file_quality_findings(
             {"path": rel, "language": language, "symbols": [vars(symbol) for symbol in symbols]},
             text,
@@ -202,7 +193,8 @@ class SourceScanner:
             active_source=True,
             snippet="\n".join(lines[:40]),
             module_refs=list(scope_references(python_tree, {}).refs) if python_tree is not None else [],
-            analysis_kind="python-ast" if python_tree is not None else "heuristic",
+            module_reference_evidence=list(scope_references(python_tree, {}).evidence.values()) if python_tree is not None else [],
+            analysis_kind=analysis_kind,
         )
 
     def _reuse_record_if_current(self, path: Path, stat: os.stat_result) -> FileRecord | None:
@@ -229,6 +221,7 @@ class SourceScanner:
             snippet=existing["snippet"],
             module_refs=existing.get("module_refs", []),
             analysis_kind=existing.get("analysis_kind", "heuristic"),
+            module_reference_evidence=existing.get("module_reference_evidence", []),
         )
 
     def _extract_matches(self, lines: list[str], pattern: re.Pattern[str], whole_line: bool) -> list[str]:
@@ -238,21 +231,6 @@ class SourceScanner:
             if match:
                 found.append(line.strip() if whole_line else match.group(1))
         return found
-
-    def _extract_symbols(
-        self,
-        language: str,
-        text: str,
-        lines: list[str],
-        cleaned: list[str],
-    ) -> list[SymbolRecord]:
-        if language in {"javascript", "typescript"}:
-            return extract_javascript_like_symbols(lines, cleaned)
-        if language in {"c", "cpp"}:
-            return extract_c_family_symbols(lines, cleaned)
-        if language == "pascal":
-            return extract_pascal_symbols(lines, cleaned)
-        return extract_symbols(lines, cleaned)
 
     def _relative(self, resolved: Path) -> str:
         return str(resolved.relative_to(self.root)).replace("\\", "/")

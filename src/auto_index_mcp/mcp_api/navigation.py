@@ -9,9 +9,19 @@ from mcp.server.fastmcp.exceptions import ResourceError
 from ..core.service import AutoIndexService
 from .bootstrap import ensure_enabled
 from .guard import run_service
+from ..runtime.control.journal import read_report
 
 
 def register_navigation_tools(mcp: FastMCP, service: AutoIndexService) -> None:
+    @mcp.resource("purge://{operation_id}/{page}")
+    async def get_purge_report(operation_id: str, page: int) -> str:
+        def read():
+            return dict(report=read_report(service.project.control.store, service.root_path, operation_id, page))
+        result = await run_service(service, read, control_plane=True)
+        if result.get("error"):
+            raise ResourceError(json.dumps(result, ensure_ascii=True))
+        return json.dumps(result["report"], ensure_ascii=True)
+
     @mcp.resource("files://{file_path}")
     async def get_file_content(file_path: str, ctx: Context) -> str:
         """Return the content of a project file."""

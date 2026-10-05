@@ -1,75 +1,49 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 
 from ..workspace.containment import is_relative_to
 from ..domain.ignore_rules import IgnoreRules
-from .locator import INDEX_DB_NAME, INDEX_DIR_NAME, iter_index_databases
+from .locator import INDEX_DB_NAME, INDEX_DIR_NAME
 from ..storage.metadata import DEFAULT_METADATA_READER
+from ..workspace.discovery import discover_child_indexes
 
 
 def child_index_snapshot(
     root: Path,
     own_db_path: Path | None,
-    boundary_roots: list[Path],
     ignore_rules: IgnoreRules,
 ) -> dict[str, tuple[int, ...]]:
-    snapshot: dict[str, tuple[int, ...]] = {}
-    own_db = own_db_path.resolve() if own_db_path else None
-    for boundary in boundary_roots:
-        direct_db = boundary / INDEX_DIR_NAME / INDEX_DB_NAME
-        if not direct_db.exists():
-            continue
-        try:
-            resolved = direct_db.resolve()
-            if own_db and resolved == own_db:
-                continue
-            rel = resolved.relative_to(root).as_posix()
-        except (OSError, ValueError):
-            continue
-        snapshot[rel] = database_fingerprint(direct_db)
-    for db_path in iter_index_databases(root, boundary_roots, ignore_rules.runtime_patterns):
-        try:
-            resolved = db_path.resolve()
-            if own_db and resolved == own_db:
-                continue
-            rel = resolved.relative_to(root).as_posix()
-        except (OSError, ValueError):
-            continue
-        snapshot[rel] = database_fingerprint(db_path)
-    return snapshot
+    own_db = own_db_path or root / INDEX_DIR_NAME / INDEX_DB_NAME
+    children = discover_child_indexes(root, own_db, ignore_patterns=ignore_rules.runtime_patterns)
+    return dict((f"{child.path}/{INDEX_DIR_NAME}/{INDEX_DB_NAME}", database_fingerprint(Path(child.db_path)))
+                for child in children)
 
 
 def indexed_child_snapshot(root: Path, child_indexes: list[dict]) -> dict[str, tuple[int, ...]]:
     indexed_children = {}
     for child in child_indexes:
         db_path = Path(child["db_path"])
-        try:
-            rel = db_path.resolve().relative_to(root).as_posix()
-        except (OSError, ValueError):
-            rel = f"{child['path'].rstrip('/')}/{INDEX_DIR_NAME}/{INDEX_DB_NAME}"
+        rel = f"{child['path'].rstrip('/')}/{INDEX_DIR_NAME}/{INDEX_DB_NAME}"
         indexed_children[rel] = database_fingerprint(db_path)
     return indexed_children
 
 
 def database_fingerprint(db_path: Path) -> tuple[int, ...]:
-    values: list[int] = []
-    for path in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
-        try:
-            stat = path.stat()
-            values.extend([stat.st_size, stat.st_mtime_ns])
-        except OSError:
-            values.extend([0, 0])
     metadata = DEFAULT_METADATA_READER.read_metadata(db_path)
-    values.extend(
-        [
-            int(float(metadata.get("updated_at") or 0) * 1_000_000_000),
-            int(metadata.get("file_count") or 0),
-            int(metadata.get("child_index_count") or 0),
-            int(metadata.get("version") or 0),
-        ]
+    epoch = str(metadata.get("index_epoch", "")).encode("utf-8")
+    # Opening a WAL reader can create/remove SHM files. Only an atomic source
+    # publication changes navigation, so coordination-file timestamps are irrelevant.
+    return (
+        int(hashlib.sha256(epoch).hexdigest()[:16], 16),
+        int(metadata.get("source_generation") or 0),
+        int(metadata.get("policy_generation") or 0),
+        int(float(metadata.get("updated_at") or 0) * 1_000_000_000),
+        int(metadata.get("file_count") or 0),
+        int(metadata.get("child_index_count") or 0),
+        int(metadata.get("version") or 0),
     )
-    return tuple(values)
 
 
 def is_index_related_path(path: Path) -> bool:

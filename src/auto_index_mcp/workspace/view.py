@@ -14,6 +14,7 @@ from .ranking import ranked_symbol_key
 from .projection import (
     prefix_file, prefix_file_header, prefix_search_target, prefixed_symbols,
 )
+from ..runtime.locking.session import SessionLease
 
 @dataclass(frozen=True)
 class FileLookup:
@@ -28,8 +29,10 @@ class WorkspaceView:
         ignore_patterns: list[str] | None = None,
         auto_ignore_patterns: list[str] | None = None,
         privileged_patterns: list[str] | None = None,
+        control=None,
     ) -> None:
         self.store = store
+        self.control = control
         self.visited_db_paths = {path.resolve() for path in visited_db_paths or set()}
         self.visited_db_paths.add(store.db_path.resolve())
         self.ignore_patterns = ignore_patterns or []
@@ -38,10 +41,20 @@ class WorkspaceView:
         self._active_children: list[dict[str, Any]] | None = None
         self._child_stores: dict[str, IndexStore] = {}
         self._child_views: dict[str, WorkspaceView] = {}
+        self._child_sessions: dict[str, SessionLease] = {}
         # Result caches keyed by published workspace generations
         self._cache: dict[str, tuple[tuple, list[dict[str, Any]]]] = {}
         self._cache_lock = threading.Lock()
         self._source_generation = None
+
+    def close(self) -> None:
+        for view in self._child_views.values():
+            view.close()
+        for session in self._child_sessions.values():
+            session.release()
+        self._child_sessions.clear()
+        self._child_views.clear()
+        self._child_stores.clear()
 
     def all_files(self) -> list[dict[str, Any]]:
         return self._load_all_files()
@@ -194,7 +207,10 @@ class WorkspaceView:
             raise KeyError(f"child index is not available: {child['path']}")
         key = str(db_path.resolve())
         if key not in self._child_stores:
-            self._child_stores[key] = IndexStore(db_path)
+            session = SessionLease(db_path.parent, root=child["root"], control=self.control)
+            session.acquire()
+            self._child_sessions[key] = session
+            self._child_stores[key] = IndexStore(db_path, session=session)
         return self._child_stores[key]
 
     def _child_view(self, child: dict[str, Any]) -> "WorkspaceView":
@@ -206,6 +222,7 @@ class WorkspaceView:
                 self.ignore_patterns,
                 self.auto_ignore_patterns,
                 self.privileged_patterns,
+                self.control,
             )
         return self._child_views[key]
 

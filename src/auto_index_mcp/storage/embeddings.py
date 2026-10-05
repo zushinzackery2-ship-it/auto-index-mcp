@@ -7,6 +7,7 @@ from typing import ContextManager
 
 from .sqlite import IndexDatabase
 from .recovery import initialize_store
+from .namespace import clear_namespaces
 
 # Bumped independently of the index schema; the vector DB owns its own lifecycle.
 # v2: chunk_index joined the primary key so long symbols can carry one vector
@@ -27,9 +28,10 @@ class EmbeddingStore:
     semantics; the actual row SQL lives in :class:`SymbolEmbeddingStore`.
     """
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, session=None) -> None:
         self.database = IndexDatabase(db_path)
         self.db_path = self.database.db_path
+        self.session = session
 
     def connect(self) -> ContextManager[sqlite3.Connection]:
         return self.database.connect()
@@ -38,7 +40,7 @@ class EmbeddingStore:
         return self.database.connect_readonly()
 
     def initialize(self) -> None:
-        initialize_store(self.db_path, self._schema_current, self._initialize_schema)
+        initialize_store(self.db_path, self._schema_current, self._initialize_schema, self.session)
 
     def _schema_current(self) -> bool:
         with self.read_connect() as conn:
@@ -85,8 +87,7 @@ class EmbeddingStore:
 
     def clear(self) -> None:
         with self.connect() as conn:
-            conn.execute("DELETE FROM symbol_embeddings")
-            conn.execute("DELETE FROM metadata WHERE key LIKE 'complete:%'")
+            clear_namespaces(conn)
             conn.execute("DELETE FROM metadata WHERE key='requested'")
 
     def delete_file(self) -> None:

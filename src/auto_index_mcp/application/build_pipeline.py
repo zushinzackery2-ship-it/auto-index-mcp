@@ -60,7 +60,7 @@ class BuildPipeline:
         )
         boundary_roots = [Path(child.root) for child in children]
         try:
-            scan = SourceScanner(
+            scanner = SourceScanner(
                 str(root),
                 extra_excludes=ignore_patterns,
                 auto_excludes=ignore_config.auto_patterns,
@@ -68,8 +68,9 @@ class BuildPipeline:
                 existing_records=existing,
                 boundary_roots=boundary_roots,
                 tree_progress=progress,
-                cancelled=indexer.cancelled if indexer is not None else None,
-            ).scan()
+                cancelled=indexer.cancelled if indexer is not None else self.project.lifecycle_cancelled,
+            )
+            scan = scanner.scan()
         finally:
             progress.finish()
         existing.clear()
@@ -94,6 +95,7 @@ class BuildPipeline:
             records,
             children_dicts,
             dict(config_ignore_metadata(ignore_config, root), active_source_paths=sorted(active_paths),
+                 excluded_directories=scanner.excluded_directories,
                  _expected_policy_generation=context.policy_generation),
         )
         if self.project._context_is_current(context):

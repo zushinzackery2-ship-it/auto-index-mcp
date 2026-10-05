@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import logging
-import time
 from typing import Any
 
 from ..domain.config import project_index_root
@@ -11,17 +10,22 @@ from ..storage.embeddings import EmbeddingStore
 from ..storage.index import IndexStore
 from ..registry import write_index_markers
 from ..runtime.diagnostics import close_logging, configure_logging
+from ..runtime.control.contracts import ActivationIntent
+from ..runtime.locking.session import SessionLease
+from ..domain.errors import ServiceError
 from .maintenance import clear_index
+from .attachment import attach_cache
 
 
 class LifecycleCoordinator:
-    def __init__(self, project, builds, ignore, embeddings, watch, state) -> None:
+    def __init__(self, project, builds, ignore, embeddings, watch, state, stopping) -> None:
         self.project = project
         self.builds = builds
         self.ignore = ignore
         self.embeddings = embeddings
         self.watch = watch
         self.state = state
+        self.stopping = stopping
 
     def enable(
         self,
@@ -29,8 +33,13 @@ class LifecycleCoordinator:
         rebuild: bool = True,
         refresh_embedder: bool = True,
         source: str = "mcp-enable",
+        activation=ActivationIntent.EXPLICIT,
     ) -> dict[str, Any]:
         root = Path(root_path).resolve()
+        if self.project.fixed_root is not None and root != self.project.fixed_root:
+            raise ServiceError("project-fixed", "this shared server is bound to a fixed project",
+                               "connect to the server for the requested project",
+                               root=str(self.project.fixed_root), requested_root=str(root))
         if not root.exists() or not root.is_dir():
             raise ValueError(f"root_path is not a directory: {root_path}")
         self.builds.cancel_auto_watch_after_build()
@@ -43,7 +52,17 @@ class LifecycleCoordinator:
             from ..domain.ignore_config import IgnoreConfig
             self.project._ignore_config = IgnoreConfig()
         index_root = self.project.index_root_override or project_index_root(root)
+        self.project.control.admission.check(root, activation)
+        if self.project.quiescing and self.project.store is not None:
+            self.stopping.stop(keep_control=True)
+        self.project.quiescing = False
+        self.project.lifecycle_cancelled.clear()
+        self.project.binding_generation += 1
+        self.project.control.start(root, index_root, self.project.registry.directory())
         if self._reusable_enable_context(root, index_root):
+            if self.project.session_lease is None:
+                self.project.session_lease = SessionLease(index_root, root=root, control=self.project.control)
+            self.project.session_lease.acquire()
             if getattr(self.project, "log_path", None) is None:
                 self.project.log_path = configure_logging(index_root)
             # Re-enable on the unchanged root: keep the live stores, watcher
@@ -60,11 +79,19 @@ class LifecycleCoordinator:
             if rebuild:
                 return self.builds.rebuild_sync()
             return self.state.status()
-        self.project.log_path = configure_logging(index_root)
-        store = IndexStore(self.project._db_path(root))
-        store.initialize()
-        embedding_store = EmbeddingStore(index_root / "embeddings.db")
-        embedding_store.initialize()
+        session = attach_cache(self.project, root, index_root)
+        try:
+            self.project.log_path = configure_logging(index_root)
+            store = IndexStore(self.project._db_path(root), session=session)
+            store.initialize()
+            embedding_store = EmbeddingStore(index_root / "embeddings.db", session=session)
+            embedding_store.initialize()
+        except BaseException:
+            close_logging(getattr(self.project, "log_path", None))
+            self.project.log_path = None
+            session.release()
+            raise
+        self.project.session_lease = session
         self.project.root_path, self.project.index_root = root, index_root
         self.project.store, self.project.embedding_store = store, embedding_store
         self.project.enabled = True
@@ -108,16 +135,18 @@ class LifecycleCoordinator:
         rebuild: bool = False,
         wait_seconds: float = 0.0,
         source: str = "mcp-enable",
+        activation=ActivationIntent.EXPLICIT,
     ) -> dict[str, Any]:
         root = Path(root_path).resolve()
+        self.project.control.admission.check(root, activation)
         if self._enable_already_running(root):
             return self._already_running_enable_status()
         if rebuild:
             # Explicit forced rebuild: dispatch to background thread and return immediately.
-            self.enable(str(root), rebuild=False, refresh_embedder=False, source=source)
+            self.enable(str(root), rebuild=False, refresh_embedder=False, source=source, activation=activation)
             return self.builds._start_background_rebuild(wait_seconds=wait_seconds)
         db_existed = self.project._db_path(root).exists()
-        self.enable(str(root), rebuild=False, refresh_embedder=False, source=source)
+        self.enable(str(root), rebuild=False, refresh_embedder=False, source=source, activation=activation)
         if db_existed and self.builds.can_reuse_index_for(root):
             # Reused a fresh index: build the vector store now (non-blocking) so
             # semantic search is ready without waiting for a first query to
@@ -149,29 +178,7 @@ class LifecycleCoordinator:
         return result
 
     def disable(self) -> dict[str, Any]:
-        self.project.enabled = False
-        workers = self._cancel_background_work()
-        self.builds.cancel_auto_watch_after_build()
-        self.watch.stop_watcher()
-        deadline = time.monotonic() + 10.0
-        for worker in workers:
-            if not worker.join(max(0.0, deadline - time.monotonic())):
-                raise TimeoutError(f"{worker.operation} is still stopping; lifecycle resources retained")
-        self.project.tree_progress.clear()
-        self.project.embedding_indexer = None
-        try:
-            return self.state.status()
-        finally:
-            close_logging(getattr(self.project, "log_path", None))
-            self.project.log_path = None
-
-    def _cancel_background_work(self) -> list:
-        with self.project._embedding_lock:
-            workers = [worker for worker in (self.project.background, self.project.embedding_background)
-                       if worker is not None]
-            for worker in workers:
-                worker.cancelled.set()
-        return workers
+        return self.stopping.stop()
 
     def clear(self, delete_file: bool = False) -> dict[str, Any]:
         return clear_index(self.project, self.watch, self.state, delete_file)

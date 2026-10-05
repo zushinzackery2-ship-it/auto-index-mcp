@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..runtime.maintenance import MaintenanceLease
+from ..storage.compaction import compact_database
 
 
 def clear_index(project, watch, state, delete_file):
@@ -11,7 +12,8 @@ def clear_index(project, watch, state, delete_file):
     store = project._store_context()
     was_watching = project.watcher is not None
     watch.stop_watcher()
-    lease = MaintenanceLease(store.db_path.parent, "clear")
+    project._invalidate_view_cache()
+    lease = MaintenanceLease(store.db_path.parent, "clear", session=project.session_lease)
     try:
         try:
             lease.__enter__()
@@ -31,11 +33,15 @@ def clear_index(project, watch, state, delete_file):
             store.clear()
             if project.embedding_store is not None:
                 project.embedding_store.clear()
+                compact_database(project.embedding_store.db_path)
+            compact_database(store.db_path)
         project.tree_progress.clear()
         project._invalidate_view_cache()
         was_watching = False
         return state.status()
     finally:
         lease.__exit__(None, None, None)
+        if not project.enabled and project.session_lease is not None:
+            project.session_lease.release()
         if was_watching and project.enabled:
             watch.start_watcher()

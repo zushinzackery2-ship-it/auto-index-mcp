@@ -16,6 +16,7 @@ from ..storage.symbols import (
 from .backend import search_text
 from ..workspace.context import ContextLoader
 from ..workspace.source import MAX_BODY_BYTES, read_source, source_slice
+from ..domain.coverage import capabilities
 
 _MATCH_LABELS = {
     RANK_EXACT_NAME: "exact-name",
@@ -66,6 +67,7 @@ class SearchQueries:
         if context_lines > 0:
             matches = ContextLoader(view, self.project.root_path).attach(matches, context_lines)
         response = dict(format="auto_index_text_search_v2", backend=result.backend, items=matches, complete=result.complete)
+        response.update(scope="indexed-files", coverage=self._coverage())
         if result.message:
             response["message"] = result.message
         if result.status != "ok":
@@ -137,10 +139,7 @@ class SearchQueries:
             )
         symbol = matches[0]
         file_path = symbol["file_path"]
-        lookup = self.project.view.get_file(file_path)
-        if lookup.item is None:
-            return file_not_found(file_path, self.project._path_candidates(file_path))
-        lines, metadata = read_source(self.project.root_path, lookup.item, require_fresh=True)
+        lines, metadata = read_source(self.project.root_path, symbol["_source_revision"], require_fresh=True)
         start = max(1, symbol["line"])
         code, end, truncated = source_slice(lines, start, symbol["end_line"], MAX_BODY_BYTES)
         return self.state._with_index_status(
@@ -187,6 +186,13 @@ class SearchQueries:
                 callers = list(symbol.get("called_by") or [])
                 entry["callers"] = callers[:safe_limit]
                 entry["caller_count"] = len(callers)
+                ambiguous = list(symbol.get("ambiguous_called_by") or [])
+                entry["ambiguous_callers"] = ambiguous[:safe_limit]
+                entry["ambiguous_caller_count"] = len(ambiguous)
+                imported = list(symbol.get("imported_by") or [])
+                entry["importers"] = imported[:safe_limit]
+                entry["importer_count"] = len(imported)
+                entry["caller_evidence"] = (symbol.get("caller_evidence") or [])[:safe_limit]
             if direction in ("callees", "both"):
                 callees = list(symbol.get("calls") or [])
                 entry["callees"] = callees[:safe_limit]
@@ -219,13 +225,13 @@ class SearchQueries:
                     return [], not_ready
                 return [], file_not_found(path, self.project._path_candidates(path))
             matches = [
-                dict(symbol, file_path=resolved)
+                dict(symbol, file_path=resolved, _source_revision=lookup.item)
                 for symbol in lookup.item["symbols"]
                 if symbol["name"] == symbol_name
             ]
             if not matches:
                 matches = [
-                    dict(symbol, file_path=resolved)
+                    dict(symbol, file_path=resolved, _source_revision=lookup.item)
                     for symbol in lookup.item["symbols"]
                     if symbol["name"].lower() == symbol_name.lower()
                 ]
@@ -251,6 +257,12 @@ class SearchQueries:
             return [], not_ready
         candidates = [compact_symbol(row) for row in rows[:5]]
         return [], symbol_not_found(symbol_name, "", candidates)
+
+    def _coverage(self) -> dict:
+        meta = self.project.store.get_metadata_map()
+        return dict(capabilities(), excluded_directories=meta.get("excluded_directories", []),
+                    runtime_patterns=list(self.project._ignore_config.patterns),
+                    oversized_paths=meta.get("auto_ignore_patterns", []))
 
 
 def _present_symbol(row: dict[str, Any]) -> dict[str, Any]:

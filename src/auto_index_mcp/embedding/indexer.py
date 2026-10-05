@@ -10,6 +10,7 @@ from .backend import EmbeddingBackend
 from .rerank import candidate_pool_size, rerank_hits
 from .text import TEXT_SCHEME_VERSION, read_lines, symbol_meta, symbol_text, window_texts
 from ..storage.vectors import SymbolEmbeddingStore, encode_vector
+from ..domain.config import PARSER_VERSION
 
 EMBED_BATCH_SIZE = 8
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ class SymbolEmbedder:
         space = getattr(backend, "space_fingerprint", None)
         if space is None:
             space = f"dim={backend.dim}"
-        parts = [part for part in (space, fingerprint, TEXT_SCHEME_VERSION) if part]
+        parts = [part for part in (space, fingerprint, TEXT_SCHEME_VERSION, f"parser={PARSER_VERSION}") if part]
         self.model_key = f"{backend.name}#{';'.join(parts)}"
 
     def embed_project(self, root: Path, symbols: Iterable[dict[str, Any]]) -> dict[str, Any]:
@@ -53,16 +54,14 @@ class SymbolEmbedder:
 
     def _embed_groups(self, root, groups, current_files):
         result = dict(embedded=0, reused=0, files=0, model=self.backend.name)
-        # Keep one read handle open across batches so SQLite does not checkpoint
-        # and reopen its WAL after every tiny write. No read transaction is held.
-        with self.conn_provider.read_connect() as reader:
-            while batch := list(islice(groups, 8)):
-                self.check_cancelled()
+        while batch := list(islice(groups, 8)):
+            self.check_cancelled()
+            with self.conn_provider.read_connect() as reader:
                 partial = self._embed_batch(root, batch, reader)
-                current_files.update(path for path, _ in batch)
-                for key in ("embedded", "reused", "files"):
-                    result[key] += partial[key]
-                self._report_progress(result["files"], 0, result["reused"])
+            current_files.update(path for path, _ in batch)
+            for key in ("embedded", "reused", "files"):
+                result[key] += partial[key]
+            self._report_progress(result["files"], 0, result["reused"])
         self._report_progress(result["files"], result["files"], result["reused"])
         return result
 
@@ -72,7 +71,7 @@ class SymbolEmbedder:
         reused = 0
         for file_path, symbols in batch:
             old = self.store.entries_for(reader, file_path, self.model_key)
-            lines = read_lines(root, file_path) if symbols else []
+            lines = read_lines(root, file_path, symbols[0].get("_source_revision")) if symbols else []
             entries, work = _collect_file_entries(self.backend, symbols, lines, old)
             reused += len(entries)
             entries_by_file[file_path] = entries

@@ -7,13 +7,15 @@ from mcp.server.fastmcp import Context, FastMCP
 from ..runtime.background import BackgroundIndexer
 from ..domain.config import DEFAULT_ENABLE_REBUILD_WAIT_SECONDS, DEFAULT_WATCH_DEBOUNCE_SECONDS
 from ..core.service import AutoIndexService
-from ..domain.responses import invalid_argument, not_enabled
+from ..domain.responses import invalid_argument, not_enabled, error_response
+from ..domain.errors import ServiceError
 from .bootstrap import ensure_enabled, resolve_project_root
 from .guard import run_service
 
 ManageAction = Literal[
     "rebuild",
     "clear",
+    "purge",
     "watch_start",
     "watch_stop",
     "disable",
@@ -56,7 +58,10 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         """
         root = root_path.strip() or None
         if root is None:
-            detected = await resolve_project_root(service, ctx)
+            try:
+                detected = await resolve_project_root(service, ctx)
+            except ServiceError as exc:
+                return error_response(exc.code, str(exc), hint=exc.hint, **exc.details)
             if detected is None:
                 return not_enabled(
                     "root_path was empty and no project root could be auto-detected"
@@ -74,7 +79,7 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
                 start_or_defer_auto_watch(service, result)
             return result
 
-        return await run_service(service, _enable)
+        return await run_service(service, _enable, allow_suspended=True)
 
     @mcp.tool()
     async def auto_index_status() -> dict[str, Any]:
@@ -90,12 +95,16 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         target: Literal["ignore", "privileged"] = "ignore",
         delete_file: bool = False,
         debounce_seconds: float = DEFAULT_WATCH_DEBOUNCE_SECONDS,
+        dry_run: bool = False,
+        timeout_seconds: float = 30.0,
         ctx: Optional[Context] = None,
     ) -> dict[str, Any]:
         """Maintenance operations, rarely needed in normal navigation.
 
         action: "rebuild" full rescan in background | "clear" wipe indexed
-        data (delete_file=true also removes the db) | "watch_start" /
+        data (delete_file=true also removes the db) | "purge" cooperatively
+        stop related instances and remove every main/child cache in the bound
+        workspace (dry_run previews; timeout_seconds budgets the entire call) | "watch_start" /
         "watch_stop" filesystem auto-refresh | "disable" detach |
         "diff" index-vs-filesystem drift | "registry" read-only list of every
         index this user's tool has created (clean up with the
@@ -104,6 +113,13 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         (``patterns`` list; target="privileged" edits the oversized-file
         allow-list instead).
         """
+        if action != "purge" and (dry_run or timeout_seconds != 30.0):
+            return invalid_argument("dry_run and timeout_seconds are purge-only parameters")
+        if action == "purge":
+            if (patterns is not None or target != "ignore" or delete_file
+                    or debounce_seconds != DEFAULT_WATCH_DEBOUNCE_SECONDS):
+                return invalid_argument("purge accepts only dry_run and timeout_seconds")
+            return await run_service(service, service.purge, dry_run, timeout_seconds, control_plane=True)
         if action in _ACTIONS_NEEDING_INDEX:
             blocked = await ensure_enabled(service, ctx)
             if blocked is not None:
@@ -115,20 +131,20 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         if action == "watch_start":
             return await run_service(service, service.start_watcher, debounce_seconds)
         if action == "watch_stop":
-            return await run_service(service, service.stop_watcher)
+            return await run_service(service, service.stop_watcher, allow_suspended=True)
         if action == "disable":
-            return await run_service(service, service.disable)
+            return await run_service(service, service.disable, allow_suspended=True)
         if action == "diff":
             return await run_service(service, service.diff_filesystem)
         if action == "registry":
-            return await run_service(service, _registry_snapshot)
+            return await run_service(service, _registry_snapshot, control_plane=True)
         if action.startswith("ignore_"):
             mode = action.removeprefix("ignore_")
             return await run_service(service, service.configure_ignore, patterns, mode, target)
         return invalid_argument(f"unknown action: {action}")
 
     def _registry_snapshot() -> dict[str, Any]:
-        """Read-only registry listing; deletion stays CLI-only on purpose."""
+        """Read-only registry listing across the user's registered indexes."""
         registry = service.registry
         return {
             "registry_path": str(registry.path()),

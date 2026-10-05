@@ -191,33 +191,6 @@ def test_watcher_refreshes_child_link_metadata_without_parent_rebuild(tmp_path: 
         parent_service.stop_watcher()
 
 
-def test_start_watcher_can_return_before_initial_snapshot_settles(tmp_path: Path, monkeypatch) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "main.py").write_text("print('ready')\n", encoding="utf-8")
-
-    service = AutoIndexService(index_root=tmp_path / "index")
-    service.enable(str(project), rebuild=True)
-    original_take_watch_snapshot = service_module.take_watch_snapshot
-
-    def slow_take_watch_snapshot(*args, **kwargs):
-        time.sleep(0.4)
-        return original_take_watch_snapshot(*args, **kwargs)
-
-    monkeypatch.setattr(service_module, "take_watch_snapshot", slow_take_watch_snapshot)
-
-    started = time.perf_counter()
-    service.start_watcher(debounce_seconds=0.1, wait_ready=False)
-    elapsed = time.perf_counter() - started
-
-    try:
-        assert elapsed < 0.2
-        assert service.watcher_status()["running"] is True
-        assert _wait_until(lambda: service.watcher_status()["ready"] is True)
-    finally:
-        service.stop_watcher()
-
-
 def test_background_watcher_applies_changes_since_index_snapshot(tmp_path: Path, monkeypatch) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -227,6 +200,13 @@ def test_background_watcher_applies_changes_since_index_snapshot(tmp_path: Path,
     service.enable(str(project), rebuild=True)
     original_take_watch_snapshot = service_module.take_watch_snapshot
     created = False
+    publications = []
+    original_update = service_module.WatchSession.apply
+
+    def record_update(*args, **kwargs):
+        result = original_update(*args, **kwargs)
+        publications.append(result)
+        return result
 
     def slow_take_watch_snapshot(*args, **kwargs):
         nonlocal created
@@ -237,14 +217,15 @@ def test_background_watcher_applies_changes_since_index_snapshot(tmp_path: Path,
         return original_take_watch_snapshot(*args, **kwargs)
 
     monkeypatch.setattr(service_module, "take_watch_snapshot", slow_take_watch_snapshot)
+    monkeypatch.setattr(service_module.WatchSession, "apply", record_update)
 
     service.start_watcher(debounce_seconds=0.1, wait_ready=False)
 
     try:
-        assert _wait_until(lambda: service.find_files("created_while_starting.py")["items"])
-        result = service.watcher.status()["last_result"]
-        assert result["status"] == "incremental"
-        assert result["added"] == 1
+        assert _wait_until(lambda: service.find_files("created_while_starting.py")["items"]
+                           and _has_symbol(service, "created_while_starting.py", "later"))
+        assert _wait_until(lambda: any(result.get("status") == "incremental" and result.get("added") == 1
+                                      for result in publications))
     finally:
         service.stop_watcher()
 

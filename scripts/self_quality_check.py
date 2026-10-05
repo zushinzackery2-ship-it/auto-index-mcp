@@ -28,6 +28,7 @@ REVIEWED_UNUSED = (
     ("languages/python_refs.py", "visit_Name", "ast.NodeVisitor dispatches Name nodes by method name."),
     ("languages/python_refs.py", "visit_Attribute", "ast.NodeVisitor dispatches Attribute nodes by method name."),
     ("languages/python_refs.py", "visit_ImportFrom", "ast.NodeVisitor dispatches ImportFrom nodes by method name."),
+    ("languages/python_refs.py", "visit_Import", "ast.NodeVisitor dispatches Import nodes by method name."),
     ("languages/python_refs.py", "visit_Assign", "ast.NodeVisitor dispatches Assign nodes by method name."),
     ("languages/python_refs.py", "visit_ClassDef", "ast.NodeVisitor dispatches ClassDef nodes by method name."),
     ("registry/cleanup.py", "build_lock_active", "Exported registry diagnostic covered by live-holder tests."),

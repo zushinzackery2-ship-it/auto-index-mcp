@@ -4,13 +4,16 @@ from pathlib import Path
 from typing import Any
 
 from ..languages.text_decode import read_text_file
+from ..workspace.source import read_source
 
 MAX_BODY_LINES = 256
 MAX_BODY_CHARS = 8000
 TEXT_SCHEME_VERSION = "txt2"
 
 
-def read_lines(root: Path, file_path: str) -> list[str]:
+def read_lines(root: Path, file_path: str, revision: dict | None = None) -> list[str]:
+    if revision is not None:
+        return read_source(root, revision, require_fresh=True)[0]
     return read_text_file(root / file_path).splitlines()
 
 

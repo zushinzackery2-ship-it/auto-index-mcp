@@ -31,6 +31,9 @@ def run(argv: list[str]) -> int:
     registry = IndexRegistry()
     if args.scan is not None:
         return _clean_scan(registry, args.scan)
+    if not args.dry_run:
+        for target in args.targets:
+            registry.reconcile_root(target)
 
     try:
         max_age = _parse_age(args.older_than) if args.older_than else None
@@ -69,7 +72,7 @@ def _clean_scan(registry: Any, base: str) -> int:
 def _clean_candidates(registry: Any, args: Any, max_age: float | None) -> list[dict[str, Any]]:
     from ..registry import registry_key
 
-    entries = registry.verify()
+    entries = registry.verify(roots=args.targets if args.dry_run else None)
     target_keys = {registry_key(Path(target)) for target in args.targets}
     use_default = not (args.targets or args.all or args.orphans or args.ephemeral)
     # An explicit --older-than alone means "everything old enough", not the
@@ -102,7 +105,7 @@ def _clean_apply(registry: Any, candidates: list[dict[str, Any]]) -> int:
     failures = 0
     for entry in candidates:
         result = clean_entry(registry, entry)
-        if result["status"] not in ("removed", "unregistered"):
+        if result["status"] not in ("removed", "unregistered", "residual"):
             failures += 1
         print(f"{result['status']}: {entry['index_dir']}")
         for note in result["notes"]:

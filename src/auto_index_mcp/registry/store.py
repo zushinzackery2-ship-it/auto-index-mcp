@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -11,8 +10,11 @@ from typing import Any
 from .. import __version__
 from ..domain.config import INDEX_VERSION, registry_directory
 from ..runtime.leases import BuildLock
-from ..indexing.locator import INDEX_DIR_NAME, iter_index_databases
-from ..storage.metadata import DEFAULT_METADATA_READER
+from ..runtime.files.json import atomic_json, read_json
+from ..domain.errors import ServiceError
+from ..indexing.locator import INDEX_DIR_NAME
+from ..cache.identity import directory_identity
+from .markers import read_index_marker
 from .paths import REGISTRY_FILE_NAME, REGISTRY_VERSION, TOUCH_INTERVAL_SECONDS, registry_key
 
 logger = logging.getLogger(__name__)
@@ -30,16 +32,23 @@ class IndexRegistry:
     def path(self) -> Path:
         return self.directory() / REGISTRY_FILE_NAME
 
-    def register(self, root, index_dir, source: str, ephemeral: bool = False) -> bool:
+    def register(self, root, index_dir, source: str, ephemeral: bool = False, attached: bool = True) -> bool:
         def update(data):
             now = time.time()
             key = registry_key(index_dir)
             existing = data["entries"].get(key, dict())
+            marker = read_index_marker(index_dir) or dict()
+            if not existing and not attached and marker.get("index_id"):
+                existing = next((entry for entry in data["entries"].values()
+                                 if entry.get("index_id") == marker["index_id"]), dict())
             data["entries"][key] = dict(
                 root=str(Path(root).resolve()), index_dir=str(Path(index_dir).resolve()),
-                created_at=existing.get("created_at", now), last_attached_at=now,
+                created_at=existing.get("created_at", marker.get("created_at", now)),
+                last_attached_at=now if attached else existing.get("last_attached_at", marker.get("created_at", now)),
                 tool_version=__version__, index_version=INDEX_VERSION,
                 source=source, ephemeral=bool(ephemeral),
+                root_identity=directory_identity(Path(root)), index_id=marker.get("index_id"),
+                state="ready" if (Path(index_dir) / "index.db").is_file() else "residual",
             )
             return True
         return self._mutate(update)
@@ -94,6 +103,9 @@ class IndexRegistry:
     def entries(self) -> dict[str, dict[str, Any]]:
         return self._read()["entries"]
 
+    def strict_entries(self) -> dict[str, dict[str, Any]]:
+        return self._read(strict=True)["entries"]
+
     def is_registered(self, identity) -> bool:
         return bool(self._keys(self._read(), identity))
 
@@ -104,9 +116,11 @@ class IndexRegistry:
         key = preferred if preferred in keys else next(iter(keys), None)
         return data["entries"].get(key)
 
-    def verify(self) -> list[dict]:
+    def verify(self, roots=None) -> list[dict]:
+        from .projection import projected_entries
         report = []
-        for key, entry in sorted(self.entries().items()):
+        entries = projected_entries(self.entries(), roots or [])
+        for key, entry in sorted(entries.items()):
             root_exists = Path(entry["root"]).is_dir()
             index_exists = (Path(entry["index_dir"]) / "index.db").is_file()
             report.append(dict(entry, key=key, root_exists=root_exists, index_exists=index_exists,
@@ -114,21 +128,39 @@ class IndexRegistry:
         return report
 
     def scan_and_adopt(self, base) -> list[dict]:
-        adopted = []
-        for db_path in iter_index_databases(Path(base).resolve()):
-            index_dir = db_path.parent
-            meta = DEFAULT_METADATA_READER.read_metadata(db_path)
-            root = Path(meta.get("root") or index_dir.parent)
-            if self.is_registered(index_dir):
-                continue
-            ephemeral = index_dir.resolve() != root.resolve() / INDEX_DIR_NAME
-            if self.register(root, index_dir, "scan", ephemeral):
-                adopted.append(dict(self.get(index_dir), key=registry_key(index_dir)))
-        return adopted
+        from .adoption import scan_and_adopt
+        return scan_and_adopt(self, base)
 
-    def _read(self) -> dict:
+    def reconcile_root(self, root) -> None:
+        from .adoption import reconcile_root
+        reconcile_root(self, root)
+
+    def set_state(self, index_dir, state) -> bool:
+        def update(data):
+            entry = data["entries"].get(registry_key(index_dir))
+            if entry is None:
+                return False
+            entry["state"] = state
+            return True
+        return self._mutate(update)
+
+    def prune_moved_aliases(self, index_dir) -> bool:
+        def update(data):
+            key = registry_key(index_dir)
+            entry = data["entries"].get(key) or dict()
+            identity = entry.get("index_id")
+            if not identity:
+                return False
+            obsolete = [other for other, value in data["entries"].items() if other != key
+                        and value.get("index_id") == identity and not Path(value["index_dir"]).exists()]
+            for other in obsolete:
+                del data["entries"][other]
+            return bool(obsolete)
+        return self._mutate(update)
+
+    def _read(self, strict=False) -> dict:
         try:
-            raw = json.loads(self.path().read_text(encoding="utf-8"))
+            raw = read_json(self.path())
             entries = raw["entries"]
             if not isinstance(entries, dict):
                 raise ValueError("entries must be an object")
@@ -140,21 +172,10 @@ class IndexRegistry:
         except FileNotFoundError:
             return dict(version=REGISTRY_VERSION, entries=dict())
         except (OSError, ValueError, TypeError, KeyError) as exc:
+            if strict:
+                raise ServiceError("registry-unavailable", str(exc), registry_path=str(self.path())) from exc
             logger.warning("registry read failed path=%s error=%s", self.path(), exc)
             return dict(version=REGISTRY_VERSION, entries=dict())
 
     def _write(self, data: dict) -> None:
-        directory = self.directory()
-        directory.mkdir(parents=True, exist_ok=True)
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory,
-                                             prefix="registry-", suffix=".tmp", delete=False) as stream:
-                temporary = Path(stream.name)
-                json.dump(data, stream, indent=2, sort_keys=True)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path())
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        atomic_json(self.path(), data)

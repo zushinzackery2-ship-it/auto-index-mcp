@@ -60,10 +60,13 @@ def _unused_symbol_findings(files: list[dict[str, Any]]) -> list[dict[str, Any]]
             referenced.update(symbol.get("calls", []))
     for item in files:
         for symbol in item["symbols"]:
-            if not _is_dangling_candidate(item, symbol, called_member_parents) or symbol.get("called_by"):
+            if (not _is_dangling_candidate(item, symbol, called_member_parents)
+                    or symbol.get("called_by") or symbol.get("imported_by")):
                 continue
             confidence = "high" if symbol["name"].startswith("_") and not _is_dunder(symbol["name"]) else "medium"
-            ambiguous = definitions[symbol["name"]] > 1 and symbol["name"] in referenced
+            ambiguous = bool(symbol.get("ambiguous_called_by")) or (
+                definitions[symbol["name"]] > 1 and symbol["name"] in referenced
+            )
             if ambiguous:
                 confidence = "low"
             findings.append(

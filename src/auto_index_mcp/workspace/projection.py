@@ -48,7 +48,12 @@ def prefixed_symbols(child: dict[str, Any], rows: list[dict[str, Any]]) -> list[
 
 def prefix_symbol_refs(child: dict[str, Any], symbol: dict[str, Any]) -> dict[str, Any]:
     updated = dict(symbol)
+    if "_source_revision" in updated:
+        updated["_source_revision"] = prefix_file_header(child, updated["_source_revision"])
     updated["called_by"] = [prefix_caller(child, value) for value in updated.get("called_by", [])]
+    updated["ambiguous_called_by"] = [prefix_caller(child, value) for value in updated.get("ambiguous_called_by", [])]
+    updated["caller_evidence"] = [dict(item, caller=prefix_caller(child, item["caller"]))
+                                   for item in updated.get("caller_evidence", [])]
     return updated
 
 

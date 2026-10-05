@@ -28,7 +28,14 @@ class ProjectContext:
         self.index_root_override = index_root
         self.index_root: Path | None = index_root
         self.root_path: Path | None = None
+        self.fixed_root: Path | None = None
         self.enabled = False
+        self.quiescing = False
+        self.binding_generation = 0
+        self.lifecycle_cancelled = threading.Event()
+        self.control = None
+        self.last_purge = None
+        self.session_lease = None
         self.last_errors: list[str] = []
         self.store: IndexStore | None = None
         self.watcher: FileEventWatcher | None = None
@@ -76,18 +83,23 @@ class ProjectContext:
         self._store_context()
         generation = int(self.store.get_metadata_map().get("policy_generation", 0))
         if self._view is None or generation != self._view_policy_generation:
+            if self._view is not None:
+                self._view.close()
             self._ignore_config = IgnoreConfig.from_metadata(self.store.get_metadata_map())
             self._view = WorkspaceView(
                 self._store_context(),
                 ignore_patterns=list(self._ignore_config.patterns),
                 auto_ignore_patterns=list(self._ignore_config.auto_patterns),
                 privileged_patterns=list(self._ignore_config.privileged_patterns),
+                control=self.control,
             )
             self._view_policy_generation = generation
         return self._view
 
     def _invalidate_view_cache(self) -> None:
         """Invalidate the cached view after mutations."""
+        if self._view is not None:
+            self._view.close()
         self._view = None
 
     def _db_path(self, root: Path) -> Path:
@@ -100,7 +112,8 @@ class ProjectContext:
             raise NotEnabledError()
 
     def _require_store(self) -> None:
-        if self.store is None:
+        self.control.check(self.root_path)
+        if self.store is None or not self.enabled:
             raise NotEnabledError()
 
     def _store_context(self) -> IndexStore:
@@ -167,6 +180,7 @@ class ProjectContext:
     def _context_is_current(self, context: RebuildContext) -> bool:
         return (
             self.enabled
+            and not self.lifecycle_cancelled.is_set()
             and self.root_path is not None
             and self.index_root is not None
             and self.store is context.store

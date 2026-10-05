@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 from typing import Any
@@ -8,40 +7,57 @@ from typing import Any
 from ..indexing.locator import INDEX_DIR_NAME
 from ..storage.metadata import DEFAULT_METADATA_READER
 from .paths import CACHEDIR_TAG_CONTENT, CACHEDIR_TAG_NAME, MARKER_FILE_NAME, TOOL_NAME, registry_key
+from ..cache.identity import directory_identity, identity_key
+from ..cache.layout import cache_directory
+from ..cache.locking import COORDINATION_FILES
+from ..runtime.leases import BuildLock
+from ..runtime.files.json import atomic_json, read_json
 
 
 def write_index_markers(index_dir: Path | str, root: Path | str) -> None:
-    """Drop ``marker.json`` and ``CACHEDIR.TAG`` into a fresh index directory.
-
-    Idempotent and best-effort: existing markers are left untouched and IO
-    failures never propagate into enable/build.
-    """
+    """Publish ownership and lock routing before the first session attaches."""
     directory = Path(index_dir)
-    try:
-        directory.mkdir(parents=True, exist_ok=True)
-        marker = directory / MARKER_FILE_NAME
-        if not marker.exists():
-            marker.write_text(
-                json.dumps(
-                    {
-                        "tool": TOOL_NAME,
-                        "root": str(Path(root).resolve()),
-                        "created_at": time.time(),
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        tag = directory / CACHEDIR_TAG_NAME
-        if not tag.exists():
-            tag.write_text(CACHEDIR_TAG_CONTENT, encoding="ascii")
-    except OSError:
-        pass
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / MARKER_FILE_NAME
+    if not marker.exists():
+        identity = identity_key(directory)
+        gate = BuildLock(cache_directory() / "locks" / identity / "marker.publish.lock", resolve_cache=False)
+        if not gate.acquire(3.0):
+            raise TimeoutError(f"cache ownership publication is busy: {directory}")
+        try:
+            if not marker.exists():
+                data = dict(tool=TOOL_NAME, root=str(Path(root).resolve()), created_at=time.time(),
+                            index_id=identity, root_identity=directory_identity(Path(root)))
+                if not (directory / "index.db").exists() and not any((directory / name).exists() for name in COORDINATION_FILES):
+                    data["lock_dir"] = str(cache_directory() / "locks" / identity)
+                atomic_json(marker, data)
+        finally:
+            gate.release()
+    existing = read_index_marker(directory)
+    if existing is None or existing.get("tool") != TOOL_NAME:
+        raise ValueError(f"cache ownership could not be verified: {directory}")
+    tag = directory / CACHEDIR_TAG_NAME
+    if not tag.exists():
+        tag.write_text(CACHEDIR_TAG_CONTENT, encoding="ascii")
+    if directory.name == INDEX_DIR_NAME and not (directory / ".gitignore").exists():
+        (directory / ".gitignore").write_text("*\n", encoding="ascii")
+
+
+def rebind_marker(index_dir, root, copied=False) -> None:
+    directory = Path(index_dir)
+    marker = read_index_marker(directory)
+    if marker is None or marker.get("tool") != TOOL_NAME:
+        raise ValueError(f"cache ownership could not be verified: {directory}")
+    marker.update(root=str(Path(root).resolve()), root_identity=directory_identity(Path(root)))
+    if copied:
+        marker["index_id"] = identity_key(directory)
+        marker["lock_dir"] = str(cache_directory() / "locks" / marker["index_id"])
+    atomic_json(directory / MARKER_FILE_NAME, marker)
 
 
 def read_index_marker(index_dir: Path | str) -> dict[str, Any] | None:
     try:
-        raw = json.loads((Path(index_dir) / MARKER_FILE_NAME).read_text(encoding="utf-8"))
+        raw = read_json(Path(index_dir) / MARKER_FILE_NAME)
     except (OSError, ValueError):
         return None
     return raw if isinstance(raw, dict) else None
@@ -61,6 +77,8 @@ def is_safe_to_delete(index_dir: Path | str, expected_root: Path | str) -> bool:
     """
     directory = Path(index_dir)
     marker = read_index_marker(directory)
+    if (directory / MARKER_FILE_NAME).exists() and (marker is None or marker.get("tool") != TOOL_NAME):
+        return False
     marker_ok = (
         marker is not None
         and marker.get("tool") == TOOL_NAME

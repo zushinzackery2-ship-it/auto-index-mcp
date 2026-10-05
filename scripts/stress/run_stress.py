@@ -64,6 +64,8 @@ def main() -> None:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(REPO / "src")
     env["AUTO_INDEX_REGISTRY_DIR"] = str(tmp / "registry")
+    env["AUTO_INDEX_CACHE_DIR"] = str(tmp / "cache")
+    env["AUTO_INDEX_CACHE_MODE"] = "user"
     if scenario == "B":
         env["AUTO_INDEX_EMBEDDING_MODEL"] = str(REPO / "models" / "minilm-onnx")
         env["AUTO_INDEX_SEMANTIC_MODE"] = "eager"
@@ -75,6 +77,8 @@ def main() -> None:
 
     stats: dict[str, dict] = {}
     stats_lock = threading.Lock()
+    writer_ready = threading.Event()
+    writer_exited = threading.Event()
 
     def pump(name: str, proc: subprocess.Popen) -> None:
         assert proc.stdout is not None
@@ -87,6 +91,10 @@ def main() -> None:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if name == "a0" and rec.get("op") == "writer-held":
+                writer_ready.set()
+            if name == "a0" and rec.get("op") == "abrupt-exit":
+                writer_exited.set()
             with stats_lock:
                 entry = stats.setdefault(name, {"max_s": 0.0, "statuses": {}, "errors": []})
                 if rec.get("op") == "enable":
@@ -113,6 +121,10 @@ def main() -> None:
         thread = threading.Thread(target=pump, args=(name, proc), daemon=True)
         thread.start()
         threads.append(thread)
+        if scenario == "K2" and i == 0 and not writer_ready.wait(15):
+            proc.kill()
+            proc.wait(timeout=5)
+            raise SystemExit("K2 writer never acquired its lease; no kill coverage")
         time.sleep(0.25)
 
     cap = time.monotonic() + duration + 30.0
@@ -149,6 +161,9 @@ def main() -> None:
     for name, text in stderr_notes:
         print(f"--- {name} stderr (non-empty) ---\n{text[-3000:]}", flush=True)
     failed = hung or stderr_notes or any(entry["errors"] for entry in stats.values())
+    if scenario == "K2" and not writer_exited.is_set():
+        failed = True
+        print("K2 writer did not exit under its lease", flush=True)
     unexpected_exits = [name for name, proc, _ in procs
                         if proc.returncode != 0 and not (scenario == "K2" and name == "a0" and proc.returncode == 1)]
     print(f"[driver] artifacts in {tmp}", flush=True)

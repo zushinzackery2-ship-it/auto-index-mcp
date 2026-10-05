@@ -174,10 +174,12 @@ def _dict_to_record(item: dict[str, Any]) -> FileRecord:
         sha1=item["sha1"],
         line_count=item["line_count"],
         imports=item["imports"],
-        symbols=[SymbolRecord(**dict(symbol, called_by=[])) for symbol in item["symbols"]],
+        symbols=[SymbolRecord(**dict(symbol, called_by=[], ambiguous_called_by=[], imported_by=[], caller_evidence=[]))
+                 for symbol in item["symbols"]],
         quality_findings=item.get("quality_findings", []),
         active_source=item.get("active_source", True),
         snippet=item["snippet"],
         module_refs=item.get("module_refs", []),
         analysis_kind=item.get("analysis_kind", "heuristic"),
+        module_reference_evidence=item.get("module_reference_evidence", []),
     )

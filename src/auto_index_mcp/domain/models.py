@@ -25,6 +25,10 @@ class SymbolRecord:
     # assignment RHS, decorators). Kept apart from ``calls`` so the call list
     # stays a list of true invocations; both feed the reverse caller graph.
     refs: list[str] = field(default_factory=list)
+    reference_evidence: list[dict[str, Any]] = field(default_factory=list)
+    ambiguous_called_by: list[str] = field(default_factory=list)
+    imported_by: list[str] = field(default_factory=list)
+    caller_evidence: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,7 @@ class FileRecord:
     snippet: str = ""
     module_refs: list[str] = field(default_factory=list)
     analysis_kind: str = "heuristic"
+    module_reference_evidence: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

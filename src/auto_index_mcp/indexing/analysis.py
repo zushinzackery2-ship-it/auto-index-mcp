@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 from ..domain.models import SymbolRecord
 from ..languages.source_clean import clean_source_lines
@@ -45,12 +46,8 @@ def enrich_symbols(
         body = cleaned[symbol.line - 1:symbol.end_line]
         calls = _calls(body, symbol.name)
         enriched.append(
-            SymbolRecord(
-                name=symbol.name,
-                kind=symbol.kind,
-                line=symbol.line,
-                end_line=symbol.end_line,
-                signature=symbol.signature,
+            replace(
+                symbol,
                 complexity=_complexity(body),
                 calls=calls,
                 called_by=[],

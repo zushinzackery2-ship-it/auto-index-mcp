@@ -68,6 +68,7 @@ def compact_symbol(symbol: dict[str, Any]) -> dict[str, Any]:
     }
     if symbol.get("file_path"):
         shaped["path"] = symbol["file_path"]
+    shaped["qualified_name"] = symbol.get("nesting_path") or symbol.get("name")
     return shaped
 
 
