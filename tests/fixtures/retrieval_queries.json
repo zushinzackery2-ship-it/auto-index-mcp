@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "scope": "src/auto_index_mcp",
+  "language": "English (bundled MiniLM)",
+  "target_origin": "Exploratory reference chosen during the architecture review; not a user SLA",
+  "thresholds": {"recall_at_5": 0.75, "mrr_at_5": 0.5},
+  "queries": [
+    {"id": "cancel-thread", "query": "How does the program wait until a worker thread has really exited before releasing resources?", "relevant": [["runtime/background.py", "join"]]},
+    {"id": "source-drift", "query": "Where does reading a function reject source code that changed since it was indexed?", "relevant": [["workspace/source.py", "read_source"]]},
+    {"id": "cross-shard", "query": "Where are caller relationships assembled across all mounted code databases?", "relevant": [["workspace/snapshot.py", "attach_references"], ["domain/reference_graph.py", "project_references"]]},
+    {"id": "pause-workers", "query": "What prevents new background jobs from starting after shutdown has begun?", "relevant": [["application/tasks.py", "register"], ["application/tasks.py", "cancel"]]},
+    {"id": "exclude-source", "query": "Which code decides whether a source file should be omitted because of ignore rules or its size?", "relevant": [["indexing/scanner.py", "_should_skip"]]},
+    {"id": "rank-candidates", "query": "Where are text similarity and identifier overlap combined to order search results?", "relevant": [["embedding/rerank.py", "rerank_hits"]]},
+    {"id": "atomic-index", "query": "How is the previous code index replaced in a single database transaction?", "relevant": [["storage/index.py", "_write_all"]]},
+    {"id": "resolve-relative", "query": "Which logic matches imported names to definitions while retaining uncertain method receivers?", "relevant": [["domain/reference_resolution.py", "resolve"]]},
+    {"id": "reclaim-vectors", "query": "Where are old embedding model versions removed to keep disk usage within a budget?", "relevant": [["storage/namespace.py", "retain_namespaces"]]},
+    {"id": "regex-budget", "query": "How does a text search subprocess enforce the request deadline and stop after enough matches?", "relevant": [["search/backend.py", "_ripgrep_batch"]]},
+    {"id": "private-callback", "query": "What lowers an unused function warning when framework dispatch or incomplete analysis makes it uncertain?", "relevant": [["quality/coverage.py", "unused_evidence"]]},
+    {"id": "drain-control", "query": "How are ongoing control readers allowed to finish before the project resources are retired?", "relevant": [["application/binding.py", "retire"]]},
+    {"id": "delta-vector", "query": "Where are embeddings regenerated for only the files named in an incremental update?", "relevant": [["application/embedding.py", "_embed_delta"]]},
+    {"id": "protocol-error", "query": "Which boundary converts Python exceptions into structured errors returned by MCP tools?", "relevant": [["mcp_api/guard.py", "run_tool"]]},
+    {"id": "resume-instance", "query": "How does explicit activation acknowledge a workspace suspension for only one service instance?", "relevant": [["runtime/control/admission.py", "check"]]},
+    {"id": "source-scope", "query": "Where does one query hold read transactions for the main database and nested workspace sources?", "relevant": [["workspace/snapshot.py", "_capture"], ["workspace/snapshot.py", "WorkspaceSnapshot"]]}
+  ]
+}

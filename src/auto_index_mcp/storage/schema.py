@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from .reference_schema import initialize_references
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 NESTING_COLUMNS = dict(
     parent_name="TEXT NOT NULL DEFAULT ''", parent_kind="TEXT NOT NULL DEFAULT ''",
     depth="INTEGER NOT NULL DEFAULT 0", nesting_path="TEXT NOT NULL DEFAULT ''",
@@ -31,7 +31,8 @@ def initialize_schema(conn, set_metadata=None) -> None:
         complexity INTEGER NOT NULL DEFAULT 1, calls TEXT NOT NULL DEFAULT '[]',
         FOREIGN KEY(file_path) REFERENCES files(path) ON DELETE CASCADE)""")
     ensure_columns(conn, "symbols", dict(NESTING_COLUMNS, refs="TEXT NOT NULL DEFAULT '[]'",
-                                         reference_evidence="TEXT NOT NULL DEFAULT '[]'"))
+                                         reference_evidence="TEXT NOT NULL DEFAULT '[]'",
+                                         usage_constraints="TEXT NOT NULL DEFAULT '[]'"))
     _migrate_symbol_payload(conn)
     conn.execute("DROP TABLE IF EXISTS symbol_nesting")
     conn.execute("DROP TABLE IF EXISTS symbol_embeddings")

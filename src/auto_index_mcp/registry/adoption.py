@@ -7,6 +7,7 @@ from ..cache.identity import directory_identity, identity_key
 from ..cache.layout import cache_directory
 from ..runtime.maintenance import MaintenanceLease
 from ..storage.index import IndexStore
+from ..domain.config import INDEX_DIR_NAMES
 from ..storage.metadata import DEFAULT_METADATA_READER
 from .markers import is_safe_to_delete, read_index_marker, rebind_marker, write_index_markers
 from .paths import registry_key
@@ -20,7 +21,7 @@ def adopt_directory(registry, directory: Path, explicit_root: Path | None = None
         raise ValueError(f"cache ownership could not be verified: {directory}")
     meta = DEFAULT_METADATA_READER.read_metadata(directory / "index.db")
     previous = (marker or {}).get("root") or meta.get("root")
-    root = explicit_root or (directory.parent if directory.name == ".auto-index-mcp" else Path(previous or directory.parent))
+    root = explicit_root or (directory.parent if directory.name in INDEX_DIR_NAMES else Path(previous or directory.parent))
     root = root.resolve()
     entry = registry.get(directory)
     if not previous:
@@ -47,7 +48,7 @@ def adopt_directory(registry, directory: Path, explicit_root: Path | None = None
 
 
 def _register(registry, directory, root):
-    ephemeral = directory.name != ".auto-index-mcp" and directory.parent.name != "projects"
+    ephemeral = directory.name not in INDEX_DIR_NAMES and directory.parent.name != "projects"
     if not registry.register(root, directory, "scan", ephemeral, attached=False):
         return None
     registry.prune_moved_aliases(directory)
@@ -79,9 +80,10 @@ def reconcile_root(registry, root):
     root = Path(root).resolve()
     if not root.is_dir():
         return
-    inline = root / ".auto-index-mcp"
-    if inline.is_dir() and ((inline / "marker.json").exists() or (inline / "index.db").exists()):
-        adopt_directory(registry, inline, root)
+    for name in INDEX_DIR_NAMES:
+        inline = root / name
+        if inline.is_dir() and ((inline / "marker.json").exists() or (inline / "index.db").exists()):
+            adopt_directory(registry, inline, root)
     identity = directory_identity(root)
     for entry in list(registry.entries().values()):
         if entry.get("root_identity") == identity and registry_key(entry["root"]) != registry_key(root):

@@ -45,6 +45,8 @@ class IndexUpdater:
         auto_ignore_patterns: list[str] | None = None,
         privileged_patterns: list[str] | None = None,
         policy_generation: int | None = None,
+        *,
+        mount_child_indexes: bool = False,
     ) -> None:
         self.root = root
         self.store = store
@@ -53,6 +55,7 @@ class IndexUpdater:
         self.auto_ignore_patterns = auto_ignore_patterns or []
         self.privileged_patterns = privileged_patterns or []
         self.policy_generation = policy_generation
+        self.mount_child_indexes = mount_child_indexes
 
     def apply(self, previous: WatchSnapshot, current: WatchSnapshot) -> dict[str, Any]:
         lock = BuildLock(self.store.db_path.parent / "index.build.lock")
@@ -132,11 +135,8 @@ class IndexUpdater:
         return all(path not in stored_records for path in deleted)
 
     def refresh_child_links(self) -> None:
-        children = discover_child_indexes(
-            self.root,
-            self.store.db_path,
-            ignore_patterns=self.ignore_patterns,
-        )
+        children = (discover_child_indexes(self.root, self.store.db_path, ignore_patterns=self.ignore_patterns)
+                    if self.mount_child_indexes else [])
         self.store.replace_child_indexes(child_indexes_to_dicts(children))
 
     def _read_changed_files(self, paths: list[str]) -> tuple[list[FileRecord], list[str]]:

@@ -24,7 +24,7 @@ def test_explicit_resume_only_reactivates_calling_instance(tmp_path, write_file,
     with pytest.raises(ServiceError) as error:
         restarted.enable(str(tmp_path), activation=ActivationIntent.AUTOMATIC)
     assert error.value.code == "workspace-suspended"
-    restarted.root_path = tmp_path
+    restarted.configure_startup(tmp_path)
     assert restarted.status()["last_purge"]["operation_id"] == result["operation_id"]
     assert not second.enabled
     newer = first.purge()
@@ -35,7 +35,7 @@ def test_outer_mount_stops_but_its_cache_survives(tmp_path, write_file, make_ser
     child = tmp_path / "project"
     write_file(child / "main.py", "def item():\n    return 1\n")
     write_file(tmp_path / "outer.py", "def outer():\n    return 2\n")
-    inner, outer = make_service(child), make_service(tmp_path)
+    inner, outer = make_service(child), make_service(tmp_path, mount_child_indexes=True)
     assert len(outer.all_files()) == 2
     outside_cache = outer.store.db_path
     result = inner.purge()
@@ -55,6 +55,19 @@ def test_parent_without_mount_keeps_running(tmp_path, write_file, make_service):
     time.sleep(0.3)
     assert outer.enabled and outer.project.session_lease.held
     assert outer.symbol_search("outer")["items"]
+
+
+def test_default_parent_with_existing_child_cache_keeps_running(tmp_path, write_file, make_service):
+    child = tmp_path / "project"
+    write_file(child / "main.py", "def item():\n    return 1\n")
+    write_file(tmp_path / "outer.py", "def outer():\n    return 2\n")
+    inner, outer = make_service(child), make_service(tmp_path)
+    assert len(outer.all_files()) == 2
+    assert outer.status()["child_index_count"] == 0
+    result = inner.purge()
+    assert result["complete"] and result["stopped_instances"] == 1, result
+    assert outer.enabled and outer.project.session_lease.held
+    assert outer.symbol_search("item")["items"]
 
 
 def test_long_request_timeout_preserves_cache_then_retry_drains(tmp_path, write_file, make_service):

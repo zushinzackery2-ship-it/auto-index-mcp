@@ -12,7 +12,7 @@ FILE_FIELDS = (
 SYMBOL_FIELDS = (
     "name", "kind", "line", "end_line", "signature", "complexity", "calls", "refs",
     "parent_name", "parent_kind", "depth", "nesting_path", "children_count", "max_child_depth", "max_block_depth",
-    "reference_evidence",
+    "reference_evidence", "usage_constraints",
 )
 
 
@@ -31,7 +31,7 @@ def _insert_batch(conn, records) -> None:
         for symbol in record.symbols:
             data = vars(symbol)
             symbols.append((record.path,) + tuple(
-                json.dumps(data[name]) if name in ("calls", "refs", "reference_evidence") else data[name] for name in SYMBOL_FIELDS
+                json.dumps(data[name]) if name in ("calls", "refs", "reference_evidence", "usage_constraints") else data[name] for name in SYMBOL_FIELDS
             ))
     conn.executemany(f"INSERT INTO files({','.join(FILE_FIELDS)}) VALUES ({','.join('?' for _ in FILE_FIELDS)})", files)
     conn.executemany(

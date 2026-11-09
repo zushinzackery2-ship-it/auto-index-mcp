@@ -5,6 +5,7 @@ from ...cache.discovery import cache_directories
 from ...cache.identity import directory_identity, identity_key
 from ...cache.inventory import file_inventory, is_link
 from ...cache.layout import cache_directory
+from ...domain.config import INDEX_DIR_NAMES
 from ...cache.locking import lock_directory
 from ...domain.errors import ServiceError
 from ...registry.markers import is_safe_to_delete, read_index_marker
@@ -23,7 +24,7 @@ def participants(store, root):
 
 def discover(project, root, deadline, members=()):
     inline = list(cache_directories(root, deadline=deadline))
-    actual_roots = [root, *(directory.parent for directory in inline if directory.name == ".auto-index-mcp")]
+    actual_roots = [root, *(directory.parent for directory in inline if directory.name in INDEX_DIR_NAMES)]
     registries = dict(((registry_key(project.registry.directory()), project.registry),))
     identities = dict((directory_identity(actual), actual) for actual in actual_roots)
     for member in members:
@@ -42,7 +43,7 @@ def discover(project, root, deadline, members=()):
             rows.append(candidate)
     for directory in inline:
         marker = read_index_marker(directory)
-        owner = directory.parent if directory.name == ".auto-index-mcp" else Path((marker or {}).get("root", root))
+        owner = directory.parent if directory.name in INDEX_DIR_NAMES else Path((marker or {}).get("root", root))
         rows.append(dict(root=str(owner), index_dir=str(directory), registry_dir=str(project.registry.directory())))
     if project.index_root is not None:
         rows.append(dict(root=str(root), index_dir=str(project.index_root), registry_dir=str(project.registry.directory())))
@@ -87,7 +88,7 @@ def _candidate(row):
     previous = (marker or {}).get("root", str(root))
     legitimate_root = (registry_key(previous) == registry_key(root)
                        or (marker or {}).get("root_identity") == directory_identity(root)
-                       or (directory.name == ".auto-index-mcp" and directory.parent.resolve() == root))
+                       or (directory.name in INDEX_DIR_NAMES and directory.parent.resolve() == root))
     if not legitimate_root:
         raise ServiceError("refused", f"registered root conflicts with cache ownership: {directory}")
     for name in KNOWN_INDEX_FILES:

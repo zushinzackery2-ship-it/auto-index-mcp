@@ -14,13 +14,14 @@ from __future__ import annotations
 import sqlite3
 import sys
 import time
+import statistics
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from auto_index_mcp.embedding.backend import resolve_embedding_model_path  # noqa: E402
-from auto_index_mcp.embedding.indexer import _symbol_text  # noqa: E402
+from auto_index_mcp.embedding.text import symbol_text  # noqa: E402
 from auto_index_mcp.languages.text_decode import read_text_file  # noqa: E402
 
 LENGTHS = (64, 128, 192, 256)
@@ -43,7 +44,7 @@ def load_symbol_texts() -> list[str]:
                 lines_cache[path] = read_text_file(ROOT / path).splitlines()
             except (OSError, UnicodeDecodeError):
                 lines_cache[path] = []
-        texts.append(_symbol_text(dict(row), lines_cache[path]))
+        texts.append(symbol_text(dict(row), lines_cache[path]))
     return texts
 
 
@@ -76,14 +77,21 @@ def bench(texts: list[str], model_dir: Path) -> None:
     for max_length in LENGTHS:
         for dynamic in (False, True):
             embedder = OnnxEmbedder(model_dir, max_length=max_length)
+            embedder._ensure_loaded()
             if dynamic:
                 embedder._tokenizer.enable_padding()
-            start = time.perf_counter()
-            for index in range(0, len(texts), batch):
-                embedder.embed(texts[index : index + batch])
-            elapsed = time.perf_counter() - start
+            else:
+                embedder._tokenizer.enable_padding(length=max_length)
+            embedder.embed(texts[:batch])
+            elapsed = []
+            for _ in range(3):
+                start = time.perf_counter()
+                for index in range(0, len(texts), batch):
+                    embedder.embed(texts[index : index + batch])
+                elapsed.append(time.perf_counter() - start)
             mode = "dynamic" if dynamic else "fixed"
-            print(f"max_length={max_length:3d} padding={mode:7s} total={elapsed:7.2f}s")
+            print(f"max_length={max_length:3d} padding={mode:7s} symbols={len(texts)} warmup_batches=1 repeats=3 "
+                  f"mean={statistics.mean(elapsed):7.2f}s stdev={statistics.pstdev(elapsed):.3f}s")
 
 
 def main() -> None:

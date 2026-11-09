@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
-from watchdog.observers import Observer
+from .events.observer import create_observer
 
-from ..domain.config import INTERNAL_EXCLUDE_DIRS
+from ..domain.config import INTERNAL_EXCLUDE_DIRS, INDEX_DIR_NAMES
 from ..domain.ignore_rules import IgnoreRules
 from ..workspace.containment import is_relative_to
 from .snapshot import WatchSnapshot
@@ -20,12 +20,13 @@ from ..runtime.control.contracts import remaining
 # Recommended exclusions can be explicitly included and change across instances.
 # Only protected directories are safe to drop before the policy-aware snapshot.
 # Child .auto-index-mcp events must continue to wake the parent watcher.
-_EVENT_IGNORED_DIR_NAMES = frozenset(INTERNAL_EXCLUDE_DIRS - {".auto-index-mcp"})
+_EVENT_IGNORED_DIR_NAMES = frozenset(INTERNAL_EXCLUDE_DIRS - set(INDEX_DIR_NAMES))
 logger = logging.getLogger(__name__)
 
 
 def make_event_filter(root: Path, own_index_dir: Path | None,
-                      rules_provider: Callable[[], IgnoreRules] | None = None) -> Callable[[Path], bool]:
+                      rules_provider: Callable[[], IgnoreRules] | None = None, *,
+                      mount_child_indexes: bool = False) -> Callable[[Path], bool]:
     """Cheap pre-filter for filesystem events (string ops only, no syscalls).
 
     Returns True for paths that can never affect the index: anything inside
@@ -45,7 +46,9 @@ def make_event_filter(root: Path, own_index_dir: Path | None,
             return False
         if any(part in _EVENT_IGNORED_DIR_NAMES for part in rel.parts):
             return True
-        if path.name == ".gitignore" or ".auto-index-mcp" in rel.parts:
+        if any(part in INDEX_DIR_NAMES for part in rel.parts):
+            return not mount_child_indexes
+        if path.name == ".gitignore":
             return False
         rules = rules_provider() if rules_provider is not None else default_rules
         return rules.is_ignored_rel(rel.as_posix(), False)
@@ -108,12 +111,16 @@ class FileEventWatcher:
             self._worker = threading.Thread(target=self._run, name="auto-index-watcher", daemon=True)
             self._worker.start()
             self._changed.set()
-            if wait_ready and not self._ready.wait(timeout=5.0):
-                self.last_error = "watcher did not become ready within 5 seconds"
-                raise TimeoutError(self.last_error)
+            if wait_ready:
+                self.wait_ready()
         except Exception:
             self.stop()
             raise
+
+    def wait_ready(self):
+        if not self._ready.wait(timeout=5.0):
+            self.last_error = "watcher did not become ready within 5 seconds"
+            raise TimeoutError(self.last_error)
 
     def stop(self, deadline=None) -> None:
         deadline = deadline if deadline is not None else time.monotonic() + 10.0
@@ -135,6 +142,10 @@ class FileEventWatcher:
 
     def is_running(self) -> bool:
         return self._worker is not None and self._worker.is_alive()
+
+    @property
+    def snapshot(self):
+        return self._snapshot
 
     def request_refresh(self) -> None:
         with self._changes_lock:
@@ -178,7 +189,7 @@ class FileEventWatcher:
                 return
         if self._stop.is_set():
             return
-        observer = Observer()
+        observer = create_observer(self._event_filter)
         observer.schedule(_ChangeHandler(self._record_event), str(self.root), recursive=True)
         observer.start()
         self._observer = observer

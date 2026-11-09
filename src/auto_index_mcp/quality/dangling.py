@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .multi_match import MultiPatternMatcher
+from .coverage import reference_coverage, unused_evidence
 
 CALLABLE_KINDS = {"class", "function", "method", "procedure", "struct", "enum", "interface"}
 ENTRYPOINT_NAMES = {"main", "setup", "teardown"}
@@ -22,9 +23,11 @@ def dangling_report(
     include_low_confidence: bool = False,
     include_tests: bool = False,
     limit: int = 200,
+    *, coverage=None,
 ) -> dict[str, Any]:
     findings = [finding for finding in findings if finding["kind"] not in PROJECT_FINDING_KINDS]
-    findings.extend(_unused_symbol_findings(files))
+    coverage = coverage or reference_coverage(files)
+    findings.extend(_unused_symbol_findings(files, coverage))
     findings.extend(_orphan_file_findings(files))
     checked_files = [item for item in files if include_tests or not _is_test_path(item["path"])]
     checked_paths = {item["path"] for item in checked_files}
@@ -45,10 +48,11 @@ def dangling_report(
             "confidence": dict(confidence_counts),
         },
         "findings": limited,
+        "coverage": coverage,
     }
 
 
-def _unused_symbol_findings(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _unused_symbol_findings(files: list[dict[str, Any]], coverage) -> list[dict[str, Any]]:
     findings = []
     called_member_parents = _called_member_parent_names(files)
     definitions = Counter(symbol["name"] for item in files for symbol in item["symbols"])
@@ -63,22 +67,18 @@ def _unused_symbol_findings(files: list[dict[str, Any]]) -> list[dict[str, Any]]
             if (not _is_dangling_candidate(item, symbol, called_member_parents)
                     or symbol.get("called_by") or symbol.get("imported_by")):
                 continue
-            confidence = "high" if symbol["name"].startswith("_") and not _is_dunder(symbol["name"]) else "medium"
             ambiguous = bool(symbol.get("ambiguous_called_by")) or (
                 definitions[symbol["name"]] > 1 and symbol["name"] in referenced
             )
-            if ambiguous:
-                confidence = "low"
             findings.append(
                 {
                     "kind": "unused_symbol",
-                    "confidence": confidence,
+                    **unused_evidence(item, symbol, ambiguous, coverage),
                     "path": item["path"],
                     "language": item["language"],
                     "symbol": symbol["name"],
                     "symbol_kind": symbol["kind"],
                     "line": symbol["line"],
-                    "reason": "references exist but their receiver is ambiguous" if ambiguous else "no indexed callers found",
                 }
             )
     return findings

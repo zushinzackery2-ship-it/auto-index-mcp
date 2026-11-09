@@ -8,10 +8,10 @@ from auto_index_mcp.core.service import AutoIndexService
 def make_service():
     services = []
 
-    def create(project, rebuild=True, index_root=None):
+    def create(project, rebuild=True, index_root=None, mount_child_indexes=False):
         service = AutoIndexService(index_root=index_root)
         services.append(service)
-        service.enable(str(project), rebuild=rebuild, refresh_embedder=False)
+        service.enable(str(project), rebuild=rebuild, refresh_embedder=False, mount_child_indexes=mount_child_indexes)
         return service
 
     yield create

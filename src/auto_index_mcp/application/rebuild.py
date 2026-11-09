@@ -42,10 +42,10 @@ class RebuildCoordinator:
         assert self.project.index_root is not None
         if reuse_if_fresh and self._index_is_fresh():
             return self.state.status()
-        context = self._rebuild_context()
-        return self._rebuild_with_lock(context)
+        context = self.capture_context()
+        return self.run_captured(context)
 
-    def _rebuild_with_lock(
+    def run_captured(
         self,
         context: RebuildContext,
         indexer: BackgroundIndexer | None = None,
@@ -70,16 +70,18 @@ class RebuildCoordinator:
             if int(metadata.get("policy_generation", 0)) != context.policy_generation:
                 context = replace(context, ignore_config=IgnoreConfig.from_metadata(metadata),
                                   policy_generation=int(metadata.get("policy_generation", 0)))
-            if context.reuse_if_fresh and can_reuse_index(context.store, context.root, service_ignore_fingerprint(self.project, context.root)):
+            if context.reuse_if_fresh and can_reuse_index(context.store, context.root,
+                                                        service_ignore_fingerprint(self.project, context.root),
+                                                        context.mount_child_indexes):
                 return dict(status="indexed", reused=True, file_count=context.store.get_metadata_map().get("file_count", 0))
             return self.pipeline.run(indexer, context)
         finally:
             lock.release()
 
     def _start_background_rebuild(self, wait_seconds: float = 0.0, reuse_if_fresh: bool = False) -> dict[str, Any]:
-        context = replace(self._rebuild_context(), reuse_if_fresh=reuse_if_fresh)
+        context = replace(self.capture_context(), reuse_if_fresh=reuse_if_fresh)
         existing = self.project.background
-        if existing is not None and existing.is_running() and self.project._background_context_key == context.key:
+        if existing is not None and existing.is_alive() and self.project._background_context_key == context.key:
             completed = existing.wait(max(0.0, wait_seconds))
             if completed:
                 return _completed_background_result(existing) or self.state._background_status()
@@ -89,35 +91,38 @@ class RebuildCoordinator:
             on_done=lambda result: self._on_background_done(result, context),
             root=context.root, index_root=context.index_root,
         )
-        self.project.background = indexer
-        self.project._background_context_key = context.key
-        indexer.start()
+        self.project.tasks.build_key = context.key
+        if not self.project.tasks.register("build", indexer):
+            return dict(status="cancelled")
         if indexer.wait(max(0.0, wait_seconds)):
             return _completed_background_result(indexer) or self.state._background_status()
         return self.state._background_status()
 
     def _run_rebuild_locked(self, indexer: BackgroundIndexer, context: RebuildContext) -> dict[str, Any]:
         revision = context.store.get_metadata_map().get("updated_at")
-        result = self._rebuild_with_lock(context, indexer)
+        result = self.run_captured(context, indexer)
         while result.get("status") == "indexing-in-other-process" and self.project._context_is_current(context):
             updated = context.store.get_metadata_map().get("updated_at")
-            if (context.reuse_if_fresh or updated != revision) and can_reuse_index(context.store, context.root, service_ignore_fingerprint(self.project, context.root)):
+            if (context.reuse_if_fresh or updated != revision) and can_reuse_index(
+                    context.store, context.root, service_ignore_fingerprint(self.project, context.root),
+                    context.mount_child_indexes):
                 return dict(status="indexed", reused=True, file_count=context.store.get_metadata_map().get("file_count", 0))
             if indexer.cancelled.wait(0.5):
                 return dict(status="cancelled")
-            result = self._rebuild_with_lock(context, indexer)
+            result = self.run_captured(context, indexer)
         return result
 
     def request_auto_watch_after_build(self) -> None:
-        self.project._auto_watch_after_build = True
-        self.project._auto_watch_context_key = self._rebuild_context().key
+        with self.project.tasks.lock:
+            if self.project.tasks.accepting:
+                self.project.tasks.auto_watch_key = self.capture_context().key
 
     def cancel_auto_watch_after_build(self) -> None:
-        self.project._auto_watch_after_build = False
-        self.project._auto_watch_context_key = None
+        with self.project.tasks.lock:
+            self.project.tasks.auto_watch_key = None
 
     def _on_background_done(self, result: dict[str, Any], context: RebuildContext) -> None:
-        if not self.project._auto_watch_after_build or self.project._auto_watch_context_key != context.key:
+        if self.project.tasks.auto_watch_key != context.key:
             return
         self.cancel_auto_watch_after_build()
         if not self.project._context_is_current(context):
@@ -131,14 +136,16 @@ class RebuildCoordinator:
         except Exception as exc:  # noqa: BLE001 - watcher start is best-effort
             self.project.last_errors.append(f"auto-watch: {exc}")
 
-    def _rebuild_context(self) -> RebuildContext:
+    def capture_context(self) -> RebuildContext:
         root, store = self.project._ready_context()
         assert self.project.index_root is not None
         metadata = store.prepare_build()
         config = IgnoreConfig.from_metadata(metadata) if IgnoreConfig.has_metadata(metadata) else self.ignore.ignore_config()
         return RebuildContext(root, self.project.index_root, store, self.project.embedding_indexer, config,
                               policy_generation=int(metadata.get("policy_generation", 0)),
-                              source_generation=int(metadata.get("source_generation", 0)))
+                              source_generation=int(metadata.get("source_generation", 0)),
+                              mount_child_indexes=self.project.mount_child_indexes,
+                              binding_generation=self.project.binding_generation)
 
     def _index_is_fresh(self) -> bool:
         if self.project.root_path is None:
@@ -147,6 +154,7 @@ class RebuildCoordinator:
             self.project.store,
             self.project.root_path,
             service_ignore_fingerprint(self.project, self.project.root_path),
+            self.project.mount_child_indexes,
         )
 
     def can_reuse_index_for(self, root: Path) -> bool:
@@ -154,6 +162,7 @@ class RebuildCoordinator:
             self.project.store,
             root,
             service_ignore_fingerprint(self.project, root),
+            self.project.mount_child_indexes,
         )
 
     def can_start_auto_watch(self, result: dict[str, Any] | None) -> bool:
@@ -164,6 +173,7 @@ class RebuildCoordinator:
             self.project.root_path,
             result,
             service_ignore_fingerprint(self.project, self.project.root_path),
+            self.project.mount_child_indexes,
         )
 
 

@@ -11,6 +11,10 @@ from auto_index_mcp.core.service import AutoIndexService
 from auto_index_mcp.registry import IndexRegistry
 
 REPOSITORY = Path(__file__).resolve().parents[1]
+if str(REPOSITORY) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY))
+from scripts.quality.architecture import architecture_findings, responsibility_reviews  # noqa: E402
+
 MAX_FILE_LINES = 300
 
 # Exact reviewed public interfaces and framework-dispatched methods only.
@@ -110,8 +114,10 @@ def _check_service(service, project: Path, source: Path) -> dict:
         failures.append("source indexing failed")
     if enable.get("auto_ignored_paths"):
         failures.append("source files exceeded the indexing byte limit")
-    if report["line_limit_findings"]:
-        failures.append(f"files over {MAX_FILE_LINES} lines: {len(report['line_limit_findings'])}")
+    report["responsibility_reviews"] = responsibility_reviews(report["line_limit_findings"])
+    report["architecture_findings"] = architecture_findings(source)
+    if report["architecture_findings"]:
+        failures.append(f"architecture boundary violations: {len(report['architecture_findings'])}")
     if not files:
         failures.append("no source files were indexed")
     if any(item["symbols"] for item in files):

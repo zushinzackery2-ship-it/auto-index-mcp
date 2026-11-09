@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..application.health import embedding_status, _state
+from ..domain.semantic_state import semantic_state
 
 import math
 
@@ -33,7 +33,7 @@ class SemanticQueries:
             self.embeddings.ensure_embedding_background()
         hits, sources = search_workspace(self.project.view, self.project.root_path, indexer, query, max(1, min(int(limit), 100)), min_score)
         complete = all(source["complete"] for source in sources)
-        state, error = _state(sources, self.project.embedding_background)
+        state, error = semantic_state(sources, self.project.embedding_background)
         result = dict(format="auto_index_semantic_search", model=indexer.backend.name, state=state,
                       count=len(hits), items=hits, complete=complete, sources=sources)
         if error:
@@ -44,7 +44,7 @@ class SemanticQueries:
         return self.state._with_index_status(result)
 
     def embedding_status(self) -> dict:
-        return embedding_status(self.project)
+        return self.state.embedding_status()
 
 
 

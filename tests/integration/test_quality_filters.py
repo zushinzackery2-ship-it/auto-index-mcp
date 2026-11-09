@@ -52,7 +52,7 @@ def test_quality_checks_support_exclude_paths_and_active_sources(tmp_path) -> No
     service.enable(str(project), rebuild=True)
 
     dangling = service.dangling_check(
-        include_low_confidence=False,
+        include_low_confidence=True,
         exclude_paths=["reference_origin/**"],
         active_only=True,
     )
@@ -67,6 +67,8 @@ def test_quality_checks_support_exclude_paths_and_active_sources(tmp_path) -> No
     nesting_paths = {finding["path"] for finding in nesting["findings"]}
 
     assert "ActiveUnused" in dangling_symbols
+    assert not dangling["coverage"]["complete_reference_analysis"]
+    assert all(row["confidence"] == "low" for row in dangling["findings"] if row["kind"] == "unused_symbol")
     assert "LegacyUnused" not in dangling_symbols
     assert "ReferenceUnused" not in dangling_symbols
     assert nesting_paths == {"src/active.cpp"}

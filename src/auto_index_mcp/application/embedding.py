@@ -11,7 +11,6 @@ from ..embedding.indexer import SymbolEmbedder
 from ..runtime.leases import BuildLock
 from ..storage.generation import revision as source_revision
 from ..workspace.semantic import vector_sources, workspace_complete
-from ..workspace.view import WorkspaceView
 from ..workspace.semantic import describe_sources
 from ..domain.errors import ServiceError
 from ..storage.namespace import retain_namespaces, retention_limits
@@ -24,44 +23,52 @@ class EmbeddingCoordinator:
         self.project = project
 
     def ensure_embedding_background(self) -> dict[str, Any]:
+        if not self.project.tasks.accepting:
+            return dict(status="embedding-cancelled")
         root, store = self.project._ready_context()
+        binding = self.project.bindings.require()
         if not self.project.semantic_enabled:
             return dict(status="embedding-disabled")
         with self.project._embedding_lock:
-            if not self.project.enabled:
+            if not self.project.tasks.accepting:
                 return dict(status="embedding-cancelled")
             existing = self.project.embedding_background
             if existing is not None and existing.is_running():
                 return existing.status()
             indexer = self.project.embedding_indexer
             if indexer is not None and self._vectors_current(store, indexer):
-                return dict(status="embedding-ready", model=indexer.backend.name,
-                            vector_count=sum(item["vector_count"] for item in describe_sources(self.project.view, root, indexer)))
+                with binding.open_view(self.project.control) as view:
+                    return dict(status="embedding-ready", model=indexer.backend.name,
+                                vector_count=sum(item["vector_count"] for item in describe_sources(view, root, indexer)))
             embedding_store = self.project.embedding_store
             worker = BackgroundIndexer(
-                lambda background: self._load_and_embed_project(background, root, store, embedding_store),
-                on_done=lambda result: self._embedding_done(root, store),
+                lambda background: self._load_and_embed_project(background, root, store, embedding_store, binding),
+                on_done=lambda result: self._embedding_done(binding),
                 operation="embedding", root=root, index_root=store.db_path.parent,
             )
-            self.project.embedding_background = worker
-            worker.start()
+            if not self.project.tasks.register("embedding", worker):
+                return dict(status="embedding-cancelled")
         return worker.status()
 
-    def _embedding_done(self, root, store):
-        if not self.project.enabled or self.project.store is not store or self.project.root_path != root:
+    def _embedding_done(self, binding):
+        if not self.project.bindings.is_current(binding):
             return
         indexer = self.project.embedding_indexer
-        if indexer is not None and not self._vectors_current(store, indexer):
+        if indexer is not None and not self._vectors_current(binding.store, indexer):
             # The last request can arrive after a pass's final revision check.
             result = self.project.embedding_background.status().get("last_result") or dict()
             if result.get("status") == "embedded":
                 self.ensure_embedding_background()
 
     def _vectors_current(self, store, indexer):
-        return workspace_complete(self.project.view, self.project.root_path, indexer)
+        binding = self.project.bindings.require()
+        if binding.store is not store:
+            return False
+        with binding.open_view(self.project.control) as view:
+            return workspace_complete(view, binding.root, indexer)
 
     def _refresh_embedder(self) -> None:
-        self.project.embedding_indexer = self._create_embedding_indexer()
+        self.project.tasks.indexer = self._create_embedding_indexer()
 
     def _create_embedding_indexer(self, embedding_store: EmbeddingStore | None = None) -> SymbolEmbedder | None:
         store = embedding_store if embedding_store is not None else self.project.embedding_store
@@ -74,21 +81,20 @@ class EmbeddingCoordinator:
         indexer.progress = self.project.embedding_progress
         return indexer
 
-    def _load_and_embed_project(self, background, root, store, embedding_store=None):
+    def _load_and_embed_project(self, background, root, store, embedding_store=None, binding=None):
+        binding = binding or self.project.bindings.require()
         background.set_phase(PHASE_EMBEDDING)
         indexer = self._create_embedding_indexer(embedding_store)
         if indexer is None:
             return dict(status="embedding-unavailable", model=None,
                         error="embedding model unavailable; install semantic dependencies and configure the model")
-        if self.project.store is store and self.project.root_path == root and self.project.enabled:
-            self.project.embedding_indexer = indexer
+        with self.project.tasks.lock:
+            if self.project.bindings.is_current(binding):
+                self.project.tasks.indexer = indexer
         indexer.check_cancelled = background.check_cancelled
         results = []
-        view = WorkspaceView(store, control=self.project.control)
-        try:
+        with binding.open_view(self.project.control) as view:
             return self._embed_sources(view, background, root, indexer, results)
-        finally:
-            view.close()
 
     def _embed_sources(self, view, background, root, indexer, results):
         for prefix, source_root, source_store, vectors in vector_sources(view, root, indexer.conn_provider):
@@ -176,11 +182,11 @@ class EmbeddingCoordinator:
                 result[key] += partial[key]
         return result
 
-    def _embed_after_incremental(self, root, store, previous, current, result):
+    def after_incremental(self, root, store, previous, current, result):
         if self.project.enabled and self.project.store is store and result.get("status") == "incremental":
-            self._maintain_embeddings()
+            self.maintain()
 
-    def _maintain_embeddings(self):
+    def maintain(self):
         if not self.project.enabled or not self.project.semantic_enabled or self.project.embedding_store is None:
             return
         if self.project.embedding_background is not None and self.project.embedding_background.is_running():

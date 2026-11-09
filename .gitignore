@@ -1,6 +1,9 @@
 Task-Status.md
 .plan/
 .high-value-information/
+.del/
+blog/
+oldtest/
 reference/
 code_references/
 __pycache__/
@@ -13,6 +16,7 @@ pytest_*.txt
 .tmp-unrealvt-index/
 .code_indexer/
 .auto-index-mcp/
+.auto-index-mcp-mounted/
 .ruff_cache/
 .mypy_cache/
 .venv/

@@ -25,7 +25,7 @@
 | **索引注册与清理** | 用户缓存集中存储，`list` / `clean` / `compact` 可盘点、删除和回收空间，兼容项目内已有缓存。 |
 | **工作区一键清理** | `manage(purge)` 协同停止相关实例，清理当前工程及全部层级子索引，显式 enable 恢复。 |
 | **精确增量更新** | 普通文件新增、修改、删除只更新受影响记录，不做整库重建。 |
-| **嵌套工作区** | 挂载子目录已有索引，统一聚合文件、符号和语义结果。 |
+| **嵌套工作区** | 显式开启后挂载子目录已有索引，统一聚合文件、符号和语义结果；默认使用单工作区索引。 |
 | **符号级导航** | 符号搜索按匹配质量排序，`symbol_body` 按名取源码，`symbol_refs` 给出调用图（查找引用）。 |
 | **路径容错** | 输入路径自动归一化：反斜杠、项目内绝对路径、大小写、唯一文件名均可解析。 |
 | **结构化错误** | 工具区分无命中、参数错误、依赖缺失和查询超时，并提供诊断与完整性状态。 |
@@ -40,7 +40,7 @@
 
 | 分类 | API | 说明 |
 |:-----|:----|:-----|
-| **生命周期** | `auto_index_enable()` | 绑定项目根目录；`root_path` 可省略（自动探测），默认复用已有索引。 |
+| **生命周期** | `auto_index_enable()` | 绑定项目根目录；`root_path` 可省略（自动探测），默认复用已有索引；`mount_child_indexes=true` 显式开启子库挂载。 |
 | **生命周期** | `auto_index_status()` | 紧凑索引健康态：文件/向量数、watcher、构建进度，ISO 时间戳。 |
 | **生命周期** | `auto_index_manage(action=...)` | 运维统一入口：`purge` / `rebuild` / `clear` / `watch_start` / `watch_stop` / `disable` / `diff` / `registry`（只读列出注册表） / `ignore_*`。 |
 | **导航** | `auto_index_overview()` | 首过概览：语言分布、目录分布、按目录轮转的代表性样例（入口文件优先，测试/归档目录降权）。 |
@@ -58,7 +58,7 @@
 
 > [!NOTE]
 > **已知局限**
-> Python 引用分析覆盖格式化字符串、别名、装饰器和回调传参；动态分发、继承与跨语言绑定仍需要结合调用方式判断。引用响应使用 `qualified_name`、`callers`、`ambiguous_callers`、`importers` 和 `caller_evidence` 表示定位及证据；未确定接收者的边保持低置信，`kind="dangling"` 默认隐藏这些候选。Python 不可达检测使用 AST，C/JS 等使用启发式分析。
+> Python 引用分析覆盖格式化字符串、别名、相对导入、装饰器和回调传参。`callers`、`ambiguous_callers`、`importers`、`caller_evidence` 描述引用证据；`reference_scope` 标明工作区范围及各来源读取版本。外部调用始终标为 `unknown`。继承、类装饰器、元类、未解析接收者及不完整分析会降低未使用候选的置信度；`include_low_confidence=true` 可查看原因与 `limitations`。Python 不可达检测使用 AST，其他语言使用启发式分析。
 
 ---
 
@@ -79,13 +79,33 @@ auto-index-mcp status D:\your\project
 
 `build` 为一次性命令：已有兼容索引也会先与文件系统对账，再按需构建语义向量，完成后退出（exit code 0/1）。写入与运行中的 MCP 进程使用相同的跨进程租约；`--rebuild` 强制全量重建，`--no-semantic` 只更新导航索引。`status` 只读打印已有索引摘要。
 
+### 可选子索引挂载
+
+默认递归扫描工作区内全部可索引源码目录，写入一份主索引，跳过子索引发现和挂载。子目录中的已有缓存不会改变默认索引范围。需要复用嵌套工作区已发布的索引时，显式开启：
+
+```python
+auto_index_enable(root_path="D:/your/project", mount_child_indexes=True)
+```
+
+```bat
+auto-index-mcp build D:\your\project --mount-child-indexes
+auto-index-mcp serve --project-path D:\your\project --mount-child-indexes
+auto-index-mcp status D:\your\project --mount-child-indexes
+```
+
+开关仅控制已有子库挂载，源码扫描始终递归，也不会主动为每个子目录创建索引。MCP 自动绑定默认关闭；启动时传入 `--mount-child-indexes` 可为该服务的自动绑定显式开启。再次调用 `auto_index_enable()` 时省略参数会使用默认关闭模式。
+
+主库与全部已挂载子库共同组成引用分析作用域。查询固定各来源的 SQLite 读取事务，统一源码路径后解析跨库引用；相同源码的分库方式不会改变调用者和导入者。缺失或损坏的已挂载来源返回 `source-unavailable`，通过重建对账；输出路径过滤只限制质量报告展示范围，不提高分析置信度。
+
+两种模式使用并列缓存目录，避免多个进程互相改写索引结构。原有缓存位置选择保持：默认目录为原路径，挂载模式在同级目录名后追加 `-mounted`。例如项目内模式分别为 `.auto-index-mcp/` 与 `.auto-index-mcp-mounted/`；用户缓存分别为 `projects/<project-id>/` 与 `projects/<project-id>-mounted/`。旧索引首次复用时按新策略重建；`status` 显示 `mount_child_indexes`，日志记录实际模式与缓存位置。注册、显式清理及 `purge` 同时覆盖两种模式。
+
 不带子命令时 `auto-index-mcp` 即为 MCP server（stdio）。CLI 子命令为 `build` / `status` / `list` / `clean` / `compact` / `serve`。
 
 ---
 
 ## 索引注册与清理
 
-新工程默认把索引存到用户缓存目录，适用于只读源码树。已有 `<root>/.auto-index-mcp/` 自动复用；`AUTO_INDEX_CACHE_MODE=user` 或 `project` 可明确选择位置，`AUTO_INDEX_CACHE_DIR` 可指定缓存根。项目内模式会创建缓存自身的 `.gitignore`。
+新工程默认把索引存到用户缓存目录，适用于只读源码树。已有 `<root>/.auto-index-mcp/` 自动复用；`AUTO_INDEX_CACHE_MODE=user` 或 `project` 可明确选择位置，`AUTO_INDEX_CACHE_DIR` 可指定缓存根。项目内模式会创建缓存自身的 `.gitignore`；缓存位置与子索引挂载开关独立。
 
 每次 `enable` / `build` 登记到用户级注册表；同一工程的多个索引分别保留。目录身份支持同文件系统内改名或移动，复制缓存获得独立身份。按新工程路径执行 `clean` / `compact` 会核验并重绑已有缓存；`--dry-run` 仅预览位置和筛选结果。
 
@@ -186,6 +206,8 @@ pip install -e ".[semantic]"
 
 服务日志写入索引目录的 `logs/server-<pid>.log`，包含 PID、操作 ID、阶段与错误原因。单文件 512 KiB，每进程保留一份轮转日志，初始化时清理到最近 32 个日志文件。`auto_index_status()` 提供日志路径、构建状态、源/策略代次及 watcher owner/standby 状态；等待构建租约时附持有者诊断。
 
+服务入口统一管理请求准入和读取快照。生命周期发布不可变工程绑定；后台任务由任务所有者注册，停止后拒绝新任务，并等待执行与完成回调全部退出再释放资源。状态查询使用独立读取租约，长查询期间仍可响应。日志包含 `lifecycle phase=bound/quiescing/retired` 和 `task phase=registered/rejected`。
+
 > [!IMPORTANT]
 > **中文查询局限**
 > 内置 MiniLM 主要面向英文，词法子词拆分也以 ASCII 标识符为主。中文需求建议使用英文描述查询，或配置输入输出格式兼容的多语言 ONNX 模型及对应 tokenizer。
@@ -207,15 +229,15 @@ pip install -e ".[semantic]"
 ```
 auto-index-mcp/
 ├── src/auto_index_mcp/
-│   ├── application/   生命周期、构建、watcher、语义及 purge 协调器
+│   ├── application/   绑定与任务所有权、服务准入、构建及 purge 协调
 │   │   └── purge/     范围盘点、协作停止、持锁清理和结果
 │   ├── cache/         缓存位置、目录身份、锁路由和空间盘点
 │   ├── core/          AutoIndexService 兼容入口
-│   ├── domain/        记录、策略、配置和错误契约
+│   ├── domain/        记录、策略、引用解析与错误契约
 │   ├── storage/       SQLite、符号关系、代次和向量持久化
 │   ├── indexing/      扫描、快照与增量发布
 │   ├── languages/     Python AST 与多语言解析适配
-│   ├── workspace/     主/子索引视图与聚合
+│   ├── workspace/     主/子索引读取快照、统一身份与引用聚合
 │   ├── search/        文本、符号与语义查询
 │   ├── embedding/     ONNX 后端、正文窗口与有界推理
 │   ├── quality/       嵌套、不可达与未使用候选分析
@@ -230,7 +252,7 @@ auto-index-mcp/
 │   ├── integration/   存储、工作区与真实协议回归
 │   ├── performance/   病态输入与规模边界
 │   └── fixtures/      数据与全量调用图对照算法
-├── oldtest/           历史兼容测试归档
+├── oldtest/           本地历史兼容测试归档（Git 忽略）
 └── scripts/stress/    并发与资源压测
 ```
 
@@ -298,7 +320,7 @@ Windows 一键安装后，可以参考安装脚本生成的 `mcp-client-config.w
 
 ## 测试
 
-本地测试以 pytest 为准（无 GitHub Actions CI）。现行用例在 `tests/`（`oldtest/` 为历史归档，不参与默认收集）：
+本地测试以 pytest 为准（无 GitHub Actions CI）。现行用例在 `tests/`；`oldtest/` 是可选的本地历史归档，由 Git 忽略：
 
 ```bash
 python -m pip install -e ".[semantic,dev]"
@@ -306,10 +328,18 @@ python -m pytest -q
 python -m ruff check --select F src tests scripts
 ```
 
-严格质量门禁在临时目录重建源码索引；深层嵌套、未核准告警、分析覆盖不足和超过 300 行的生产/默认测试文件均使检查失败。框架回调与公共接口的例外逐项记录原因：
+质量门禁在临时目录重建源码索引；深层嵌套、未核准告警、分析覆盖不足、依赖方向和状态所有权违规使检查失败。超过 300 行的生产/测试文件输出职责评审提示，单一职责文件可记录理由保留。公共接口例外逐项记录原因：
 
 ```bash
 python scripts/self_quality_check.py
+```
+
+真实检索评测使用内置 ONNX 模型，对生产源码快照运行 16 条有相关性标注的英文行为查询，记录 Hit@1/5（报告字段 `recall_at_K`，表示命中任一可接受实现的查询比例）、MRR@5、一次预热后三次重复的耗时均值/标准差及响应字节数。报告分别保留实测值和数据集内的探索性目标值；默认及 `--check-target` 在目标未达时失败，显式 `--report-only` 保存报告并保留 `target_met=false`；`--baseline` 检查相对已保存基线的回退。该报告衡量检索效果与查询成本，Agent 完整任务效果需独立评估：
+
+```bash
+python -m scripts.evaluation.retrieval --report-only --output .high-value-information/validation/retrieval.json
+python -m scripts.evaluation.retrieval --check-target
+python -m scripts.evaluation.retrieval --report-only --baseline .high-value-information/validation/retrieval.json
 ```
 
 协议检查覆盖 13 个工具、资源、结构化错误、watcher 更新、ping 和退出回收。资源基准记录冷/热构建、单文件/突发更新、查询 P50/P95、Python 分配峰值、RSS、CPU 与数据库大小：

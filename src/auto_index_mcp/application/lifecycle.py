@@ -9,9 +9,8 @@ from ..indexing.tree_progress import TreeProgress
 from ..storage.embeddings import EmbeddingStore
 from ..storage.index import IndexStore
 from ..registry import write_index_markers
-from ..runtime.diagnostics import close_logging, configure_logging
+from ..runtime.diagnostics import close_logging, configure_logging, diagnostic_scope
 from ..runtime.control.contracts import ActivationIntent
-from ..runtime.locking.session import SessionLease
 from ..domain.errors import ServiceError
 from .maintenance import clear_index
 from .attachment import attach_cache
@@ -34,7 +33,10 @@ class LifecycleCoordinator:
         refresh_embedder: bool = True,
         source: str = "mcp-enable",
         activation=ActivationIntent.EXPLICIT,
+        *,
+        mount_child_indexes: bool = False,
     ) -> dict[str, Any]:
+        activation_ticket = self.project.bindings.activation_ticket()
         root = Path(root_path).resolve()
         if self.project.fixed_root is not None and root != self.project.fixed_root:
             raise ServiceError("project-fixed", "this shared server is bound to a fixed project",
@@ -43,25 +45,21 @@ class LifecycleCoordinator:
         if not root.exists() or not root.is_dir():
             raise ValueError(f"root_path is not a directory: {root_path}")
         self.builds.cancel_auto_watch_after_build()
-        if self.project.root_path and self.project.root_path != root:
+        index_root = project_index_root(root, mount_child_indexes, self.project.index_root_override)
+        if self.project.root_path and (self.project.root_path != root
+                                      or self.project.mount_child_indexes != mount_child_indexes):
             self.disable()
-            self.project.embedding_indexer = None
-            self.project.embedding_background = None
-            self.project.background = None
+            self.project.tasks.reset()
             self.project._ignore_config_dirty = False
             from ..domain.ignore_config import IgnoreConfig
             self.project._ignore_config = IgnoreConfig()
-        index_root = self.project.index_root_override or project_index_root(root)
+            activation_ticket = self.project.bindings.activation_ticket()
         self.project.control.admission.check(root, activation)
         if self.project.quiescing and self.project.store is not None:
             self.stopping.stop(keep_control=True)
-        self.project.quiescing = False
-        self.project.lifecycle_cancelled.clear()
-        self.project.binding_generation += 1
+            activation_ticket = self.project.bindings.activation_ticket()
         self.project.control.start(root, index_root, self.project.registry.directory())
         if self._reusable_enable_context(root, index_root):
-            if self.project.session_lease is None:
-                self.project.session_lease = SessionLease(index_root, root=root, control=self.project.control)
             self.project.session_lease.acquire()
             if getattr(self.project, "log_path", None) is None:
                 self.project.log_path = configure_logging(index_root)
@@ -70,7 +68,10 @@ class LifecycleCoordinator:
             # write per call, which under multi-agent enable polling is pure
             # cross-process write-lock churn; only state another process may
             # have changed (persisted ignore config) is refreshed.
-            self.project.enabled = True
+            with self.project.tasks.lock:
+                self.project.bindings.validate_activation(activation_ticket)
+                self.project.tasks.open()
+            _log_binding(root, index_root, mount_child_indexes)
             self.ignore._load_ignore_config_from_store()
             self.project._invalidate_view_cache()
             self.project.registry.touch(index_root)
@@ -82,26 +83,28 @@ class LifecycleCoordinator:
         session = attach_cache(self.project, root, index_root)
         try:
             self.project.log_path = configure_logging(index_root)
-            store = IndexStore(self.project._db_path(root), session=session)
+            store = IndexStore(index_root / "index.db", session=session)
             store.initialize()
             embedding_store = EmbeddingStore(index_root / "embeddings.db", session=session)
             embedding_store.initialize()
+            with self.project.tasks.lock:
+                self.project.bindings.publish(root, index_root, store, embedding_store, session,
+                                              mount_child_indexes, activation_ticket)
+                self.project.tasks.reset()
+                self.project.tasks.open()
         except BaseException:
             close_logging(getattr(self.project, "log_path", None))
             self.project.log_path = None
             session.release()
             raise
-        self.project.session_lease = session
-        self.project.root_path, self.project.index_root = root, index_root
-        self.project.store, self.project.embedding_store = store, embedding_store
-        self.project.enabled = True
+        _log_binding(root, index_root, mount_child_indexes)
         self._register_index(root, index_root, source)
         self.ignore._load_ignore_config_from_store()
         self.project.tree_progress = TreeProgress()
         if refresh_embedder:
             self.embeddings._refresh_embedder()
         else:
-            self.project.embedding_indexer = None
+            self.project.tasks.indexer = None
         self.project._invalidate_view_cache()
         if rebuild:
             return self.builds.rebuild_sync()
@@ -136,17 +139,21 @@ class LifecycleCoordinator:
         wait_seconds: float = 0.0,
         source: str = "mcp-enable",
         activation=ActivationIntent.EXPLICIT,
+        *,
+        mount_child_indexes: bool = False,
     ) -> dict[str, Any]:
         root = Path(root_path).resolve()
         self.project.control.admission.check(root, activation)
-        if self._enable_already_running(root):
+        if self._enable_already_running(root, mount_child_indexes):
             return self._already_running_enable_status()
         if rebuild:
             # Explicit forced rebuild: dispatch to background thread and return immediately.
-            self.enable(str(root), rebuild=False, refresh_embedder=False, source=source, activation=activation)
+            self.enable(str(root), rebuild=False, refresh_embedder=False, source=source, activation=activation,
+                        mount_child_indexes=mount_child_indexes)
             return self.builds._start_background_rebuild(wait_seconds=wait_seconds)
-        db_existed = self.project._db_path(root).exists()
-        self.enable(str(root), rebuild=False, refresh_embedder=False, source=source, activation=activation)
+        db_existed = self.project._db_path(root, mount_child_indexes).exists()
+        self.enable(str(root), rebuild=False, refresh_embedder=False, source=source, activation=activation,
+                    mount_child_indexes=mount_child_indexes)
         if db_existed and self.builds.can_reuse_index_for(root):
             # Reused a fresh index: build the vector store now (non-blocking) so
             # semantic search is ready without waiting for a first query to
@@ -156,14 +163,14 @@ class LifecycleCoordinator:
             return self.state.status()
         return self.builds._start_background_rebuild(wait_seconds=wait_seconds, reuse_if_fresh=True)
 
-    def _enable_already_running(self, root: Path) -> bool:
+    def _enable_already_running(self, root: Path, mount_child_indexes: bool) -> bool:
         background = self.project.background
         if background is None or not background.is_running():
             return False
         if not self.project.enabled or self.project.root_path is None:
             return False
-        index_root = self.project.index_root_override or project_index_root(root)
-        key = (root.resolve(), index_root.resolve())
+        index_root = project_index_root(root, mount_child_indexes, self.project.index_root_override)
+        key = (root.resolve(), index_root.resolve(), mount_child_indexes)
         return (
             self.project.root_path.resolve() == root.resolve()
             and self.project.index_root is not None
@@ -182,3 +189,9 @@ class LifecycleCoordinator:
 
     def clear(self, delete_file: bool = False) -> dict[str, Any]:
         return clear_index(self.project, self.watch, self.state, delete_file)
+
+
+def _log_binding(root, index_root, mount_child_indexes):
+    with diagnostic_scope(index_root):
+        logging.getLogger(__name__).info("index binding root=%s mount_child_indexes=%s cache=%s",
+                                        root, mount_child_indexes, index_root)

@@ -9,8 +9,8 @@ ROOT = Path("D:/proj") if Path("D:/").exists() else Path("/proj")
 OWN_INDEX = ROOT / ".auto-index-mcp"
 
 
-def _filter():
-    return make_event_filter(ROOT, OWN_INDEX)
+def _filter(mount_child_indexes=False):
+    return make_event_filter(ROOT, OWN_INDEX, mount_child_indexes=mount_child_indexes)
 
 
 def test_own_index_directory_events_are_ignored():
@@ -32,9 +32,15 @@ def test_always_excluded_directories_are_ignored():
 def test_child_index_events_are_kept():
     # A subproject's .auto-index-mcp fingerprints child WAL commits; those
     # events must keep flowing so parent child-links stay fresh.
-    should_ignore = _filter()
+    should_ignore = _filter(mount_child_indexes=True)
     assert not should_ignore(ROOT / "subproj" / ".auto-index-mcp" / "index.db")
     assert not should_ignore(ROOT / "subproj" / ".auto-index-mcp" / "index.db-wal")
+
+
+def test_child_index_events_are_ignored_by_default():
+    should_ignore = _filter()
+    for name in (".auto-index-mcp", ".auto-index-mcp-mounted"):
+        assert should_ignore(ROOT / "subproj" / name / "index.db")
 
 
 def test_regular_source_and_root_events_are_kept():

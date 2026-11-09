@@ -7,11 +7,15 @@ from auto_index_mcp.runtime.control.contracts import ActivationIntent
 
 
 class DummyService:
+    def configure_startup(self, root, mount_child_indexes=False):
+        self.startup_root = root
+
     def __init__(self) -> None:
         self.enabled = []
         self.started = 0
         self.stopped = 0
         self.background = None
+        self.project = SimpleNamespace(startup_mount_child_indexes=False)
 
     def enable_reusing_index(
         self,
@@ -20,8 +24,11 @@ class DummyService:
         wait_seconds: float = 0.0,
         source: str = "",
         activation=ActivationIntent.EXPLICIT,
+        *,
+        mount_child_indexes=False,
     ) -> dict:
         assert activation is ActivationIntent.AUTOMATIC
+        assert mount_child_indexes is False
         self.enabled.append((root_path, rebuild, wait_seconds))
         return {"root": root_path, "updated_at": 1.0}
 
@@ -67,6 +74,7 @@ def test_main_stops_watcher_when_run_returns(monkeypatch: pytest.MonkeyPatch) ->
             rebuild=False,
             no_rebuild=False,
             no_watch=False,
+            mount_child_indexes=False,
             transport="stdio",
             port=8000,
         ),
@@ -94,6 +102,7 @@ def test_main_stops_watcher_when_run_raises(monkeypatch: pytest.MonkeyPatch) -> 
             rebuild=False,
             no_rebuild=True,
             no_watch=False,
+            mount_child_indexes=False,
             transport="streamable-http",
             port=9000,
         ),

@@ -23,10 +23,12 @@ from auto_index_mcp.runtime.maintenance import LEASE_NAMES
 from verify_mcp_stdio import call
 
 
-async def connect(stack, logs, project, env, watch=False):
+async def connect(stack, logs, project, env, watch=False, mount_child_indexes=False):
     arguments = ["-B", "-m", "auto_index_mcp.server"]
     if not watch:
         arguments.append("--no-watch")
+    if mount_child_indexes:
+        arguments.append("--mount-child-indexes")
     params = StdioServerParameters(command=sys.executable, args=arguments, cwd=project,
                                    env=dict(env, AUTO_INDEX_PROJECT_PATH=str(project)))
     errlog = logs.enter_context((project.parent / f"stderr-{time.time_ns()}.log").open("w", encoding="utf-8"))
@@ -70,7 +72,7 @@ async def verify(installed=False):
                 first_status = await ready(first)
                 second = await connect(stack, logs, root, env, watch=True)
                 await ready(second)
-                parent = await connect(stack, logs, outer, env)
+                parent = await connect(stack, logs, outer, env, mount_child_indexes=True)
                 parent_status = await ready(parent)
                 assert (await call(parent, "auto_index_files"))["items"]
                 other = await connect(stack, logs, unrelated, env, watch=True)

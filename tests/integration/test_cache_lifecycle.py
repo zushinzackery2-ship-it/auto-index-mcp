@@ -8,10 +8,10 @@ from auto_index_mcp.registry.cleanup import index_dir_size
 from auto_index_mcp.registry.markers import write_index_markers
 
 
-def attach(root):
+def attach(root, mount_child_indexes=False):
     service = AutoIndexService()
     service.semantic_enabled = False
-    service.enable(str(root), refresh_embedder=False)
+    service.enable(str(root), refresh_embedder=False, mount_child_indexes=mount_child_indexes)
     return service
 
 
@@ -112,7 +112,7 @@ def test_external_child_is_discovered_by_parent(tmp_path, write_file, monkeypatc
     write_file(root / "library" / "child.py", "def child_value():\n    return 1\n")
     write_file(root / "main.py", "def main():\n    pass\n")
     child = attach(root / "library")
-    parent = attach(root)
+    parent = attach(root, mount_child_indexes=True)
     try:
         assert parent.status()["child_index_count"] == 1
         assert parent.symbol_body("child_value")["path"] == "library/child.py"

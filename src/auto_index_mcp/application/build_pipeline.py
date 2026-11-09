@@ -53,11 +53,8 @@ class BuildPipeline:
         progress.start(root)
         if self.project._context_is_current(context):
             self.project.tree_progress = progress
-        children = discover_child_indexes(
-            root,
-            store.db_path,
-            ignore_patterns=ignore_patterns,
-        )
+        children = (discover_child_indexes(root, store.db_path, ignore_patterns=ignore_patterns)
+                    if context.mount_child_indexes else [])
         boundary_roots = [Path(child.root) for child in children]
         try:
             scanner = SourceScanner(
@@ -96,6 +93,7 @@ class BuildPipeline:
             children_dicts,
             dict(config_ignore_metadata(ignore_config, root), active_source_paths=sorted(active_paths),
                  excluded_directories=scanner.excluded_directories,
+                 mount_child_indexes=context.mount_child_indexes,
                  _expected_policy_generation=context.policy_generation),
         )
         if self.project._context_is_current(context):
@@ -123,6 +121,7 @@ class BuildPipeline:
             "file_count": len(records),
             "total_file_count": total_file_count,
             "child_index_count": len(children),
+            "mount_child_indexes": context.mount_child_indexes,
             "skipped": scan.skipped,
             "reused": scan.reused,
             "elapsed_seconds": round(end - start, 3),

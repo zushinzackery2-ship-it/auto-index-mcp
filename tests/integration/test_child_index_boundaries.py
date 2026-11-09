@@ -15,7 +15,7 @@ def test_many_child_indexes_merged(tmp_path: Path) -> None:
         child_service.enable(str(child), rebuild=True)
 
     parent_service = AutoIndexService()
-    result = parent_service.enable(str(project), rebuild=True)
+    result = parent_service.enable(str(project), rebuild=True, mount_child_indexes=True)
 
     assert result["child_index_count"] == 10
     assert result["total_file_count"] == 10
@@ -35,10 +35,10 @@ def test_deep_child_nesting_5_levels(tmp_path: Path) -> None:
 
     for root in reversed(roots):
         svc = AutoIndexService()
-        svc.enable(str(root), rebuild=True)
+        svc.enable(str(root), rebuild=True, mount_child_indexes=True)
 
     parent = AutoIndexService()
-    result = parent.enable(str(project), rebuild=True)
+    result = parent.enable(str(project), rebuild=True, mount_child_indexes=True)
 
     assert result["child_index_count"] == 1
     assert result["total_file_count"] == 5
@@ -61,7 +61,7 @@ def test_sibling_child_indexes_no_conflict(tmp_path: Path) -> None:
     svc_b.enable(str(b), rebuild=True)
 
     parent = AutoIndexService()
-    parent.enable(str(project), rebuild=True)
+    parent.enable(str(project), rebuild=True, mount_child_indexes=True)
 
     files = [item["path"] for item in parent.all_files()]
     assert "pkg_a/shared_name.py" in files

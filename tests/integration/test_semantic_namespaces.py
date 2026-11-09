@@ -49,7 +49,7 @@ def test_parent_semantic_search_includes_child_indexes(tmp_path, install_embedde
     try:
         nested.enable(str(child))
         wait_embedding(nested)
-        parent.enable(str(tmp_path))
+        parent.enable(str(tmp_path), mount_child_indexes=True)
         wait_embedding(parent)
         result = parent.semantic_search("compute total", min_score=-1)
         assert result["state"] == "ready"

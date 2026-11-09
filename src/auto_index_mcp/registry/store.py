@@ -12,7 +12,7 @@ from ..domain.config import INDEX_VERSION, registry_directory
 from ..runtime.leases import BuildLock
 from ..runtime.files.json import atomic_json, read_json
 from ..domain.errors import ServiceError
-from ..indexing.locator import INDEX_DIR_NAME
+from ..domain.config import INDEX_DIR_NAME
 from ..cache.identity import directory_identity
 from .markers import read_index_marker
 from .paths import REGISTRY_FILE_NAME, REGISTRY_VERSION, TOUCH_INTERVAL_SECONDS, registry_key

@@ -4,6 +4,7 @@ from typing import Any
 
 from .dangling import dangling_report
 from .nesting import nesting_report
+from .coverage import reference_coverage
 from ..workspace.path_filters import filter_indexed_files
 
 
@@ -37,9 +38,13 @@ class QualityQueries:
     ) -> dict[str, Any]:
         self.project._require_ready()
         _validate_quality_limit(limit)
-        files = filter_indexed_files(self.project.view.all_files(), exclude_paths, active_only)
+        all_files = self.project.view.all_files()
+        coverage = reference_coverage(all_files)
+        files = filter_indexed_files(all_files, exclude_paths, active_only)
         findings = [finding for item in files for finding in item.get("quality_findings", [])]
-        return self.state._with_index_status(dangling_report(files, findings, include_low_confidence, include_tests, limit))
+        result = dangling_report(files, findings, include_low_confidence, include_tests, limit, coverage=coverage)
+        result["output_scope"] = dict(exclude_paths=exclude_paths or [], active_only=active_only)
+        return self.state._with_index_status(result)
 
 
 def _validate_quality_limit(limit: int) -> None:

@@ -5,7 +5,7 @@ import hashlib
 
 from ..workspace.containment import is_relative_to
 from ..domain.ignore_rules import IgnoreRules
-from .locator import INDEX_DB_NAME, INDEX_DIR_NAME
+from ..domain.config import INDEX_DB_NAME, INDEX_DIR_NAME, INDEX_DIR_NAMES
 from ..storage.metadata import DEFAULT_METADATA_READER
 from ..workspace.discovery import discover_child_indexes
 
@@ -14,9 +14,13 @@ def child_index_snapshot(
     root: Path,
     own_db_path: Path | None,
     ignore_rules: IgnoreRules,
+    *,
+    scan_project: bool = True,
+    known_children: list[dict] | None = None,
 ) -> dict[str, tuple[int, ...]]:
     own_db = own_db_path or root / INDEX_DIR_NAME / INDEX_DB_NAME
-    children = discover_child_indexes(root, own_db, ignore_patterns=ignore_rules.runtime_patterns)
+    children = discover_child_indexes(root, own_db, ignore_patterns=ignore_rules.runtime_patterns,
+                                      scan_project=scan_project, known_children=known_children)
     return dict((f"{child.path}/{INDEX_DIR_NAME}/{INDEX_DB_NAME}", database_fingerprint(Path(child.db_path)))
                 for child in children)
 
@@ -48,22 +52,23 @@ def database_fingerprint(db_path: Path) -> tuple[int, ...]:
 
 def is_index_related_path(path: Path) -> bool:
     parts = path.parts
-    if INDEX_DIR_NAME not in parts:
+    if not any(part in INDEX_DIR_NAMES for part in parts):
         return False
     return path.name in {INDEX_DB_NAME, f"{INDEX_DB_NAME}-wal", f"{INDEX_DB_NAME}-shm"} or INDEX_DB_NAME in parts
 
 
 def direct_child_index_db(path: Path, own_db: Path | None) -> Path | None:
-    direct_db = path / INDEX_DIR_NAME / INDEX_DB_NAME
-    if not direct_db.exists():
-        return None
-    try:
-        resolved = direct_db.resolve()
-    except OSError:
-        return None
-    if own_db and resolved == own_db:
-        return None
-    return resolved
+    for name in INDEX_DIR_NAMES:
+        direct_db = path / name / INDEX_DB_NAME
+        if not direct_db.exists():
+            continue
+        try:
+            resolved = direct_db.resolve()
+        except OSError:
+            continue
+        if resolved != own_db and DEFAULT_METADATA_READER.read_metadata(resolved).get("updated_at") is not None:
+            return resolved
+    return None
 
 
 def is_own_database_path(path: Path, own_db: Path | None) -> bool:

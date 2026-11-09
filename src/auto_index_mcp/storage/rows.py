@@ -22,6 +22,7 @@ def symbol_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     data["refs"] = json.loads(data.get("refs") or "[]")
     data["called_by"] = []
     data["reference_evidence"] = json.loads(data.get("reference_evidence") or "[]")
+    data["usage_constraints"] = json.loads(data.get("usage_constraints") or "[]")
     if "source_sha1" in data:
         data["_source_revision"] = dict(path=data["file_path"], sha1=data.pop("source_sha1"),
                                         size=data.pop("source_size"), mtime_ns=data.pop("source_mtime_ns"))

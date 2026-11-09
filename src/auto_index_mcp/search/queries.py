@@ -204,6 +204,7 @@ class SearchQueries:
                 "direction": direction,
                 "items": items,
                 "definition_count": len(matches),
+                "reference_scope": self.project.view.reference_scope(),
             }
         )
 

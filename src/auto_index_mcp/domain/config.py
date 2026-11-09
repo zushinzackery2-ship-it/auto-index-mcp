@@ -3,13 +3,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-INDEX_VERSION = 10
-PARSER_VERSION = 5
+INDEX_VERSION = 11
+PARSER_VERSION = 6
 DEFAULT_WATCH_DEBOUNCE_SECONDS = 0.25
 DEFAULT_ENABLE_REBUILD_WAIT_SECONDS = 3.0
 DEFAULT_MAX_SOURCE_BYTES = 2 * 1024 * 1024
+INDEX_DB_NAME = "index.db"
+INDEX_DIR_NAME = ".auto-index-mcp"
+INDEX_DIR_NAMES = (INDEX_DIR_NAME, INDEX_DIR_NAME + "-mounted")
 
-INTERNAL_EXCLUDE_DIRS = {".git", ".hg", ".svn", ".auto-index-mcp"}
+INTERNAL_EXCLUDE_DIRS = set((".git", ".hg", ".svn", *INDEX_DIR_NAMES))
 
 DEFAULT_EXCLUDE_DIRS = {
     ".git",
@@ -19,6 +22,7 @@ DEFAULT_EXCLUDE_DIRS = {
     ".pytest_cache",
     ".ruff_cache",
     ".auto-index-mcp",
+    ".auto-index-mcp-mounted",
     ".claude",
     ".tox",
     ".venv",
@@ -91,9 +95,9 @@ def text_extensions() -> set[str]:
     return TEXT_EXTENSIONS | normalized
 
 
-def project_index_root(root: Path) -> Path:
+def project_index_root(root: Path, mount_child_indexes: bool = False, override: Path | None = None) -> Path:
     from ..cache.layout import project_cache
-    return project_cache(root)
+    return project_cache(root, mount_child_indexes, override)
 
 
 REGISTRY_DIR_ENV = "AUTO_INDEX_REGISTRY_DIR"

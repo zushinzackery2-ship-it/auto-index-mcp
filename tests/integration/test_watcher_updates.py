@@ -122,7 +122,8 @@ def test_watcher_removes_record_when_file_becomes_unindexable(tmp_path: Path) ->
     try:
         source.write_text("x = " + repr("a" * (2 * 1024 * 1024 + 1)), encoding="utf-8")
 
-        assert _wait_until(lambda: not service.find_files("large.py")["items"])
+        assert _wait_until(lambda: not service.find_files("large.py")["items"]
+                           and service.watcher.status()["last_result"] is not None)
         result = service.watcher.status()["last_result"]
         assert result["status"] == "incremental"
         assert result["rebuild"] is False
@@ -139,7 +140,7 @@ def test_watcher_slims_parent_when_child_index_appears(tmp_path: Path) -> None:
     (child / "child.py").write_text("def child_only():\n    return True\n", encoding="utf-8")
 
     parent_service = AutoIndexService()
-    parent_service.enable(str(project), rebuild=True)
+    parent_service.enable(str(project), rebuild=True, mount_child_indexes=True)
     parent_store = parent_service.project._store_context()
 
     assert parent_service.status()["file_count"] == 2
@@ -172,7 +173,7 @@ def test_watcher_refreshes_child_link_metadata_without_parent_rebuild(tmp_path: 
     child_service = AutoIndexService()
     child_service.enable(str(child), rebuild=True)
     parent_service = AutoIndexService()
-    parent_service.enable(str(project), rebuild=True)
+    parent_service.enable(str(project), rebuild=True, mount_child_indexes=True)
     parent_service.start_watcher(debounce_seconds=0.1)
 
     try:

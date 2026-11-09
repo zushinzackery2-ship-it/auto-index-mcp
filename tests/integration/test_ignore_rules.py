@@ -23,7 +23,7 @@ def test_rebuild_respects_gitignore_for_files_and_child_indexes(tmp_path: Path) 
     _write_child_index(ignored_child)
 
     service = AutoIndexService(index_root=tmp_path / "index")
-    result = service.enable(str(project), rebuild=True)
+    result = service.enable(str(project), rebuild=True, mount_child_indexes=True)
 
     assert result["file_count"] == 1
     assert result["child_index_count"] == 0

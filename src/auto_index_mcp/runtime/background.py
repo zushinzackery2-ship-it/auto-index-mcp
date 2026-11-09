@@ -136,6 +136,10 @@ class BackgroundIndexer:
         with self._lock:
             return self._state == STATE_RUNNING
 
+    def is_alive(self) -> bool:
+        thread = self._thread
+        return thread is not None and thread.is_alive()
+
     def wait(self, timeout: float | None = None) -> bool:
         """Wait for work and its completion callback. Returns False on timeout."""
         return self._done.wait(timeout)

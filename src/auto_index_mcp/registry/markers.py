@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..indexing.locator import INDEX_DIR_NAME
+from ..domain.config import INDEX_DIR_NAMES
 from ..storage.metadata import DEFAULT_METADATA_READER
 from .paths import CACHEDIR_TAG_CONTENT, CACHEDIR_TAG_NAME, MARKER_FILE_NAME, TOOL_NAME, registry_key
 from ..cache.identity import directory_identity, identity_key
@@ -39,7 +39,7 @@ def write_index_markers(index_dir: Path | str, root: Path | str) -> None:
     tag = directory / CACHEDIR_TAG_NAME
     if not tag.exists():
         tag.write_text(CACHEDIR_TAG_CONTENT, encoding="ascii")
-    if directory.name == INDEX_DIR_NAME and not (directory / ".gitignore").exists():
+    if directory.name in INDEX_DIR_NAMES and not (directory / ".gitignore").exists():
         (directory / ".gitignore").write_text("*\n", encoding="ascii")
 
 
@@ -84,7 +84,7 @@ def is_safe_to_delete(index_dir: Path | str, expected_root: Path | str) -> bool:
         and marker.get("tool") == TOOL_NAME
         and _same_root(marker.get("root"), expected_root)
     )
-    if directory.name != INDEX_DIR_NAME:
+    if directory.name not in INDEX_DIR_NAMES:
         return marker_ok
     if marker_ok:
         return True

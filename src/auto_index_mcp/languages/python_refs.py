@@ -51,7 +51,8 @@ class References(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         for alias in node.names:
             self.aliases[alias.asname or alias.name] = alias.name
-            self.qualifiers[alias.asname or alias.name] = f"{node.module}.{alias.name}" if node.module else alias.name
+            module = "." * node.level + (node.module + "." if node.module else "")
+            self.qualifiers[alias.asname or alias.name] = module + alias.name
             self.refs[alias.name] = None
             self._reference(ast.Name(id=alias.asname or alias.name, ctx=ast.Load()), "import")
 

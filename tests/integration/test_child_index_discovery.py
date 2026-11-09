@@ -75,7 +75,7 @@ def test_watch_snapshot_child_indexes_prune_excluded_directories(tmp_path: Path)
     _write_empty_index(included_child)
     _write_empty_index(excluded_child)
 
-    snapshot = take_watch_snapshot(project, own_db_path=own_db)
+    snapshot = take_watch_snapshot(project, own_db_path=own_db, mount_child_indexes=True)
 
     assert sorted(snapshot.child_indexes) == ["src/child/.auto-index-mcp/index.db"]
 
@@ -90,7 +90,7 @@ def test_watch_snapshot_fingerprints_known_child_without_scanning_inside_it(tmp_
     _write_empty_index(child)
     _write_empty_index(grandchild)
 
-    snapshot = take_watch_snapshot(project, [child], own_db)
+    snapshot = take_watch_snapshot(project, [child], own_db, mount_child_indexes=True)
 
     assert sorted(snapshot.child_indexes) == ["child/.auto-index-mcp/index.db"]
 
@@ -99,14 +99,14 @@ def test_update_snapshot_detects_moved_in_child_index_directory(tmp_path: Path) 
     project = tmp_path / "project"
     project.mkdir()
     own_db = _write_empty_index(project)
-    previous = take_watch_snapshot(project, own_db_path=own_db)
+    previous = take_watch_snapshot(project, own_db_path=own_db, mount_child_indexes=True)
     child = project / "child"
     child.mkdir(parents=True)
     _write_empty_index(child)
 
     assert "child/.auto-index-mcp/index.db" not in previous.child_indexes
 
-    current = update_watch_snapshot(project, previous, {child}, own_db_path=own_db)
+    current = update_watch_snapshot(project, previous, {child}, own_db_path=own_db, mount_child_indexes=True)
 
     assert sorted(current.child_indexes) == ["child/.auto-index-mcp/index.db"]
     assert not any(path.startswith("child/") for path in current.files)
@@ -116,9 +116,10 @@ def test_update_snapshot_ignores_own_index_database_events(tmp_path: Path) -> No
     project = tmp_path / "project"
     project.mkdir()
     own_db = _write_empty_index(project)
-    previous = take_watch_snapshot(project, own_db_path=own_db)
+    previous = take_watch_snapshot(project, own_db_path=own_db, mount_child_indexes=True)
 
-    current = update_watch_snapshot(project, previous, {own_db, Path(f"{own_db}-wal")}, own_db_path=own_db)
+    current = update_watch_snapshot(project, previous, {own_db, Path(f"{own_db}-wal")}, own_db_path=own_db,
+                                    mount_child_indexes=True)
 
     assert current == previous
 

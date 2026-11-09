@@ -90,7 +90,9 @@ def register_search_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         """Call-graph for a symbol: who calls it (callers, as
         "file.py::caller" entries) and what it calls (callees). Use before
         changing a function to see its blast radius - this replaces manual
-        grep for usages. ``path`` narrows same-name definitions."""
+        grep for usages. ``path`` narrows same-name definitions. References
+        resolve across mounted sources; ``reference_scope`` reports their
+        pinned revisions and the unknown external-caller boundary."""
         blocked = await ensure_enabled(service, ctx)
         if blocked is not None:
             return blocked

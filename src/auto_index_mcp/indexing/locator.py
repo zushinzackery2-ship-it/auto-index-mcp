@@ -4,10 +4,7 @@ import os
 from pathlib import Path
 
 from ..domain.ignore_rules import IgnoreRules
-
-
-INDEX_DB_NAME = "index.db"
-INDEX_DIR_NAME = ".auto-index-mcp"
+from ..domain.config import INDEX_DB_NAME, INDEX_DIR_NAMES
 
 
 def iter_index_databases(
@@ -26,16 +23,17 @@ def iter_index_databases(
             dir_names[:] = []
             continue
 
-        direct_db = current / INDEX_DIR_NAME / INDEX_DB_NAME
-        if direct_db.exists():
-            matches.append(direct_db)
+        direct_databases = [current / name / INDEX_DB_NAME for name in INDEX_DIR_NAMES]
+        found = [path for path in direct_databases if path.exists()]
+        if found:
+            matches.extend(found)
             if current.resolve() != root:
                 dir_names[:] = []
             else:
                 dir_names[:] = _filter_dirs(current, dir_names, boundaries, ignore_rules)
             continue
 
-        if current.name == INDEX_DIR_NAME and INDEX_DB_NAME in file_names:
+        if current.name in INDEX_DIR_NAMES and INDEX_DB_NAME in file_names:
             matches.append(current / INDEX_DB_NAME)
             dir_names[:] = []
             continue
@@ -53,7 +51,7 @@ def _filter_dirs(
 ) -> list[str]:
     return [
         name for name in dir_names
-        if name != INDEX_DIR_NAME
+        if name not in INDEX_DIR_NAMES
         and not _should_skip_dir(current / name, boundary_roots, ignore_rules)
     ]
 
@@ -64,7 +62,7 @@ def _should_skip_dir(
     ignore_rules: IgnoreRules,
 ) -> bool:
     resolved = path.resolve()
-    if resolved.name == INDEX_DIR_NAME:
+    if resolved.name in INDEX_DIR_NAMES:
         return False
     if any(_is_relative_to(resolved, boundary) for boundary in boundary_roots):
         return True

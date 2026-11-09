@@ -25,9 +25,11 @@ def register_quality_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         """Static quality findings from the persisted index (no LSP needed).
 
         kind="nesting" flags over-deep nesting (tune ``max_depth``);
-        kind="dangling" flags likely-unused and unreachable code (heuristic:
-        functions only passed as values can false-positive, non-Python
-        unreachable detection is medium confidence); kind="all" runs both.
+        kind="dangling" reports unused candidates and unreachable code.
+        Coverage and limitations qualify negative reference evidence: inherited
+        or framework dispatch and incomplete analysis remain low confidence.
+        Filters affect output only; external callers are unknown.
+        kind="all" runs both checks.
         Useful before refactors and in review sweeps, not for navigation.
         """
         blocked = await ensure_enabled(service, ctx)

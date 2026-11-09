@@ -3,6 +3,7 @@ from pathlib import Path
 
 from ..cache.identity import directory_identity
 from ..storage.metadata import DEFAULT_METADATA_READER
+from ..domain.config import INDEX_DIR_NAMES
 from .markers import is_safe_to_delete, read_index_marker
 from .paths import registry_key
 
@@ -17,9 +18,10 @@ def projected_entries(entries, roots) -> dict:
         for key, entry in entries.items():
             if entry.get("root_identity") == identity:
                 projected[key] = dict(entry, root=str(root))
-        directory = root / ".auto-index-mcp"
-        if directory.is_dir():
-            _project_inline(projected, root, directory)
+        for name in INDEX_DIR_NAMES:
+            directory = root / name
+            if directory.is_dir():
+                _project_inline(projected, root, directory)
     return projected
 
 

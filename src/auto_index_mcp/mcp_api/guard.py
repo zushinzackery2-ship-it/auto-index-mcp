@@ -35,6 +35,8 @@ def run_tool(fn: Callable[..., dict[str, Any]], *args: Any, **kwargs: Any) -> di
         return error_response("not-found", str(message))
     except TimeoutError as exc:
         return error_response("busy", str(exc), hint="check auto_index_status() for active operations")
+    except InterruptedError as exc:
+        return error_response("operation-cancelled", str(exc), hint="check lifecycle status before retrying")
     except Exception as exc:  # noqa: BLE001 - last-resort structured surface
         logging.getLogger(__name__).exception("tool failed function=%s", getattr(fn, "__name__", repr(fn)))
         return internal_error(exc)
@@ -55,14 +57,7 @@ async def run_service(service: Any, fn: Callable, *args: Any, control_plane: boo
             return result
 
     def execute():
-        if control_plane:
-            return run_tool(fn, *args, **kwargs)
-        with service._request_lock:
-            return run_tool(admitted)
-
-    def admitted():
-        if not allow_suspended:
-            service.project.control.check(service.root_path)
-        return fn(*args, **kwargs)
+        return run_tool(service.invoke, fn, *args, control_plane=control_plane,
+                        allow_suspended=allow_suspended, **kwargs)
 
     return await anyio.to_thread.run_sync(invoke)

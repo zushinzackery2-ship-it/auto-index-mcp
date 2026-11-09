@@ -11,10 +11,13 @@ def run(argv: list[str]) -> int:
         description="Print a read-only summary of an existing index.",
     )
     parser.add_argument("path", nargs="?", default=".", help="project root (default: current directory)")
+    parser.add_argument("--mount-child-indexes", action="store_true", help="show the child-mounting mode's cache")
     args = parser.parse_args(argv)
 
     root = Path(args.path).resolve()
-    index_dir = root / ".auto-index-mcp"
+    from ..domain.config import project_index_root
+
+    index_dir = project_index_root(root, args.mount_child_indexes)
     db_path = index_dir / "index.db"
     if not db_path.exists():
         print(f"no index at {db_path}")
@@ -38,6 +41,7 @@ def run(argv: list[str]) -> int:
     print(f"files:       {files_note}")
     print(f"updated:     {iso_time(meta.get('updated_at'))}")
     print(f"version:     {meta.get('version')}")
+    print(f"child mounts: {bool(meta.get('mount_child_indexes'))}")
 
     vectors, models = _read_vector_summary(index_dir / "embeddings.db")
     if vectors is None:

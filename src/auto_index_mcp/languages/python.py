@@ -25,29 +25,37 @@ def extract_python_symbols(text: str, lines: list[str], tree: ast.Module | None 
     return sorted(records, key=lambda item: (item.line, item.name))
 
 
-def _visit_body(nodes, lines, records, in_class, aliases, qualifiers, scope) -> None:
+def _visit_body(nodes, lines, records, in_class, aliases, qualifiers, scope, constraints=()) -> None:
     for node in nodes:
-        _visit_node(node, lines, records, in_class, aliases, qualifiers, scope)
+        _visit_node(node, lines, records, in_class, aliases, qualifiers, scope, constraints)
 
 
-def _visit_node(node, lines, records, in_class, aliases, qualifiers, scope) -> None:
+def _visit_node(node, lines, records, in_class, aliases, qualifiers, scope, constraints=()) -> None:
     """Visit definitions below control-flow nodes without changing scope."""
     if isinstance(node, ast.ClassDef):
         refs = scope_references(node, aliases, qualifiers=qualifiers)
         child_scope = f"{scope}.{node.name}" if scope else node.name
         records.append(_enriched_record(node, "class", lines, refs, child_scope))
+        member_constraints = []
+        if node.bases:
+            member_constraints.append("inherited-dispatch")
+        if node.decorator_list or node.keywords:
+            member_constraints.append("class-dispatch")
         _visit_body(node.body, lines, records, in_class=True, aliases=refs.aliases,
-                    qualifiers=refs.qualifiers, scope=child_scope)
+                    qualifiers=refs.qualifiers, scope=child_scope, constraints=member_constraints)
         return
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         refs = scope_references(node, aliases, owner=scope if in_class else "", qualifiers=qualifiers)
         child_scope = f"{scope}.{node.name}" if scope else node.name
-        records.append(_enriched_record(node, "method" if in_class else "function", lines, refs, child_scope))
+        record = _enriched_record(node, "method" if in_class else "function", lines, refs, child_scope)
+        if in_class and constraints:
+            record = replace(record, usage_constraints=record.usage_constraints + list(constraints))
+        records.append(record)
         _visit_body(node.body, lines, records, in_class=False, aliases=refs.aliases,
                     qualifiers=refs.qualifiers, scope=child_scope)
         return
     for child in ast.iter_child_nodes(node):
-        _visit_node(child, lines, records, in_class, aliases, qualifiers, scope)
+        _visit_node(child, lines, records, in_class, aliases, qualifiers, scope, constraints)
 
 
 def _enriched_record(node, kind, lines, refs, scope) -> SymbolRecord:
@@ -56,6 +64,7 @@ def _enriched_record(node, kind, lines, refs, scope) -> SymbolRecord:
         _record(node.name, kind, node, lines), complexity=refs.complexity, calls=calls,
         refs=[name for name in refs.refs if name != node.name and name not in refs.calls],
         reference_evidence=list(refs.evidence.values()), nesting_path=scope,
+        usage_constraints=["decorator-dispatch"] if getattr(node, "decorator_list", []) else [],
     )
 
 

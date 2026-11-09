@@ -6,7 +6,7 @@ from .rows import file_row_to_dict, symbol_row_to_dict
 from .graph import attach_callers
 
 
-def read_files(conn, rows) -> list[dict]:
+def read_files(conn, rows, *, with_callers=True) -> list[dict]:
     files = [file_row_to_dict(row) for row in rows]
     by_path = defaultdict(list)
     paths = [item["path"] for item in files]
@@ -17,7 +17,7 @@ def read_files(conn, rows) -> list[dict]:
         symbols.extend(symbol_row_to_dict(row) for row in conn.execute(
             f"SELECT * FROM symbols WHERE file_path IN ({marks}) ORDER BY file_path,line,id", batch,
         ))
-    for symbol in attach_callers(conn, symbols):
+    for symbol in attach_callers(conn, symbols) if with_callers else symbols:
         path = symbol.pop("file_path")
         symbol.pop("id", None)
         by_path[path].append(symbol)

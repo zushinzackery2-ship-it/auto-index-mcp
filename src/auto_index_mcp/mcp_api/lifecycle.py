@@ -46,6 +46,7 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         root_path: str = "",
         rebuild: bool = False,
         auto_watch: bool = True,
+        mount_child_indexes: bool = False,
         ctx: Optional[Context] = None,
     ) -> dict[str, Any]:
         """Attach the index to a project (usually the one call to make first).
@@ -55,6 +56,10 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
         roots. Reuses a persisted index when fresh (fast), otherwise builds in
         the background - poll auto_index_status(). Set rebuild=true only to
         force a full rescan.
+        Source directories are always scanned recursively. Child indexes are
+        mounted only with mount_child_indexes=true. The default builds one
+        index covering the entire workspace; cache placement follows the
+        existing AUTO_INDEX_CACHE_MODE and cache-directory settings.
         """
         root = root_path.strip() or None
         if root is None:
@@ -74,6 +79,7 @@ def register_lifecycle_tools(mcp: FastMCP, service: AutoIndexService) -> None:
                 rebuild,
                 wait_seconds=DEFAULT_ENABLE_REBUILD_WAIT_SECONDS,
                 source="mcp-enable",
+                mount_child_indexes=mount_child_indexes,
             )
             if auto_watch:
                 start_or_defer_auto_watch(service, result)

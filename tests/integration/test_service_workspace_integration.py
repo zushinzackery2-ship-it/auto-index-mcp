@@ -16,7 +16,7 @@ def test_parent_workspace_reuses_child_index(tmp_path: Path) -> None:
     child_result = child_service.enable(str(child), rebuild=True)
 
     parent_service = AutoIndexService()
-    parent_result = parent_service.enable(str(project), rebuild=True)
+    parent_result = parent_service.enable(str(project), rebuild=True, mount_child_indexes=True)
 
     assert child_result["index_path"] == str(child / ".auto-index-mcp" / "index.db")
     assert parent_result["file_count"] == 1
@@ -24,7 +24,7 @@ def test_parent_workspace_reuses_child_index(tmp_path: Path) -> None:
     assert parent_result["child_index_count"] == 1
     assert parent_service.store is not None
     assert parent_service.store.all_files()[0]["path"] == "root.py"
-    reused_result = parent_service.enable_reusing_index(str(project))
+    reused_result = parent_service.enable_reusing_index(str(project), mount_child_indexes=True)
     assert reused_result["total_file_count"] == 2
     assert reused_result["file_count"] == 1
     assert reused_result["child_index_count"] == 1
@@ -51,9 +51,9 @@ def test_nested_child_indexes_recurse_from_each_child_database(tmp_path: Path) -
     grandchild_service = AutoIndexService()
     grandchild_service.enable(str(grandchild), rebuild=True)
     child_service = AutoIndexService()
-    child_result = child_service.enable(str(child), rebuild=True)
+    child_result = child_service.enable(str(child), rebuild=True, mount_child_indexes=True)
     parent_service = AutoIndexService()
-    parent_result = parent_service.enable(str(project), rebuild=True)
+    parent_result = parent_service.enable(str(project), rebuild=True, mount_child_indexes=True)
 
     assert child_result["file_count"] == 1
     assert child_result["total_file_count"] == 2
@@ -104,7 +104,7 @@ def test_missing_child_database_is_not_recreated_by_parent_view(tmp_path: Path) 
     child_service = AutoIndexService()
     child_result = child_service.enable(str(child), rebuild=True)
     parent_service = AutoIndexService()
-    parent_service.enable(str(project), rebuild=True)
+    parent_service.enable(str(project), rebuild=True, mount_child_indexes=True)
     assert parent_service.store is not None
 
     missing_db_path = Path(child_result["index_path"]).with_name("missing-index.db")
@@ -112,9 +112,11 @@ def test_missing_child_database_is_not_recreated_by_parent_view(tmp_path: Path) 
     child_rows[0]["db_path"] = str(missing_db_path)
     parent_service.store.replace_child_indexes(child_rows)
 
-    files = [item["path"] for item in parent_service.all_files()]
+    from auto_index_mcp.domain.errors import ServiceError
 
-    assert files == ["root.py"]
+    with pytest.raises(ServiceError) as error:
+        parent_service.all_files()
+    assert error.value.code == "source-unavailable"
     assert not missing_db_path.exists()
 
 

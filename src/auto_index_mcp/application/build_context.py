@@ -20,7 +20,9 @@ class RebuildContext:
     reuse_if_fresh: bool = False
     policy_generation: int = 0
     source_generation: int = 0
+    mount_child_indexes: bool = False
+    binding_generation: int = 0
 
     @property
-    def key(self) -> tuple[Path, Path]:
-        return (self.root.resolve(), self.index_root.resolve())
+    def key(self) -> tuple[Path, Path, bool]:
+        return (self.root.resolve(), self.index_root.resolve(), self.mount_child_indexes)

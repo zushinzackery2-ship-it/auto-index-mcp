@@ -13,7 +13,6 @@ from ..domain.config import DEFAULT_ENABLE_REBUILD_WAIT_SECONDS
 from ..core.service import AutoIndexService
 from ..runtime.parent_lifetime import watch_parent
 from ..runtime.control.contracts import ActivationIntent
-from ..domain.config import project_index_root
 from ..domain.errors import ServiceError
 from .bootstrap import PROJECT_PATH_ENV
 from .lifecycle import register_lifecycle_tools, start_or_defer_auto_watch
@@ -63,6 +62,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--rebuild", action="store_true")
     parser.add_argument("--no-rebuild", action="store_true")
     parser.add_argument("--no-watch", action="store_true")
+    parser.add_argument("--mount-child-indexes", action="store_true",
+                        help="mount existing external child indexes (source scanning is always recursive)")
     parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
     parser.add_argument("--port", type=int, default=8000)
     return parser.parse_args(argv)
@@ -93,6 +94,7 @@ def _register_shutdown_hooks() -> None:
 def main(argv: list[str] | None = None) -> None:
     _register_shutdown_hooks()
     args = _parse_args(argv)
+    _service.project.startup_mount_child_indexes = args.mount_child_indexes
     if args.transport == "stdio":
         watch_parent()
     project_path = args.project_path or os.environ.get(PROJECT_PATH_ENV, "").strip() or None
@@ -102,14 +104,14 @@ def main(argv: list[str] | None = None) -> None:
                 raise ValueError("HTTP/SSE requires --project-path or AUTO_INDEX_PROJECT_PATH to select a fixed project")
             _service.fixed_root = Path(project_path).resolve()
         if project_path:
-            _service.root_path = Path(project_path).resolve()
-            _service.index_root = project_index_root(_service.root_path)
+            _service.configure_startup(project_path, args.mount_child_indexes)
             try:
                 result = _service.enable_reusing_index(
                     project_path,
                     rebuild=args.rebuild and not args.no_rebuild,
                     wait_seconds=DEFAULT_ENABLE_REBUILD_WAIT_SECONDS,
                     source="cli-serve", activation=ActivationIntent.AUTOMATIC,
+                    mount_child_indexes=args.mount_child_indexes,
                 )
             except ServiceError as exc:
                 if exc.code not in ("workspace-suspended", "busy"):

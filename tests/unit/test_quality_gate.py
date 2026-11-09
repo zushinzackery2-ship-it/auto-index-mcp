@@ -29,12 +29,32 @@ def test_gate_rejects_real_nesting_and_unused_private_symbol(tmp_path):
     assert any(item["symbol"] == "_unused" for item in report["unexpected_findings"])
 
 
-def test_gate_rejects_oversized_modules_and_parse_failures(tmp_path):
+def test_gate_reports_long_modules_and_rejects_parse_failures(tmp_path):
     (tmp_path / "main.py").write_text("# line\n" * 301 + "def broken(:\n", encoding="utf-8")
     report = MODULE.run_self_quality_check(tmp_path)
     assert not report["ok"]
     assert report["line_limit_findings"] == [dict(path="main.py", lines=302)]
     assert report["parser_failures"] == ["main.py"]
+
+
+def test_long_single_responsibility_file_is_a_review_prompt(tmp_path):
+    (tmp_path / "main.py").write_text("# documentation\n" * 301 + "def main():\n    return 1\n", encoding="utf-8")
+    report = MODULE.run_self_quality_check(tmp_path)
+    assert report["ok"], report["failures"]
+    assert report["responsibility_reviews"][0]["state"] == "review-required"
+
+
+def test_gate_checks_dependency_and_ownership_boundaries(tmp_path):
+    from scripts.quality.architecture import architecture_findings
+
+    source = tmp_path / "src"
+    search = source / "auto_index_mcp/search"
+    search.mkdir(parents=True)
+    (search / "bad.py").write_text("from ..application.context import ProjectContext\n"
+                                 "def mutate(self):\n    self.project.store = None\n", encoding="utf-8")
+    findings = architecture_findings(source)
+    assert {row["reason"] for row in findings} == {
+        "lower layer imports an application entry layer", "project.store must be changed by its owner"}
 
 
 def test_gate_rejects_missing_coverage_and_truncated_findings():

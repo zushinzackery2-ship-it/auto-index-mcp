@@ -9,15 +9,13 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from ..runtime.background import BackgroundIndexer
+from .binding import BindingOwner
+from .tasks import TaskOwner
 from ..domain.config import project_index_root
 from ..domain.ignore_config import IgnoreConfig
 from ..workspace.path_normalize import normalize_input_path
 from ..indexing.tree_progress import TreeProgress
-from ..storage.embeddings import EmbeddingStore
-from ..embedding.indexer import SymbolEmbedder
 from ..storage.index import IndexStore
-from ..indexing.watcher import FileEventWatcher
 from ..registry import IndexRegistry
 from ..domain.errors import NotEnabledError
 from ..workspace.view import WorkspaceView
@@ -25,32 +23,16 @@ from ..workspace.view import WorkspaceView
 class ProjectContext:
     def __init__(self, index_root: Path | None = None) -> None:
         self._request_lock = threading.RLock()
+        self._request_local = threading.local()
+        self.bindings = BindingOwner()
+        self.tasks = TaskOwner()
         self.index_root_override = index_root
-        self.index_root: Path | None = index_root
-        self.root_path: Path | None = None
+        self.bindings.last_index_root = index_root
         self.fixed_root: Path | None = None
-        self.enabled = False
-        self.quiescing = False
-        self.binding_generation = 0
-        self.lifecycle_cancelled = threading.Event()
+        self.startup_mount_child_indexes = False
         self.control = None
         self.last_purge = None
-        self.session_lease = None
         self.last_errors: list[str] = []
-        self.store: IndexStore | None = None
-        self.watcher: FileEventWatcher | None = None
-        self.embedding_indexer: SymbolEmbedder | None = None
-        self.embedding_background: BackgroundIndexer | None = None
-        # Per-symbol vectors live in a standalone embeddings.db, decoupled from
-        # the navigable index.db (separate write lock, schema, lifecycle).
-        self.embedding_store: EmbeddingStore | None = None
-        # Background full-tree rebuild runner. Stays None when the project is
-        # enabled against a reusable existing index (fast path) or while idle.
-        self.background: BackgroundIndexer | None = None
-        # Set when a watcher should auto-start as soon as a background build ends.
-        self._auto_watch_after_build = False
-        self._auto_watch_context_key: tuple[Path, Path] | None = None
-        self._background_context_key: tuple[Path, Path] | None = None
         # Timing of the most recent synchronous full rebuild (watcher-driven or
         # programmatic enable). Background builds report timing through their own
         # BackgroundIndexer; this captures the path that has no runner handle.
@@ -63,8 +45,8 @@ class ProjectContext:
         self._view_policy_generation: int | None = None
         # Guards check-then-act on the embedding background handle so two callers
         # never spawn duplicate embedding passes over the same store.
-        self._embedding_lock = threading.Lock()
-        self._watcher_lock = threading.RLock()
+        self._embedding_lock = self.tasks.lock
+        self._watcher_lock = self.tasks.watcher_lock
         # CLI/pre-build hooks: opt out of semantic vectors entirely, and an
         # optional (done, total, reused) callback for embedding progress bars.
         semantic_mode = os.environ.get("AUTO_INDEX_SEMANTIC_MODE", "on-demand").strip().lower()
@@ -78,20 +60,87 @@ class ProjectContext:
         self.registry = IndexRegistry()
 
     @property
+    def enabled(self):
+        return self.bindings.enabled
+
+    @property
+    def root_path(self):
+        return self.bindings.last_root
+
+    @property
+    def index_root(self):
+        return self.bindings.last_index_root
+
+    @property
+    def mount_child_indexes(self):
+        return self.bindings.last_mount
+
+    @property
+    def store(self):
+        binding = self.bindings.current
+        return binding.store if binding else None
+
+    @property
+    def embedding_store(self):
+        binding = self.bindings.current
+        return binding.embedding_store if binding else None
+
+    @property
+    def session_lease(self):
+        binding = self.bindings.current
+        return binding.session if binding else None
+
+    @property
+    def lifecycle_cancelled(self):
+        return self.bindings.cancelled
+
+    @property
+    def quiescing(self):
+        return self.lifecycle_cancelled.is_set()
+
+    @property
+    def binding_generation(self):
+        return self.bindings.generation
+
+    @property
+    def background(self):
+        return self.tasks.latest("build")
+
+    @property
+    def embedding_background(self):
+        return self.tasks.latest("embedding")
+
+    @property
+    def embedding_indexer(self):
+        return self.tasks.indexer
+
+    @property
+    def watcher(self):
+        return self.tasks.watcher
+
+    @property
+    def _background_context_key(self):
+        return self.tasks.build_key
+
+    @property
     def view(self) -> WorkspaceView:
         """Keep child views while the immutable project policy is unchanged."""
+        pinned = getattr(self._request_local, "view", None)
+        if pinned is not None:
+            return pinned
         self._store_context()
         generation = int(self.store.get_metadata_map().get("policy_generation", 0))
         if self._view is None or generation != self._view_policy_generation:
             if self._view is not None:
                 self._view.close()
-            self._ignore_config = IgnoreConfig.from_metadata(self.store.get_metadata_map())
+            config = IgnoreConfig.from_metadata(self.store.get_metadata_map())
             self._view = WorkspaceView(
                 self._store_context(),
-                ignore_patterns=list(self._ignore_config.patterns),
-                auto_ignore_patterns=list(self._ignore_config.auto_patterns),
-                privileged_patterns=list(self._ignore_config.privileged_patterns),
+                ignore_patterns=list(config.patterns),
+                auto_ignore_patterns=list(config.auto_patterns),
+                privileged_patterns=list(config.privileged_patterns),
                 control=self.control,
+                mount_child_indexes=self.mount_child_indexes,
             )
             self._view_policy_generation = generation
         return self._view
@@ -102,8 +151,9 @@ class ProjectContext:
             self._view.close()
         self._view = None
 
-    def _db_path(self, root: Path) -> Path:
-        index_root = self.index_root_override or project_index_root(root)
+    def _db_path(self, root: Path, mount_child_indexes: bool | None = None) -> Path:
+        mount = self.mount_child_indexes if mount_child_indexes is None else mount_child_indexes
+        index_root = project_index_root(root, mount, self.index_root_override)
         return index_root / "index.db"
 
     def _require_ready(self) -> None:
@@ -112,7 +162,8 @@ class ProjectContext:
             raise NotEnabledError()
 
     def _require_store(self) -> None:
-        self.control.check(self.root_path)
+        if not getattr(self._request_local, "active", False):
+            self.control.check(self.root_path)
         if self.store is None or not self.enabled:
             raise NotEnabledError()
 
@@ -184,5 +235,6 @@ class ProjectContext:
             and self.root_path is not None
             and self.index_root is not None
             and self.store is context.store
-            and (self.root_path.resolve(), self.index_root.resolve()) == context.key
+            and context.binding_generation == self.binding_generation
+            and (self.root_path.resolve(), self.index_root.resolve(), self.mount_child_indexes) == context.key
         )

@@ -11,6 +11,7 @@ def can_reuse_index(
     store: IndexStore | None,
     root: Path | None,
     ignore_fingerprint: str | None = None,
+    mount_child_indexes: bool = False,
 ) -> bool:
     if store is None or root is None:
         return False
@@ -20,6 +21,7 @@ def can_reuse_index(
         and metadata.get("updated_at") is not None
         and int(metadata.get("version") or 0) == INDEX_VERSION
         and int(metadata.get("parser_version") or 0) == PARSER_VERSION
+        and metadata.get("mount_child_indexes") is mount_child_indexes
         and int(metadata.get("policy_generation", 0)) == int(metadata.get("applied_policy_generation", 0))
     )
     if not reusable:
@@ -34,6 +36,7 @@ def can_start_auto_watch_policy(
     root: Path | None,
     result: dict[str, Any] | None,
     ignore_fingerprint: str | None = None,
+    mount_child_indexes: bool = False,
 ) -> bool:
     # A background rebuild has no reusable index yet; the watcher is started by
     # the build's completion hook instead of racing a second full scan here.
@@ -43,4 +46,4 @@ def can_start_auto_watch_policy(
         "already-running",
     ):
         return False
-    return can_reuse_index(store, root, ignore_fingerprint)
+    return can_reuse_index(store, root, ignore_fingerprint, mount_child_indexes)

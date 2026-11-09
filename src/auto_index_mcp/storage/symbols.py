@@ -38,13 +38,14 @@ def query_ranked(
     kind: str,
     limit: int,
     offset: int,
+    *, with_callers: bool = True,
 ) -> list[dict[str, Any]]:
     """Symbols matching ``text`` in name or signature, best matches first.
 
     Without ``text`` this is the browse path: no ranking, path/line order.
     """
     if not text:
-        return _query_browse(conn, kind, limit, offset)
+        return _query_browse(conn, kind, limit, offset, with_callers=with_callers)
     like = f"%{text}%"
     select = (
         "SELECT symbols.*, files.language, " + _SOURCE_COLUMNS +
@@ -64,7 +65,8 @@ def query_ranked(
     sql = select + " WHERE " + " AND ".join(where) + _RANKED_ORDER
     params.extend([limit, offset])
     rows = conn.execute(sql, params).fetchall()
-    return attach_callers(conn, [symbol_row_to_dict(row) for row in rows])
+    symbols = [symbol_row_to_dict(row) for row in rows]
+    return attach_callers(conn, symbols) if with_callers else symbols
 
 
 def query_relaxed(
@@ -73,6 +75,7 @@ def query_relaxed(
     kind: str,
     limit: int,
     offset: int,
+    *, with_callers: bool = True,
 ) -> list[dict[str, Any]]:
     """Subtoken AND-match: every subtoken must appear in name or signature.
 
@@ -104,7 +107,8 @@ def query_relaxed(
     )
     params = rank_params + where_params + [limit, offset]
     rows = conn.execute(sql, params).fetchall()
-    return attach_callers(conn, [symbol_row_to_dict(row) for row in rows])
+    symbols = [symbol_row_to_dict(row) for row in rows]
+    return attach_callers(conn, symbols) if with_callers else symbols
 
 
 def _query_browse(
@@ -112,6 +116,7 @@ def _query_browse(
     kind: str,
     limit: int,
     offset: int,
+    *, with_callers: bool = True,
 ) -> list[dict[str, Any]]:
     sql = (
         "SELECT symbols.*, files.language, " + _SOURCE_COLUMNS.rstrip(", ") + " FROM symbols "
@@ -124,4 +129,5 @@ def _query_browse(
     sql += _BASE_ORDER
     params.extend([limit, offset])
     rows = conn.execute(sql, params).fetchall()
-    return attach_callers(conn, [symbol_row_to_dict(row) for row in rows])
+    symbols = [symbol_row_to_dict(row) for row in rows]
+    return attach_callers(conn, symbols) if with_callers else symbols

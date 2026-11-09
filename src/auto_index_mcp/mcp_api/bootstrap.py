@@ -102,11 +102,12 @@ async def ensure_enabled(
     def attach():
         if service.enabled and service.store is not None:
             return dict(enabled=True)
-        result = service.enable_reusing_index(str(root), source="cold-start", activation=ActivationIntent.AUTOMATIC)
+        result = service.enable_reusing_index(str(root), source="cold-start", activation=ActivationIntent.AUTOMATIC,
+                                              mount_child_indexes=service.project.startup_mount_child_indexes)
         start_or_defer_auto_watch(service, result)
         return result
 
-    result = await run_service(service, attach)
+    result = await run_service(service, attach, allow_suspended=True)
     return result if "error" in result else None
 
 

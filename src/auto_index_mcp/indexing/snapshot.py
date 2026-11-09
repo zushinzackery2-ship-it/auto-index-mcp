@@ -57,10 +57,12 @@ def take_watch_snapshot(
     boundary_roots: list[Path] | None = None,
     own_db_path: Path | None = None,
     ignore_patterns: list[str] | None = None,
+    *,
+    mount_child_indexes: bool = False,
 ) -> WatchSnapshot:
     root = root.resolve()
     ignore_rules = IgnoreRules.from_root(root, ignore_patterns)
-    children = child_index_snapshot(root, own_db_path, ignore_rules)
+    children = child_index_snapshot(root, own_db_path, ignore_rules) if mount_child_indexes else dict()
     boundaries = [(root / path).parent.parent for path in children]
     files: dict[str, tuple[int, int]] = {}
     for path in _iter_source_files(root, boundaries, ignore_rules):
@@ -83,9 +85,11 @@ def update_watch_snapshot(
     boundary_roots: list[Path] | None = None,
     own_db_path: Path | None = None,
     ignore_patterns: list[str] | None = None,
+    *,
+    mount_child_indexes: bool = False,
 ) -> WatchSnapshot:
     root = root.resolve()
-    boundaries = [path.resolve() for path in boundary_roots or []]
+    boundaries = [path.resolve() for path in boundary_roots or []] if mount_child_indexes else []
     ignore_rules = IgnoreRules.from_root(root, ignore_patterns)
     own_db = own_db_path.resolve() if own_db_path else None
     files = dict(previous.files)
@@ -100,19 +104,21 @@ def update_watch_snapshot(
             continue
         candidates.add(rel)
         if rel in {"", "."}:
-            return take_watch_snapshot(root, boundaries, own_db_path, ignore_patterns)
+            return take_watch_snapshot(root, boundaries, own_db_path, ignore_patterns,
+                                       mount_child_indexes=mount_child_indexes)
         if path.name == ".gitignore":
-            return take_watch_snapshot(root, boundaries, own_db_path, ignore_patterns)
+            return take_watch_snapshot(root, boundaries, own_db_path, ignore_patterns,
+                                       mount_child_indexes=mount_child_indexes)
         if is_own_database_path(path, own_db):
             continue
         if is_under_boundary(path, boundaries):
             refresh_child_indexes = True
             continue
         if is_index_related_path(path):
-            refresh_child_indexes = True
+            refresh_child_indexes = mount_child_indexes
             continue
         if path.exists() and path.is_dir():
-            if direct_child_index_db(path, own_db) is not None:
+            if mount_child_indexes and direct_child_index_db(path, own_db) is not None:
                 candidates.update(_remove_entries_under(files, rel))
                 refresh_child_indexes = True
                 continue
@@ -136,20 +142,21 @@ def update_watch_snapshot(
         refresh_child_indexes = refresh_child_indexes or subtree_had_child_index(previous.child_indexes, rel)
     child_indexes = (
         child_index_snapshot(root, own_db_path, ignore_rules)
-        if refresh_child_indexes
-        else dict(previous.child_indexes)
+        if mount_child_indexes and refresh_child_indexes
+        else (dict(previous.child_indexes) if mount_child_indexes else dict())
     )
     return WatchSnapshot(files=files, child_indexes=child_indexes, dirty_files=frozenset(dirty_files),
                          changed_paths=frozenset(candidates))
 
 
-def snapshot_from_index(root: Path, files: list[dict], child_indexes: list[dict]) -> WatchSnapshot:
+def snapshot_from_index(root: Path, files: list[dict], child_indexes: list[dict], *,
+                        mount_child_indexes: bool = False) -> WatchSnapshot:
     root = root.resolve()
     indexed_files = {
         item["path"]: (int(item.get("size", 0)), int(item.get("mtime_ns", 0)))
         for item in files
     }
-    indexed_children = indexed_child_snapshot(root, child_indexes)
+    indexed_children = indexed_child_snapshot(root, child_indexes) if mount_child_indexes else dict()
     return WatchSnapshot(files=indexed_files, child_indexes=indexed_children)
 
 

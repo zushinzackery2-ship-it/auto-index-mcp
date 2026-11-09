@@ -20,6 +20,8 @@ def run(argv: list[str]) -> int:
     parser.add_argument("--rebuild", action="store_true", help="force a full rescan even when the index is fresh")
     parser.add_argument("--no-semantic", action="store_true", help="skip semantic embedding vectors")
     parser.add_argument("--quiet", action="store_true", help="suppress progress output")
+    parser.add_argument("--mount-child-indexes", action="store_true",
+                        help="mount existing external child indexes (source scanning is always recursive)")
     args = parser.parse_args(argv)
 
     root = Path(args.path).resolve()
@@ -46,6 +48,7 @@ def run(argv: list[str]) -> int:
             rebuild=False,
             refresh_embedder=not args.no_semantic,
             source="cli-build",
+            mount_child_indexes=args.mount_child_indexes,
         )
     except (ValueError, ServiceError) as exc:
         print(f"error: {exc}", file=sys.stderr)

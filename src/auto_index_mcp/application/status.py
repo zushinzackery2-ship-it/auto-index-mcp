@@ -108,33 +108,40 @@ class StatusCoordinator:
 
 
     def status(self) -> dict[str, Any]:
+        with self.project.bindings.read() as binding:
+            return self._status(binding)
+
+    def _status(self, binding) -> dict[str, Any]:
         """Compact index health: one level of nesting, ISO timestamps, no
         duplicated background result blobs (LLM callers read this a lot)."""
-        store = self.project.store
-        suspension = self.project.control.admission.pending(self.project.root_path)
+        store = binding.store if binding else None
+        root = binding.root if binding else self.project.root_path
+        index_root = binding.index_root if binding else self.project.index_root
+        suspension = self.project.control.admission.pending(root)
         meta = store.get_metadata_map() if store and suspension is None else dict()
         file_count = int(meta.get("file_count") or 0)
         total_file_count = int(meta.get("total_file_count") or file_count)
         timers = self.build_timers()
         result: dict[str, Any] = {
-            "enabled": self.project.enabled,
-            "root": str(self.project.root_path) if self.project.root_path else None,
+            "enabled": binding is not None,
+            "root": str(root) if root else None,
             "index_path": str(store.db_path) if store else None,
             "log_path": getattr(self.project, "log_path", None),
             "file_count": file_count,
             "total_file_count": total_file_count,
             "child_index_count": int(meta.get("child_index_count") or 0),
+            "mount_child_indexes": binding.mount_child_indexes if binding else self.project.mount_child_indexes,
             "updated_at": iso_time(meta.get("updated_at")),
             "source_generation": int(meta.get("source_generation", 0)),
             "policy_generation": int(meta.get("policy_generation", 0)),
             "filesystem_state": "watching" if self.project.watcher is not None else "not-observed",
             "watcher": watcher_status(self.project),
             "embedding": (dict(enabled=False, model=None, state="suspended", vector_count=0, complete=False)
-                          if suspension else self._compact_embedding_status(timers["embedding"])),
+                          if suspension else self._compact_embedding_status(timers["embedding"], binding)),
             "index_build": _compact_timer_view(timers["index"]),
         }
-        if self.project.root_path is not None and self.project.index_root is not None:
-            result["registered"] = self.project.registry.is_registered(self.project.index_root)
+        if root is not None and index_root is not None:
+            result["registered"] = self.project.registry.is_registered(index_root)
         if self.project.last_errors:
             result["error_count"] = len(self.project.last_errors)
             result["errors"] = self.project.last_errors[:5]
@@ -142,18 +149,21 @@ class StatusCoordinator:
             result["suspension"] = dict(operation_id=suspension["operation_id"], phase=suspension["phase"],
                                         generation=suspension["generation"])
             result["hint"] = "workspace suspended; call auto_index_enable() explicitly to resume this instance"
-        purge = self.project.last_purge or last_summary(self.project.control.store, self.project.root_path)
+        purge = self.project.last_purge or last_summary(self.project.control.store, root)
         if purge is not None:
             result["last_purge"] = dict((key, value) for key, value in purge.items() if key not in ("results", "blockers"))
         if self.project.control.last_error:
             result["control_error"] = self.project.control.last_error
-        if store is None or self.project.root_path is None:
+        if store is None or root is None:
             result.setdefault("hint", ENABLE_HINT)
         return result
 
-    def _compact_embedding_status(self, timer: dict[str, Any]) -> dict[str, Any]:
-        status = embedding_status(self.project)
+    def _compact_embedding_status(self, timer: dict[str, Any], binding=None) -> dict[str, Any]:
+        status = embedding_status(self.project, binding)
         return dict((key, status[key]) for key in ("enabled", "model", "state", "vector_count", "complete", "error") if key in status)
+
+    def embedding_status(self):
+        return embedding_status(self.project)
 
 
 def _compact_timer_view(timer: dict[str, Any]) -> dict[str, Any]:

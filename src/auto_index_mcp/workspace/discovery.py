@@ -28,36 +28,45 @@ def discover_child_indexes(
     own_db_path: Path,
     reader: IndexMetadataReader = DEFAULT_METADATA_READER,
     ignore_patterns: list[str] | None = None,
+    *,
+    scan_project: bool = True,
+    known_children: list[dict[str, Any]] | None = None,
 ) -> list[ChildIndex]:
     root = root.resolve()
     own_db_path = own_db_path.resolve()
     candidates: list[tuple[Path, Path]] = []
-    seen_child_roots: set[Path] = set()
+    seen_databases: set[Path] = set()
     from ..registry.store import IndexRegistry
     rules = IgnoreRules.from_root(root, ignore_patterns)
-    for entry in IndexRegistry().entries().values():
-        child_root = Path(entry["root"]).resolve()
-        db_path = Path(entry["index_dir"]) / "index.db"
+    locations = [(Path(entry["root"]), Path(entry["index_dir"]) / "index.db")
+                 for entry in IndexRegistry().entries().values()]
+    locations.extend((Path(child["root"]), Path(child["db_path"])) for child in known_children or [])
+    for child_root, db_path in locations:
+        child_root = child_root.resolve()
+        db_path = db_path.resolve()
         if child_root != root and child_root.is_relative_to(root) and db_path.exists() and not rules.is_ignored(child_root, True):
-            if child_root not in seen_child_roots:
+            if db_path not in seen_databases:
                 candidates.append((child_root, db_path))
-                seen_child_roots.add(child_root)
-    for db_path in iter_index_databases(root, ignore_patterns=ignore_patterns):
+                seen_databases.add(db_path)
+    databases = iter_index_databases(root, ignore_patterns=ignore_patterns) if scan_project else []
+    for db_path in databases:
         db_path = db_path.resolve()
         if db_path == own_db_path:
             continue
         child_root = db_path.parent.parent.resolve()
         if child_root == root:
             continue
-        if child_root in seen_child_roots:
+        if db_path in seen_databases:
             continue
-        seen_child_roots.add(child_root)
+        seen_databases.add(db_path)
         candidates.append((child_root, db_path))
 
     children: list[ChildIndex] = []
     accepted_roots: list[Path] = []
-    for child_root, db_path in sorted(candidates, key=lambda item: (len(item[0].parts), item[0].as_posix().lower())):
-        if _is_nested_under_any(child_root, accepted_roots):
+    for child_root, db_path in sorted(candidates, key=lambda item: (
+            len(item[0].parts), item[0].as_posix().lower(),
+            not item[1].parent.name.endswith("-mounted"), item[1].as_posix().lower())):
+        if child_root in accepted_roots or _is_nested_under_any(child_root, accepted_roots):
             continue
         child = _read_child_index(root, child_root, db_path, reader)
         if child is None:
@@ -113,7 +122,8 @@ def _read_total_file_count(db_path: Path, visited: set[Path], reader: IndexMetad
     if not metadata:
         return 0
     total = int(metadata.get("file_count") or 0)
-    for child in reader.read_child_rows(db_path):
+    rows = reader.read_child_rows(db_path) if metadata.get("mount_child_indexes", True) else []
+    for child in rows:
         total += _read_total_file_count(Path(child["db_path"]), visited, reader)
     return total
 

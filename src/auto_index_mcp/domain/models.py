@@ -29,6 +29,7 @@ class SymbolRecord:
     ambiguous_called_by: list[str] = field(default_factory=list)
     imported_by: list[str] = field(default_factory=list)
     caller_evidence: list[dict[str, Any]] = field(default_factory=list)
+    usage_constraints: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
